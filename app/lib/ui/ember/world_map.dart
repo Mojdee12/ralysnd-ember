@@ -44,6 +44,7 @@ class WorldMapPainter extends CustomPainter {
     required this.homeLabel,
     this.faint = false,
     this.backdrop = false,
+    this.drawPulse = true,
     this.pulseAnim,
     super.repaint,
   });
@@ -60,6 +61,12 @@ class WorldMapPainter extends CustomPainter {
   /// BRIGHT — light blue-grey dots at a clearly readable alpha over
   /// the deep graphite-navy base — not the phone panel's faint tint.
   final bool backdrop;
+
+  /// Whether the expanding pulse ring is part of this painting.
+  /// WorldMapPanel turns it off and lets [PulseRingPainter] draw
+  /// the ring alone, so the animation no longer repaints the whole
+  /// dot field at every tick.
+  final bool drawPulse;
 
   /// When set, the live animation value replaces [pulse] at paint
   /// time (the painter instance itself is not rebuilt per tick).
@@ -184,14 +191,16 @@ class WorldMapPainter extends CustomPainter {
     // The selected pin, pulsing while connected.
     if (sel != null) {
       if (connected) {
-        canvas.drawCircle(
-          sel,
-          6 + 11 * pulse,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.6
-            ..color = Ember.orange.withValues(alpha: (1 - pulse) * 0.55),
-        );
+        if (drawPulse) {
+          canvas.drawCircle(
+            sel,
+            6 + 11 * pulse,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.6
+              ..color = Ember.orange.withValues(alpha: (1 - pulse) * 0.55),
+          );
+        }
         canvas.drawCircle(
           sel,
           10,
@@ -220,7 +229,50 @@ class WorldMapPainter extends CustomPainter {
       old.selected != selected ||
       old.connected != connected ||
       old.faint != faint ||
-      old.backdrop != backdrop;
+      old.backdrop != backdrop ||
+      old.drawPulse != drawPulse;
+}
+
+/// Just the selected pin's expanding pulse ring, in the same field
+/// transform WorldMapPainter uses. Painted on its own layer above
+/// the static map (see WorldMapPanel), so a tick repaints one ring
+/// instead of the whole dot field.
+class PulseRingPainter extends CustomPainter {
+  PulseRingPainter({
+    required this.selected,
+    required this.anim,
+    super.repaint,
+  });
+
+  final String? selected;
+  final Animation<double> anim;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final latLon = selected == null ? null : countryPinLatLon[selected];
+    if (latLon == null) return;
+    final scaleX = size.width / _field.width;
+    final scaleY = size.height / _field.height;
+    final cover = scaleX > scaleY ? scaleX : scaleY;
+    canvas.translate(
+      (size.width - _field.width * cover) / 2,
+      (size.height - _field.height * cover) / 2,
+    );
+    canvas.scale(cover);
+    final sel = _project(latLon[0], latLon[1]);
+    final pulse = anim.value;
+    canvas.drawCircle(
+      sel,
+      6 + 11 * pulse,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Ember.orange.withValues(alpha: (1 - pulse) * 0.55),
+    );
+  }
+
+  @override
+  bool shouldRepaint(PulseRingPainter old) => old.selected != selected;
 }
 
 /// The map panel of the V2Ray home.
@@ -286,16 +338,37 @@ class _WorldMapPanelState extends State<WorldMapPanel>
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
         child: AspectRatio(
           aspectRatio: 2,
-          child: CustomPaint(
-            painter: WorldMapPainter(
-              pins: widget.pins,
-              selected: widget.selected,
-              connected: widget.connected,
-              pulse: 0,
-              homeLabel: widget.homeLabel,
-              pulseAnim: _pulse,
-              repaint: _pulse,
-            ),
+          child: Stack(
+            children: [
+              // The static map (dots, arc, pins, markers) on its
+              // own repaint boundary: painted once per state
+              // change, then composited.
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: WorldMapPainter(
+                      pins: widget.pins,
+                      selected: widget.selected,
+                      connected: widget.connected,
+                      pulse: 0,
+                      homeLabel: widget.homeLabel,
+                      drawPulse: false,
+                    ),
+                  ),
+                ),
+              ),
+              // The pulse ring alone animates.
+              if (widget.connected && widget.selected != null)
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: PulseRingPainter(
+                      selected: widget.selected,
+                      anim: _pulse,
+                      repaint: _pulse,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       );

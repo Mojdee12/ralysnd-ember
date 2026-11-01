@@ -35,6 +35,47 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
 
   XrayController get xray => widget.xray;
 
+  /// The page's structural signature: everything the layout
+  /// depends on EXCEPT the per-profile traffic totals. The
+  /// controller polls the core's counters every couple of seconds
+  /// while connected and the old root ListenableBuilder rebuilt
+  /// (and re-blurred) the whole page on every poll; now the totals
+  /// live in per-row islands and this page rebuilds only when the
+  /// signature changes.
+  String _sig = '';
+
+  @override
+  void initState() {
+    super.initState();
+    xray.addListener(_onTick);
+  }
+
+  @override
+  void dispose() {
+    xray.removeListener(_onTick);
+    super.dispose();
+  }
+
+  String _signature() => [
+        xray.profiles.length,
+        xray.selectedProfileId,
+        xray.state.running,
+        xray.state.name,
+        xray.connecting,
+        xray.lastError,
+        for (final p in xray.profiles)
+          '${p.id}:${p.name}:${p.delayMs}:${p.delayFailed}:${xray.isTesting(p.id)}',
+      ].join('|');
+
+  void _onTick() {
+    if (!mounted) return;
+    final next = _signature();
+    if (next != _sig) {
+      _sig = next;
+      setState(() {});
+    }
+  }
+
   Future<void> _testAll() async {
     setState(() => _testingAll = true);
     try {
@@ -74,9 +115,7 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    return ListenableBuilder(
-      listenable: xray,
-      builder: (context, _) {
+    {
         final q = _query.toLowerCase();
         final shown = xray.profiles.where((p) {
           if (q.isEmpty) return true;
@@ -205,8 +244,7 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
             ),
           ],
         );
-      },
-    );
+    }
   }
 }
 
@@ -319,11 +357,17 @@ class _ConfigRow extends StatelessWidget {
                 children: [
                   Directionality(
                     textDirection: TextDirection.ltr,
-                    child: Text(
-                      profileHasTotals(profile)
-                          ? 'Used traffic: ${fmtBytes(profile.totalDownBytes + profile.totalUpBytes)}'
-                          : 'Used traffic: —',
-                      style: Ember.caption.copyWith(color: Ember.dim),
+                    // A live island: the totals move with the
+                    // controller's counter polls; the row (and the
+                    // page's glass card) must not rebuild with them.
+                    child: ListenableBuilder(
+                      listenable: xray,
+                      builder: (context, _) => Text(
+                        profileHasTotals(profile)
+                            ? 'Used traffic: ${fmtBytes(profile.totalDownBytes + profile.totalUpBytes)}'
+                            : 'Used traffic: —',
+                        style: Ember.caption.copyWith(color: Ember.dim),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 6),

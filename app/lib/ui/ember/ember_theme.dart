@@ -130,7 +130,12 @@ class GlassCard extends StatelessWidget {
 
   /// The desktop light-glass surface (see the class doc).
   Widget _buildDesktopGlass() {
-    final surface = Container(
+    // A RepaintBoundary around the glass: the card's backdrop blur
+    // becomes its own composited layer, so a repaint anywhere else
+    // on the page (a ticking value, a sibling card) reuses the
+    // cached blur instead of re-running the filter for this card.
+    final surface = RepaintBoundary(
+      child: Container(
       decoration: BoxDecoration(
         borderRadius: Ember.radius,
         boxShadow: [
@@ -205,6 +210,7 @@ class GlassCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
       ),
     );
     if (onTap == null) return surface;

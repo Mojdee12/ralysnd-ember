@@ -57,6 +57,59 @@ class MozillaDesktopHome extends StatefulWidget {
 class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
   bool _busy = false;
 
+  /// The page's structural signature: everything the layout
+  /// depends on EXCEPT the live counters. The core polls every
+  /// couple of seconds and the old root ListenableBuilder rebuilt
+  /// (and re-blurred) every glass card on every poll; now a poll
+  /// that only moved counters rebuilds just the session-traffic
+  /// island, and this page rebuilds when the signature changes.
+  String _sig = '';
+
+  @override
+  void initState() {
+    super.initState();
+    Listenable.merge([widget.core, widget.xray]).addListener(_onTick);
+  }
+
+  @override
+  void dispose() {
+    Listenable.merge([widget.core, widget.xray]).removeListener(_onTick);
+    super.dispose();
+  }
+
+  String _signature() {
+    final status = widget.core.status;
+    final exit = status?.exit;
+    final account = status?.activeAccount;
+    final xray = widget.xray;
+    return [
+      status?.state.phase,
+      status?.tun?.state,
+      status?.tun?.code,
+      status?.selection,
+      status?.systemProxy,
+      status?.computerUsesVpn,
+      account?.email,
+      exit?.ipv4,
+      exit?.countryCode,
+      status?.proxy?.countryCode,
+      status?.proxy?.startedAt,
+      xray.profiles.length,
+      xray.selectedProfileId,
+      xray.state.running,
+      for (final p in xray.profiles) '${p.id}:${p.delayMs}',
+    ].join('|');
+  }
+
+  void _onTick() {
+    if (!mounted) return;
+    final next = _signature();
+    if (next != _sig) {
+      _sig = next;
+      setState(() {});
+    }
+  }
+
   Future<void> _toggle(bool on) async {
     setState(() => _busy = true);
     try {
@@ -76,9 +129,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    return ListenableBuilder(
-      listenable: Listenable.merge([widget.core, widget.xray]),
-      builder: (context, _) {
+    {
         final core = widget.core;
         final status = core.status;
         final phase = status?.state.phase ?? Phase.off;
@@ -86,8 +137,6 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
         final busy = _busy || phase == Phase.starting;
         final proxy = status?.proxy;
         final exit = status?.exit;
-        final account = status?.activeAccount;
-        final usage = account?.usage;
         final countryCode =
             (exit?.countryCode.isNotEmpty ?? false) ? exit!.countryCode : (proxy?.countryCode ?? '');
         final countryName = (exit?.countryName.isNotEmpty ?? false)
@@ -214,74 +263,16 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                 // HERO stats (the desktop core exposes no per-session
                 // byte counters, so the heroes are the session time
                 // and the account's quota left — real data only),
-                // then the mockup's icon rows.
+                // then the mockup's icon rows. It is a live island:
+                // the quota figures move with the core's polls, so
+                // it listens on its own and the rest of the page
+                // does not rebuild with them.
                 Expanded(
                   flex: 10,
-                  child: GlassCard(
-                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.10),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: const Icon(
-                                Icons.insights_rounded,
-                                size: 17,
-                                color: Ember.text,
-                              ),
-                            ),
-                            const SizedBox(width: 9),
-                            Text('Session Traffic', style: Ember.heading),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: _SessionHero(startedAt: proxy?.startedAt),
-                            ),
-                            Expanded(
-                              child: DesktopHeroStat(
-                                icon: Icons.data_usage_rounded,
-                                label: 'QUOTA LEFT',
-                                value: usage == null
-                                    ? '—'
-                                    : usage.unlimited
-                                        ? 'Unlimited'
-                                        : '${fmtGigabytes(usage.remainingBytes)} GB',
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        const Divider(color: Ember.line, height: 1),
-                        const SizedBox(height: 12),
-                        _TrafficRow(
-                          icon: Icons.pie_chart_rounded,
-                          label: 'Quota used',
-                          value: usage == null
-                              ? '—'
-                              : usage.unlimited
-                                  ? 'Unlimited plan'
-                                  : '${fmtGigabytes(usage.usedBytes)} of ${fmtGigabytes(usage.limitBytes)} GB',
-                        ),
-                        const SizedBox(height: 9),
-                        _TrafficRow(
-                          icon: Icons.public_rounded,
-                          label: 'Exit',
-                          value: exitIp.isEmpty
-                              ? '—'
-                              : '$exitIp${countryName.isEmpty ? '' : ' • ${localizedCountryName(context, countryCode, countryName)}'}',
-                        ),
-                      ],
-                    ),
+                  child: ListenableBuilder(
+                    listenable: widget.core,
+                    builder: (context, _) =>
+                        _SessionTrafficCard(core: widget.core),
                   ),
                 ),
               ],
@@ -315,8 +306,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
             ),
           ],
         );
-      },
-    );
+    }
   }
 
   /// DoH state from the core's settings (https/tls DNS servers);
@@ -344,6 +334,96 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
       }());
     }
     return _dohCache;
+  }
+}
+
+/// The Mozilla page's "Session Traffic" card, reading the core's
+/// status itself: it is the page's live island (see the state class
+/// doc), rebuilt by the core's polls without rebuilding the page.
+class _SessionTrafficCard extends StatelessWidget {
+  const _SessionTrafficCard({required this.core});
+
+  final CoreController core;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = core.status;
+    final proxy = status?.proxy;
+    final usage = status?.activeAccount?.usage;
+    final exit = status?.exit;
+    final countryCode = (exit?.countryCode.isNotEmpty ?? false)
+        ? exit!.countryCode
+        : (proxy?.countryCode ?? '');
+    final countryName = (exit?.countryName.isNotEmpty ?? false)
+        ? exit!.countryName
+        : (proxy?.countryName ?? '');
+    final exitIp = (exit?.ipv4.isNotEmpty ?? false) ? exit!.ipv4 : '';
+    return GlassCard(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.insights_rounded,
+                  size: 17,
+                  color: Ember.text,
+                ),
+              ),
+              const SizedBox(width: 9),
+              Text('Session Traffic', style: Ember.heading),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _SessionHero(startedAt: proxy?.startedAt),
+              ),
+              Expanded(
+                child: DesktopHeroStat(
+                  icon: Icons.data_usage_rounded,
+                  label: 'QUOTA LEFT',
+                  value: usage == null
+                      ? '—'
+                      : usage.unlimited
+                          ? 'Unlimited'
+                          : '${fmtGigabytes(usage.remainingBytes)} GB',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(color: Ember.line, height: 1),
+          const SizedBox(height: 12),
+          _TrafficRow(
+            icon: Icons.pie_chart_rounded,
+            label: 'Quota used',
+            value: usage == null
+                ? '—'
+                : usage.unlimited
+                    ? 'Unlimited plan'
+                    : '${fmtGigabytes(usage.usedBytes)} of ${fmtGigabytes(usage.limitBytes)} GB',
+          ),
+          const SizedBox(height: 9),
+          _TrafficRow(
+            icon: Icons.public_rounded,
+            label: 'Exit',
+            value: exitIp.isEmpty
+                ? '—'
+                : '$exitIp${countryName.isEmpty ? '' : ' • ${localizedCountryName(context, countryCode, countryName)}'}',
+          ),
+        ],
+      ),
+    );
   }
 }
 

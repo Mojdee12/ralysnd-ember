@@ -20,8 +20,12 @@ import '../../features.dart';
 import '../../l10n/app_localizations.dart';
 import '../../lantern/lantern_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
+import '../../psiphon/psiphon_platform.dart';
 import '../../warp/warp_controller.dart';
+import '../../xray/exit_info.dart' as xray_exit;
 import '../../xray/xray_controller.dart';
+import '../../xray/xray_models.dart';
+import '../../xray/xray_platform.dart';
 import 'desktop_widgets.dart';
 import 'ember_accounts.dart';
 import 'ember_home.dart';
@@ -165,6 +169,137 @@ class _EmberShellState extends State<EmberShell> {
         }),
       );
     }
+    // With EMBER_SHOT_CONNECTED=1 the captures show the CONNECTED,
+    // populated state (hero session values, exit location, the ON
+    // pill) that the disconnected rounds never exercised. The seed
+    // is fabricated demo data, re-applied on a fast timer because
+    // the core's own poll keeps replacing the Mozilla status with
+    // the real (off) one; each re-application rebuilds the shell
+    // with the seeded values.
+    if (Platform.environment['EMBER_SHOT_CONNECTED'] == '1') {
+      _shotTimers.add(
+        Timer.periodic(const Duration(milliseconds: 500), (_) {
+          if (!mounted) return;
+          _seedConnectedShotState();
+          setState(() {});
+        }),
+      );
+    }
+  }
+
+  /// The fabricated connected state for the screenshot harness
+  /// (see _startShotHarness). Demo values only — no real account,
+  /// server, or traffic is involved.
+  void _seedConnectedShotState() {
+    final now = DateTime.now();
+    final startedAt = now.subtract(const Duration(minutes: 12, seconds: 34));
+    core.status = CoreStatus.fromJson({
+      'state': {
+        'phase': 'running',
+        'message': 'Connected',
+        'since': startedAt.toIso8601String(),
+      },
+      'proxy': {
+        'listen': '127.0.0.1:1080',
+        'country_code': 'DE',
+        'country_name': 'Germany',
+        'city_name': 'Frankfurt',
+        'started_at': startedAt.toIso8601String(),
+        'transport': 'h2',
+      },
+      'active_account': {
+        'id': 'shot',
+        'name': 'Demo Account',
+        'email': 'demo@example.com',
+        'enabled': true,
+        'active': true,
+        'status': 'ready',
+        'usage': {
+          'unlimited': false,
+          'limit_bytes': 53687091200,
+          'remaining_bytes': 38654705664,
+        },
+      },
+      'exit': {
+        'ipv4': '85.214.132.10',
+        'country_code': 'DE',
+        'country_name': 'Germany',
+        'city': 'Frankfurt',
+        'network': 'Mozilla',
+      },
+      'system_proxy': 'tun',
+      'system_proxy_supported': true,
+      'tun_supported': true,
+      'tun': {'state': 'on', 'installed': true},
+      'selection': 'DE',
+      'accounts': {'total': 1},
+    });
+    if (_xray.profiles.isEmpty) {
+      _xray.profiles.addAll([
+        Profile(
+          id: 'shot-de',
+          name: 'Frankfurt — VLESS',
+          protocol: Protocol.vless,
+          address: 'de1.demo.net',
+          port: 443,
+          uuidOrPassword: '00000000-0000-4000-8000-000000000001',
+          network: 'tcp',
+          security: 'reality',
+        )
+          ..delayMs = 86
+          ..totalUpBytes = 12992256
+          ..totalDownBytes = 155189248,
+        Profile(
+          id: 'shot-nl',
+          name: 'Amsterdam — VMess',
+          protocol: Protocol.vmess,
+          address: 'nl1.demo.net',
+          port: 443,
+          uuidOrPassword: '00000000-0000-4000-8000-000000000002',
+          network: 'ws',
+          security: 'tls',
+        )
+          ..delayMs = 142
+          ..totalUpBytes = 3145728
+          ..totalDownBytes = 41943040,
+        Profile(
+          id: 'shot-us',
+          name: 'New York — Trojan',
+          protocol: Protocol.trojan,
+          address: 'us1.demo.net',
+          port: 443,
+          uuidOrPassword: 'demo-password',
+          network: 'tcp',
+          security: 'tls',
+        )..delayMs = 231,
+      ]);
+      _xray.selectedProfileId = 'shot-de';
+    }
+    _xray.state = XrayState(
+      running: true,
+      name: 'Frankfurt — VLESS',
+      sinceMs: startedAt.millisecondsSinceEpoch,
+      upBytes: 52428800,
+      downBytes: 377487360,
+    );
+    _xray.upRate = 184320;
+    _xray.downRate = 1258291;
+    _xray.exitInfo = const xray_exit.ExitInfo(
+      ip: '85.214.132.10',
+      countryCode: 'DE',
+      countryEn: 'Germany',
+    );
+    _psiphon.state = PsiphonState(
+      running: true,
+      connected: true,
+      vpnMode: true,
+      sinceMs: startedAt.millisecondsSinceEpoch,
+      upBytes: 8388608,
+      downBytes: 96468992,
+      region: 'DE',
+      clientAddress: '85.214.132.10',
+      regions: const ['DE', 'NL', 'US'],
+    );
   }
 
   @override
@@ -432,54 +567,65 @@ class _EmberShellState extends State<EmberShell> {
           // The mockups' backdrop: a deep graphite-navy base with
           // the dotted world map BRIGHT across the whole window;
           // each glass card blurs it locally (no global blur — that
-          // is what washed the map out in 2.0.1).
+          // is what washed the map out in 2.0.1). The whole backdrop
+          // sits in a RepaintBoundary: it is fully static, so its
+          // layer is painted once and composited under everything,
+          // never repainted by page rebuilds or value ticks.
           const Positioned.fill(child: ColoredBox(color: Color(0xFF11141C))),
           Positioned.fill(
-            child: CustomPaint(
-              painter: WorldMapPainter(
-                pins: const {},
-                selected: null,
-                connected: false,
-                pulse: 0,
-                homeLabel: '',
-                faint: true,
-                backdrop: true,
-              ),
-            ),
-          ),
-          Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: RadialGradient(
-                  center: const Alignment(0, -1.15),
-                  radius: 1.15,
-                  colors: [
-                    // Kept very faint: this glow sits behind the
-                    // first cards, whose backdrop blur would wash
-                    // their glass warm if it were any stronger.
-                    Ember.orange.withValues(alpha: 0.04),
-                    Colors.transparent,
-                  ],
-                  stops: const [0, 0.55],
-                ),
-              ),
-            ),
-          ),
-          // The mockups' map calms toward the bottom edge, so the
-          // status bar stays readable over it.
-          const Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.transparent,
-                    Color(0x9911141C),
-                  ],
-                  stops: [0, 0.74, 1],
-                ),
+            child: RepaintBoundary(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: WorldMapPainter(
+                        pins: const {},
+                        selected: null,
+                        connected: false,
+                        pulse: 0,
+                        homeLabel: '',
+                        faint: true,
+                        backdrop: true,
+                      ),
+                    ),
+                  ),
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: RadialGradient(
+                          center: const Alignment(0, -1.15),
+                          radius: 1.15,
+                          colors: [
+                            // Kept very faint: this glow sits behind the
+                            // first cards, whose backdrop blur would wash
+                            // their glass warm if it were any stronger.
+                            Ember.orange.withValues(alpha: 0.04),
+                            Colors.transparent,
+                          ],
+                          stops: const [0, 0.55],
+                        ),
+                      ),
+                    ),
+                  ),
+                  // The mockups' map calms toward the bottom edge, so
+                  // the status bar stays readable over it.
+                  const Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.transparent,
+                            Color(0x9911141C),
+                          ],
+                          stops: [0, 0.74, 1],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

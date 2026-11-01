@@ -65,6 +65,11 @@ class _MozillaServersState extends State<_MozillaServers> {
   bool _pinging = false;
   String _query = '';
 
+  /// Why the last delay test failed, when it did — until now a
+  /// failed test silently kept the old numbers, so a core refusal
+  /// (409) looked exactly like "ping does nothing".
+  String _pingError = '';
+
   @override
   void initState() {
     super.initState();
@@ -86,14 +91,18 @@ class _MozillaServersState extends State<_MozillaServers> {
   }
 
   Future<void> _pingAll() async {
-    setState(() => _pinging = true);
+    setState(() {
+      _pinging = true;
+      _pingError = '';
+    });
     try {
       final list = await widget.core.call(
         (api) => api.pingLocations([for (final l in _locations) l.code]),
       );
       if (mounted) setState(() => _locations = list.locations);
-    } catch (_) {
-      // The old numbers stay.
+    } catch (e) {
+      // The old numbers stay, but the failure is said out loud now.
+      if (mounted) setState(() => _pingError = e.toString());
     } finally {
       if (mounted) setState(() => _pinging = false);
     }
@@ -207,6 +216,14 @@ class _MozillaServersState extends State<_MozillaServers> {
           ),
           const SizedBox(height: 16),
           Text(l.allServers, style: Ember.heading),
+          if (_pingError.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                _pingError,
+                style: Ember.caption.copyWith(color: Ember.red),
+              ),
+            ),
           const SizedBox(height: 10),
           if (_loading)
             const Padding(
@@ -275,6 +292,18 @@ class _LocationRow extends StatelessWidget {
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
                 color: pingColor(ms),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ] else if (location.pingError.isNotEmpty) ...[
+            // A location that refused/failed the test says so
+            // (the core's words: timeout, unreachable, refused…)
+            // instead of showing a blank.
+            Flexible(
+              child: Text(
+                location.pingError,
+                overflow: TextOverflow.ellipsis,
+                style: Ember.caption.copyWith(color: Ember.red),
               ),
             ),
             const SizedBox(width: 8),

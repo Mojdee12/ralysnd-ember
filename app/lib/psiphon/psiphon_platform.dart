@@ -34,6 +34,11 @@ class PsiphonState {
   /// The egress regions the core announced this run.
   final List<String> regions;
 
+  /// The backend's last failure, in words ('' when none). Only the
+  /// Windows backend records one; it makes a dead core diagnosable
+  /// instead of a silent "not connected".
+  final String lastError;
+
   const PsiphonState({
     required this.running,
     required this.connected,
@@ -44,6 +49,7 @@ class PsiphonState {
     required this.region,
     required this.clientAddress,
     required this.regions,
+    this.lastError = '',
   });
 
   static const stopped = PsiphonState(

@@ -87,6 +87,22 @@ class WindowsPsiphonBackend implements PsiphonBackend {
   String _clientAddress = '';
   List<String> _regions = [];
 
+  /// The last failure, in words, for [state] — also in psiphon.log.
+  String _lastError = '';
+
+  /// When the current core process was spawned (instant-exit
+  /// detection for the firewall/antivirus guidance).
+  DateTime? _spawnedAt;
+
+  /// Shown when the sidecar dies at once or will not start at all:
+  /// the usual cause on a real PC is a security product, and a
+  /// silent failure left that undiagnosable.
+  static const firewallGuidance =
+      'psiphon-core.exe exited immediately or could not start. '
+      'Windows Firewall or antivirus may be blocking it — allow '
+      'psiphon-core.exe in Windows Security / your antivirus, '
+      'then try again.';
+
   static String get _coreExe {
     final dir = File(Platform.resolvedExecutable).parent.path;
     final sep = Platform.pathSeparator;
@@ -142,12 +158,23 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     );
 
     _resetRun(vpnMode);
-    final proc = await Process.start(
-      _coreExe,
-      ['-config', configFile.path, '-serverList', serversFile.path],
-      workingDirectory: dir.path,
-    );
+    _lastError = '';
+    Process proc;
+    try {
+      proc = await Process.start(
+        _coreExe,
+        ['-config', configFile.path, '-serverList', serversFile.path],
+        workingDirectory: dir.path,
+      );
+    } catch (e) {
+      _lastError = 'could not start psiphon-core.exe: $e. '
+          '$firewallGuidance';
+      sink.writeln('[ember] $_lastError');
+      await _closeLog();
+      throw StateError(_lastError);
+    }
     _proc = proc;
+    _spawnedAt = DateTime.now();
     proc.stdout
         .transform(utf8.decoder)
         .transform(const LineSplitter())
@@ -155,11 +182,26 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     proc.stderr
         .transform(utf8.decoder)
         .listen((s) => sink.write(s), onError: (_) {});
-    unawaited(proc.exitCode.then((_) {
+    unawaited(proc.exitCode.then((code) {
       if (identical(_proc, proc)) {
         _proc = null;
         _listening = false;
         _connected = false;
+        // The exit itself is evidence: keep it in the log the UI
+        // shows, with the guidance when the core died at once.
+        final instant = _spawnedAt != null &&
+            DateTime.now().difference(_spawnedAt!) <
+                const Duration(seconds: 2);
+        if (_lastError.isEmpty) {
+          _lastError = instant
+              ? 'psiphon-core.exe exited at once (code $code). '
+                  '$firewallGuidance'
+              : 'psiphon-core.exe exited (code $code)';
+        }
+        _logSink?.writeln(
+          '[ember] psiphon-core exited (code $code)'
+          '${instant ? ' — within 2s of start' : ''}',
+        );
         unawaited(_closeLog());
       }
     }));
@@ -167,12 +209,22 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     // The tunnel (and, in VPN mode, the TUN) is only real once the
     // proxies listen; the smoke-proven core binds them in ~a second.
     for (var i = 0; i < 60 && !_listening; i++) {
-      if (_proc == null) throw StateError('psiphon-core-exited');
+      if (_proc == null) {
+        throw StateError(
+          _lastError.isNotEmpty
+              ? _lastError
+              : 'psiphon-core-exited (see psiphon.log)',
+        );
+      }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     if (!_listening) {
+      _lastError = 'psiphon-core did not open its proxies within '
+          '15s — its own notices above say why (network unreachable '
+          'or every server refused)';
+      sink.writeln('[ember] $_lastError');
       await stop();
-      throw StateError('psiphon-core-no-listen');
+      throw StateError(_lastError);
     }
     if (vpnMode) {
       try {
@@ -181,9 +233,10 @@ class WindowsPsiphonBackend implements PsiphonBackend {
           skipProgram: 'psiphon-core.exe',
           log: sink,
         );
-      } catch (_) {
+      } catch (e) {
+        _lastError = 'system-wide capture (TUN) failed: $e';
         await stop();
-        rethrow;
+        throw StateError(_lastError);
       }
       final bridge = _bridge!;
       unawaited(bridge.down.then((_) {
@@ -275,7 +328,22 @@ class WindowsPsiphonBackend implements PsiphonBackend {
 
   @override
   Future<PsiphonState> state() async {
-    if (_proc == null || !_listening) return PsiphonState.stopped;
+    if (_proc == null || !_listening) {
+      if (_lastError.isEmpty) return PsiphonState.stopped;
+      // Stopped, but with the reason attached.
+      return PsiphonState(
+        running: false,
+        connected: false,
+        vpnMode: _vpnMode,
+        sinceMs: 0,
+        upBytes: _up,
+        downBytes: _down,
+        region: '',
+        clientAddress: '',
+        regions: const [],
+        lastError: _lastError,
+      );
+    }
     return PsiphonState(
       running: true,
       connected: _connected,
@@ -286,14 +354,16 @@ class WindowsPsiphonBackend implements PsiphonBackend {
       region: _region,
       clientAddress: _clientAddress,
       regions: _regions,
+      lastError: _lastError,
     );
   }
 
   @override
   Future<Map<String, String>?> exitInfo() async {
     if (!_connected) return null;
-    // The Xray backend's route: a plain GET through the tunnel's own
-    // SOCKS proxy (HttpClient speaks SOCKS via findProxy).
+    // A whole GET through the tunnel's own HTTP proxy (dart:io's
+    // PROXY line — its findProxy has no SOCKS form; see the Xray
+    // backend's library doc).
     try {
       final text = await _httpGetText(
         'https://www.cloudflare.com/cdn-cgi/trace',
@@ -335,7 +405,7 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     const timeout = Duration(seconds: 6);
     final client = HttpClient()
       ..connectionTimeout = timeout
-      ..findProxy = (_) => 'SOCKS 127.0.0.1:${PsiphonPlatform.socksPort}';
+      ..findProxy = (_) => 'PROXY 127.0.0.1:${PsiphonPlatform.httpPort}';
     try {
       final request = await client.getUrl(Uri.parse(url)).timeout(timeout);
       final response = await request.close().timeout(timeout);

@@ -239,7 +239,11 @@ class PsiphonController extends ChangeNotifier {
         state = await PsiphonPlatform.state();
         if (state.running) break;
       }
-      if (!state.running) throw StateError('start-failed');
+      if (!state.running) {
+        throw StateError(
+          state.lastError.isNotEmpty ? state.lastError : 'start-failed',
+        );
+      }
       _lastSample = state;
       _lastSampleAt = DateTime.now();
       _startPolling();

@@ -21,12 +21,18 @@ class XrayState {
   final int sinceMs;
   final int upBytes;
   final int downBytes;
+
+  /// The backend's last failure, in words ('' when none). Only the
+  /// Windows backend records one; the controller surfaces it so a
+  /// failed start/test is diagnosable instead of silent.
+  final String lastError;
   const XrayState({
     required this.running,
     required this.name,
     required this.sinceMs,
     required this.upBytes,
     required this.downBytes,
+    this.lastError = '',
   });
   static const stopped = XrayState(
     running: false,

@@ -532,6 +532,18 @@ class XrayController extends ChangeNotifier {
 
   // ---- tests --------------------------------------------------------------
 
+  /// Adopts the backend's recorded failure (the Windows backend
+  /// keeps one) after a failed test, so the page can say why instead
+  /// of only "Failed".
+  Future<void> _adoptBackendError() async {
+    try {
+      final sample = await XrayPlatform.state();
+      if (sample.lastError.isNotEmpty) lastError = sample.lastError;
+    } catch (_) {
+      // The recorded log lines still carry the reason.
+    }
+  }
+
   /// The real delay of one profile, run through a throwaway core.
   Future<int> testDelay(Profile p) async {
     if (!p.protocol.supportedByCore) return -1;
@@ -541,11 +553,13 @@ class XrayController extends ChangeNotifier {
       final ms = await XrayPlatform.measureDelay(buildTestConfig(p, settings));
       p.delayMs = ms;
       p.delayFailed = ms < 0;
+      if (ms < 0) await _adoptBackendError();
       await _save();
       return ms;
     } catch (_) {
       p.delayMs = -1;
       p.delayFailed = true;
+      await _adoptBackendError();
       await _save();
       return -1;
     } finally {
@@ -574,8 +588,11 @@ class XrayController extends ChangeNotifier {
     _testing.add(p.id);
     notifyListeners();
     try {
-      return await XrayPlatform.speedTest(buildTestConfig(p, settings));
+      final rate = await XrayPlatform.speedTest(buildTestConfig(p, settings));
+      if (rate < 0) await _adoptBackendError();
+      return rate;
     } catch (_) {
+      await _adoptBackendError();
       return -1;
     } finally {
       _testing.remove(p.id);

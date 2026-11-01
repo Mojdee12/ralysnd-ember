@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
@@ -15,33 +14,45 @@ const (
 	pingReuseAge = 30 * time.Minute
 )
 
-// errPingNeedsProxy reports a latency measurement without a running proxy.
-var errPingNeedsProxy = errors.New("start the proxy first: latency is measured through the tunnel with the active account's proxy pass")
-
 // PingAll measures the current server list through the running proxy's
 // pass and keeps the result for the dashboard and the terminal screen.
 // codes limits the measurement to those country codes; empty measures
 // every location. Without a running proxy (the phone app turned it off)
-// it measures with a pass of its own (offPass).
+// it measures with a pass of its own (offPass). An engine that exists
+// but cannot be woken — its last connect failed and the retry wait is
+// still running, the state the desktop TUN mode reaches whenever the
+// TUN session churns — falls back to the same offPass measurement
+// instead of refusing the test outright: the measurement itself is a
+// direct per-location session either way (proxy.TunnelMeter), and a
+// refused test reads to the user as a broken ping while disconnected
+// measuring works.
 func (d *Daemon) PingAll(ctx context.Context, codes []string) ([]proxy.LocationPing, time.Time, error) {
 	engine := d.currentEngine()
 	if engine == nil {
-		token, err := d.offPass(ctx)
-		if err != nil {
-			return nil, time.Time{}, err
-		}
-		results, at := d.measureLocations(ctx, token, codes)
-		return results, at, nil
+		return d.pingWithOffPass(ctx, codes)
 	}
 	// A real-delay test wakes a sleeping proxy and keeps it awake.
 	controller, release, err := d.useController(engine, wakeForPing)
 	if err != nil {
-		return nil, time.Time{}, err
+		logx.Warn("ping: waking the proxy failed; measuring with a pass of its own err=%s", logx.Err(err))
+		return d.pingWithOffPass(ctx, codes)
 	}
 	defer release()
 	token := controller.CurrentToken()
 	if token == "" {
-		return nil, time.Time{}, errPingNeedsProxy
+		logx.Warn("ping: the woken proxy has no pass; measuring with a pass of its own")
+		return d.pingWithOffPass(ctx, codes)
+	}
+	results, at := d.measureLocations(ctx, token, codes)
+	return results, at, nil
+}
+
+// pingWithOffPass measures with a pass acquired for the test itself:
+// the disconnected path of PingAll.
+func (d *Daemon) pingWithOffPass(ctx context.Context, codes []string) ([]proxy.LocationPing, time.Time, error) {
+	token, err := d.offPass(ctx)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
 	results, at := d.measureLocations(ctx, token, codes)
 	return results, at, nil
