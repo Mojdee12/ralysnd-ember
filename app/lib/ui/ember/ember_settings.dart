@@ -9,7 +9,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../app_info.dart';
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
 import '../../core/core_controller.dart';
@@ -23,6 +22,7 @@ import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../bypass_apps_page.dart';
 import '../settings_page.dart';
+import 'desktop_settings.dart';
 import 'desktop_widgets.dart';
 import 'ember_info.dart';
 import 'ember_theme.dart';
@@ -129,72 +129,18 @@ class EmberSettings extends StatelessWidget {
           ),
         );
     if (desktop) {
-      // The desktop arrangement (mockup E settings): the header,
-      // then a two-column grid — the engine's own section at the
-      // left; General and About cards at the right — and the
-      // status bar. Every control is the same one the phone column
-      // shows; only the arrangement differs.
-      return ListView(
-        padding: const EdgeInsets.fromLTRB(26, 20, 26, 14),
-        children: [
-          const DesktopHeader(
-            title: 'Settings',
-            subtitle: 'Manage your app preferences and security',
-          ),
-          const SizedBox(height: 18),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: engineSection),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(l.generalSection, style: Ember.heading),
-                    const SizedBox(height: 10),
-                    generalCard,
-                    const SizedBox(height: 18),
-                    Text('About', style: Ember.heading),
-                    const SizedBox(height: 10),
-                    GlassCard(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Built by Rayan Vakili • Ralysnd',
-                            style: TextStyle(
-                              fontSize: 14.5,
-                              fontWeight: FontWeight.w700,
-                              color: Ember.text,
-                            ),
-                          ),
-                          const SizedBox(height: 5),
-                          Text(
-                            'Ralysnd Ember • Version $appVersion',
-                            style: Ember.caption,
-                          ),
-                          const SizedBox(height: 5),
-                          Text(l.licenseNote, style: Ember.caption),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          DesktopStatusBar(
-            left: 'Settings are saved automatically',
-            protectionOn:
-                core.status?.state.phase == Phase.running ||
-                    xray.state.running ||
-                    psiphon.state.connected,
-          ),
-        ],
+      // The desktop settings page (2.0.2, desktop_settings.dart):
+      // the Settings mockup's two-column glass cards — General,
+      // DNS, Connection (the capture-mode switcher), Routing,
+      // About, More — with the engine section appended full-width
+      // and the status bar at the bottom.
+      return DesktopSettingsPage(
+        core: core,
+        settings: settings,
+        engineSection: engineSection,
+        protectionOn: core.status?.state.phase == Phase.running ||
+            xray.state.running ||
+            psiphon.state.connected,
       );
     }
     return ListView(
@@ -445,7 +391,12 @@ class _ToggleCard extends StatelessWidget {
                   ],
                 ),
               ),
-              EmberToggle(value: value, onChanged: onChanged),
+              // Desktop gets the mockups' wide pill switch (pale
+              // knob left when ON); the phone keeps EmberToggle.
+              if (Features.desktopShell)
+                DesktopSwitch(value: value, onChanged: onChanged)
+              else
+                EmberToggle(value: value, onChanged: onChanged),
             ],
           ),
         ),

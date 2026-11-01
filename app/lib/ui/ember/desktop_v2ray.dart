@@ -85,11 +85,15 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
         }).toList();
         final active =
             xray.state.running ? xray.selected : null;
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(26, 20, 26, 14),
+        return Column(
           children: [
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(26, 20, 26, 8),
+                children: [
             DesktopHeader(
               title: 'V2Ray',
+              titleSize: 46,
               subtitle:
                   'Manage V2Ray protocols • Real-time routing and performance',
               actions: [
@@ -187,12 +191,17 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
                 ],
               ),
             ),
-            const SizedBox(height: 14),
-            DesktopStatusBar(
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(26, 6, 26, 14),
+              child: DesktopStatusBar(
               left: active != null
                   ? '${active.name} • ${active.protocol.label}'
                   : (xray.selected?.name ?? l.noProfileSelected),
               protectionOn: xray.state.running,
+              ),
             ),
           ],
         );
@@ -263,11 +272,14 @@ class _ConfigRow extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 9),
                 decoration: BoxDecoration(
                   gradient: selected ? Ember.gradient : null,
-                  color: selected ? null : Ember.cardSoft,
+                  color: selected
+                      ? null
+                      : Colors.white.withValues(alpha: 0.07),
                   borderRadius: BorderRadius.circular(11),
                   border: selected
                       ? null
-                      : Border.all(color: Ember.line),
+                      : Border.all(
+                          color: Colors.white.withValues(alpha: 0.12)),
                 ),
                 alignment: Alignment.center,
                 child: Text(
@@ -275,9 +287,7 @@ class _ConfigRow extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
-                    color: selected
-                        ? const Color(0xFF1A1206)
-                        : Ember.dim,
+                    color: selected ? Colors.white : Ember.dim,
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),

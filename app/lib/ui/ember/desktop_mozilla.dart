@@ -9,12 +9,12 @@
 /// this UI, so none are shown — and there is no kill switch in this
 /// app, so the footer never claims one.
 ///
-/// The connection mode is part of this page on desktop (Part B):
-/// the core's factory default is proxy-only ("clear"), which
-/// connects and pings while no system traffic flows — the first
-/// on-PC failure. The mode row shows the current mode and changes
-/// it through chooseConnectionMode, and the core's TunNote (with its
-/// install/retry button) appears when TUN is chosen but not running.
+/// The capture mode is NOT a card on this page (no mockup has
+/// one): it lives on the desktop Settings page. What stays here is
+/// honesty about it — the status footer's mode fact, and one slim
+/// warning line when TUN is chosen but failed/missing/not running
+/// (the core's tunNote, with its install action). The desktop
+/// first-run default that picks TUN lives in the shell.
 
 import 'dart:async';
 
@@ -111,9 +111,12 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
           '$modeLabel mode',
         ].join(' • ');
 
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(26, 20, 26, 14),
+        return Column(
           children: [
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(26, 20, 26, 8),
+                children: [
             DesktopHeader(
               title: 'Connection',
               subtitle: 'Secure & Fast VPN Engine',
@@ -138,15 +141,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                               color: on ? Ember.green : Ember.faint,
                             ),
                             const Spacer(),
-                            Text(
-                              'MOZILLA',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 1.2,
-                                color: Ember.orange.withValues(alpha: 0.85),
-                              ),
-                            ),
+                            const DesktopEnginePill(label: 'MOZILLA'),
                           ],
                         ),
                         const SizedBox(height: 14),
@@ -155,7 +150,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                               ? 'Connected to Mozilla VPN'
                               : 'Mozilla VPN',
                           style: const TextStyle(
-                            fontSize: 19,
+                            fontSize: 21,
                             fontWeight: FontWeight.w800,
                             color: Ember.text,
                           ),
@@ -193,6 +188,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                         ),
                         const SizedBox(height: 13),
                         Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             const Icon(
                               Icons.shield_rounded,
@@ -200,7 +196,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                               color: Ember.orange,
                             ),
                             const SizedBox(width: 6),
-                            Expanded(
+                            Flexible(
                               child: Text(
                                 footerFacts,
                                 style: Ember.caption.copyWith(fontSize: 12.5),
@@ -214,64 +210,75 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                // RIGHT: the session card — quota, duration, exit.
+                // RIGHT: "Session Traffic" — the mockup's card: two
+                // HERO stats (the desktop core exposes no per-session
+                // byte counters, so the heroes are the session time
+                // and the account's quota left — real data only),
+                // then the mockup's icon rows.
                 Expanded(
                   flex: 10,
                   child: GlassCard(
-                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 10),
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            const Icon(
-                              Icons.insights_rounded,
-                              size: 19,
-                              color: Ember.orange,
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.10),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.insights_rounded,
+                                size: 17,
+                                color: Ember.text,
+                              ),
                             ),
-                            const SizedBox(width: 8),
-                            Text('Session', style: Ember.heading),
+                            const SizedBox(width: 9),
+                            Text('Session Traffic', style: Ember.heading),
                           ],
                         ),
-                        const SizedBox(height: 6),
-                        _SessionDurationRow(startedAt: proxy?.startedAt),
-                        if (usage != null && !usage.unlimited) ...[
-                          DesktopKvRow(
-                            icon: Icons.data_usage_rounded,
-                            label: 'Quota used',
-                            value:
-                                '${fmtGigabytes(usage.usedBytes)} / ${fmtGigabytes(usage.limitBytes)} GB',
-                          ),
-                          DesktopKvRow(
-                            icon: Icons.battery_saver_rounded,
-                            label: 'Quota left',
-                            value: '${fmtGigabytes(usage.remainingBytes)} GB',
-                          ),
-                        ] else if (usage != null)
-                          const DesktopKvRow(
-                            icon: Icons.data_usage_rounded,
-                            label: 'Quota',
-                            value: 'Unlimited',
-                          )
-                        else
-                          DesktopKvRow(
-                            icon: Icons.person_outline_rounded,
-                            label: 'Account',
-                            value: account == null ? '—' : 'Signed in',
-                          ),
-                        DesktopKvRow(
-                          icon: Icons.public_rounded,
-                          label: 'Exit IP',
-                          value: exitIp.isEmpty ? '—' : exitIp,
+                        const SizedBox(height: 16),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: _SessionHero(startedAt: proxy?.startedAt),
+                            ),
+                            Expanded(
+                              child: DesktopHeroStat(
+                                icon: Icons.data_usage_rounded,
+                                label: 'QUOTA LEFT',
+                                value: usage == null
+                                    ? '—'
+                                    : usage.unlimited
+                                        ? 'Unlimited'
+                                        : '${fmtGigabytes(usage.remainingBytes)} GB',
+                              ),
+                            ),
+                          ],
                         ),
-                        DesktopKvRow(
-                          icon: Icons.flag_rounded,
-                          label: 'Exit country',
-                          value: countryName.isEmpty
+                        const SizedBox(height: 14),
+                        const Divider(color: Ember.line, height: 1),
+                        const SizedBox(height: 12),
+                        _TrafficRow(
+                          icon: Icons.pie_chart_rounded,
+                          label: 'Quota used',
+                          value: usage == null
                               ? '—'
-                              : localizedCountryName(
-                                  context, countryCode, countryName),
-                          divider: false,
+                              : usage.unlimited
+                                  ? 'Unlimited plan'
+                                  : '${fmtGigabytes(usage.usedBytes)} of ${fmtGigabytes(usage.limitBytes)} GB',
+                        ),
+                        const SizedBox(height: 9),
+                        _TrafficRow(
+                          icon: Icons.public_rounded,
+                          label: 'Exit',
+                          value: exitIp.isEmpty
+                              ? '—'
+                              : '$exitIp${countryName.isEmpty ? '' : ' • ${localizedCountryName(context, countryCode, countryName)}'}',
                         ),
                       ],
                     ),
@@ -279,94 +286,32 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
                 ),
               ],
             ),
-            // The connection mode row + the TUN problem note (Part B:
-            // never sit silently in proxy-only mode).
-            const SizedBox(height: 14),
-            GlassCard(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.tune_rounded,
-                          size: 18, color: Ember.orange),
-                      const SizedBox(width: 9),
-                      Text(l.connectionMode, style: Ember.body),
-                      const Spacer(),
-                      _ModeChip(
-                        label: l.modeProxyOnly,
-                        selected: mode == 'clear',
-                        onTap: () => unawaited(
-                            chooseConnectionMode(context, core, 'clear')),
-                      ),
-                      const SizedBox(width: 7),
-                      _ModeChip(
-                        label: l.systemProxy,
-                        selected: mode == 'set',
-                        onTap: () => unawaited(
-                            chooseConnectionMode(context, core, 'set')),
-                      ),
-                      const SizedBox(width: 7),
-                      _ModeChip(
-                        label: 'TUN',
-                        selected: mode == 'tun',
-                        onTap: () => unawaited(
-                            chooseConnectionMode(context, core, 'tun')),
-                      ),
-                    ],
-                  ),
-                  if (mode == 'clear' && status != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      'Proxy only: apps that use the local proxy are '
-                      'covered; the rest of the system connects '
-                      'directly. Pick TUN for every app.',
-                      style: Ember.caption,
-                    ),
-                  ],
-                  if (status != null)
-                    TunNote(
-                      core: core,
-                      box: (text, tooltip) => Tooltip(
-                        message: tooltip,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 9),
-                          decoration: BoxDecoration(
-                            color: Ember.warn.withValues(alpha: 0.13),
-                            border: Border.all(
-                                color: Ember.warn.withValues(alpha: 0.5)),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.warning_amber_rounded,
-                                  size: 17, color: Ember.warn),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(text, style: Ember.body),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
+            // The slim TUN warning: only while TUN is chosen but
+            // not running (tunNote is null in every healthy state,
+            // proxy-only included — the footer names that mode).
+            if (status != null && tunNote(l, status) != null) ...[
+              const SizedBox(height: 12),
+              _TunWarning(core: core),
+            ],
             const SizedBox(height: 16),
             // The V2Ray configs strip of the mockup.
             _ConfigsStrip(
               xray: widget.xray,
               onOpenV2ray: widget.onOpenV2ray,
             ),
-            const SizedBox(height: 14),
-            DesktopStatusBar(
-              left: countryName.isEmpty
-                  ? l.recommendedServer
-                  : '${localizedCountryName(context, countryCode, countryName)}${city.isEmpty ? '' : ' • $city'}',
-              protectionOn: on && status?.computerUsesVpn == true,
+                ],
+              ),
+            ),
+            // The status bar is pinned to the window's bottom edge,
+            // as the mockups draw it (not flowing under the cards).
+            Padding(
+              padding: const EdgeInsets.fromLTRB(26, 6, 26, 14),
+              child: DesktopStatusBar(
+                left: countryName.isEmpty
+                    ? l.recommendedServer
+                    : '${localizedCountryName(context, countryCode, countryName)}${city.isEmpty ? '' : ' • $city'}',
+                protectionOn: on && status?.computerUsesVpn == true,
+              ),
             ),
           ],
         );
@@ -402,69 +347,127 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
   }
 }
 
-/// The session-duration row: ticks while the proxy runs, an em dash
-/// otherwise. Its own widget so the ticking rebuilds nothing else.
-class _SessionDurationRow extends StatelessWidget {
-  const _SessionDurationRow({required this.startedAt});
+/// The SESSION hero of the traffic card: the live session clock,
+/// ticking while the proxy runs, an em dash otherwise. Its own
+/// widget so the ticking rebuilds nothing else.
+class _SessionHero extends StatelessWidget {
+  const _SessionHero({required this.startedAt});
   final DateTime? startedAt;
 
   @override
   Widget build(BuildContext context) {
     if (startedAt == null) {
-      return const DesktopKvRow(
+      return const DesktopHeroStat(
         icon: Icons.schedule_rounded,
-        label: 'Session',
+        label: 'SESSION',
         value: '—',
       );
     }
     return StreamBuilder<void>(
       stream: Stream.periodic(const Duration(seconds: 1)),
-      builder: (context, _) => DesktopKvRow(
+      builder: (context, _) => DesktopHeroStat(
         icon: Icons.schedule_rounded,
-        label: 'Session',
+        label: 'SESSION',
         value: fmtDuration(DateTime.now().difference(startedAt!)),
       ),
     );
   }
 }
 
-/// One connection-mode chip (Proxy only / System proxy / TUN).
-class _ModeChip extends StatelessWidget {
-  const _ModeChip({
+/// One row under the traffic card's divider, in the mockup's style:
+/// a small icon, then "Label: value" on one line.
+class _TrafficRow extends StatelessWidget {
+  const _TrafficRow({
+    required this.icon,
     required this.label,
-    required this.selected,
-    required this.onTap,
+    required this.value,
   });
 
+  final IconData icon;
   final String label;
-  final bool selected;
-  final VoidCallback onTap;
+  final String value;
 
   @override
-  Widget build(BuildContext context) => Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(999),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-            decoration: BoxDecoration(
-              gradient: selected ? Ember.gradient : null,
-              color: selected ? null : Ember.cardSoft,
-              borderRadius: BorderRadius.circular(999),
-              border: selected ? null : Border.all(color: Ember.line),
-            ),
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w800,
-                color: selected ? const Color(0xFF1A1206) : Ember.dim,
+  Widget build(BuildContext context) => Row(
+        children: [
+          Icon(icon, size: 17, color: Ember.dim),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: '$label: ',
+                      style: const TextStyle(color: Ember.dim),
+                    ),
+                    TextSpan(
+                      text: value,
+                      style: const TextStyle(
+                        color: Ember.text,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                style: const TextStyle(fontSize: 14),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ),
+        ],
+      );
+}
+
+/// The slim TUN warning line under the status cards: amber text
+/// with the install action inline, shown only while TUN is chosen
+/// but failed/missing/not running (or a small note while it starts).
+class _TunWarning extends StatelessWidget {
+  const _TunWarning({required this.core});
+
+  final CoreController core;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final status = core.status;
+    final note = status == null ? null : tunNote(l, status);
+    if (note == null) return const SizedBox.shrink();
+    if (!note.problem) {
+      return Text(
+        note.text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+          color: Ember.warn,
         ),
       );
+    }
+    final busy = core.installingTun || core.removingTun;
+    return Row(
+      children: [
+        const Icon(Icons.warning_amber_rounded, size: 16, color: Ember.warn),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Tooltip(
+            message: note.detail,
+            child: Text(
+              note.text,
+              style: const TextStyle(fontSize: 12.5, color: Ember.warn),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ),
+        if (note.install)
+          TextButton(
+            onPressed: busy ? null : () => installTunService(context, core),
+            child: Text(note.again ? l.tunInstallAgain : l.tunInstall),
+          ),
+      ],
+    );
+  }
 }
 
 /// The mockup's wide "V2Ray Configs" strip: the first few profiles
@@ -570,12 +573,16 @@ class _StripRow extends StatelessWidget {
       _ => profile.network.toUpperCase(),
     };
     return Material(
-      color: Ember.cardSoft.withValues(alpha: 0.65),
+      color: Colors.white.withValues(alpha: 0.09),
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(14),
-        child: Padding(
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+          ),
           padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
           child: Row(
             children: [

@@ -9,7 +9,6 @@
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -23,6 +22,7 @@ import '../../lantern/lantern_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../warp/warp_controller.dart';
 import '../../xray/xray_controller.dart';
+import 'desktop_widgets.dart';
 import 'ember_accounts.dart';
 import 'ember_home.dart';
 import 'ember_servers.dart';
@@ -426,29 +426,61 @@ class _EmberShellState extends State<EmberShell> {
           _ => l.modeWarp,
         };
     return Scaffold(
-      backgroundColor: Ember.bg,
-      body: EmberBackground(
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: CustomPaint(
-                painter: WorldMapPainter(
-                  pins: const {},
-                  selected: null,
-                  connected: false,
-                  pulse: 0,
-                  homeLabel: '',
-                  faint: true,
+      backgroundColor: const Color(0xFF11141C),
+      body: Stack(
+        children: [
+          // The mockups' backdrop: a deep graphite-navy base with
+          // the dotted world map BRIGHT across the whole window;
+          // each glass card blurs it locally (no global blur — that
+          // is what washed the map out in 2.0.1).
+          const Positioned.fill(child: ColoredBox(color: Color(0xFF11141C))),
+          Positioned.fill(
+            child: CustomPaint(
+              painter: WorldMapPainter(
+                pins: const {},
+                selected: null,
+                connected: false,
+                pulse: 0,
+                homeLabel: '',
+                faint: true,
+                backdrop: true,
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: const Alignment(0, -1.15),
+                  radius: 1.15,
+                  colors: [
+                    Ember.orange.withValues(alpha: 0.09),
+                    Colors.transparent,
+                  ],
+                  stops: const [0, 0.55],
                 ),
               ),
             ),
-            Positioned.fill(
-              child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                child: ColoredBox(color: Ember.bg.withValues(alpha: 0.45)),
+          ),
+          // The mockups' map calms toward the bottom edge, so the
+          // status bar stays readable over it.
+          const Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.transparent,
+                    Color(0x9911141C),
+                  ],
+                  stops: [0, 0.74, 1],
+                ),
               ),
             ),
-            Row(
+          ),
+          Row(
               children: [
                 ListenableBuilder(
                   listenable: core,
@@ -491,7 +523,6 @@ class _EmberShellState extends State<EmberShell> {
             ),
           ],
         ),
-      ),
     );
   }
 }
@@ -550,35 +581,21 @@ class _DesktopRail extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // The brand block: big flame over the name, centered.
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 26, 18, 20),
+          // The brand block: the mockups' shield-and-flame mark
+          // over the name, centered (no app-icon tile).
+          const Padding(
+            padding: EdgeInsets.fromLTRB(18, 24, 18, 20),
             child: Column(
               children: [
-                Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                    gradient: Ember.gradient,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Ember.orange.withValues(alpha: 0.35),
-                        blurRadius: 18,
-                        spreadRadius: 1,
-                      ),
-                    ],
-                  ),
-                  child: const Icon(
-                    Icons.local_fire_department_rounded,
-                    color: Color(0xFF1A1206),
-                    size: 36,
-                  ),
-                ),
-                const SizedBox(height: 11),
+                EmberShieldMark(size: 66),
+                SizedBox(height: 10),
                 Text(
                   'Ralysnd Ember',
-                  style: Ember.heading.copyWith(fontSize: 16.5),
+                  style: TextStyle(
+                    fontSize: 16.5,
+                    fontWeight: FontWeight.w700,
+                    color: Ember.text,
+                  ),
                 ),
               ],
             ),

@@ -84,21 +84,27 @@ class _PsiphonDesktopHomeState extends State<PsiphonDesktopHome> {
             : (state.clientAddress.isNotEmpty ? state.clientAddress : '');
         final totalBytes = state.upBytes + state.downBytes;
 
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(26, 20, 26, 14),
+        return Column(
           children: [
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(26, 20, 26, 8),
+                children: [
             DesktopHeader(
               title: 'Psiphon',
               subtitle: 'Obfuscated Tunnel • Secure Proxy',
             ),
             const SizedBox(height: 18),
-            // The hero card.
+            // The hero card: its content is CENTERED, as the
+            // mockup draws it — the state badge centered at the
+            // top, the PSIPHON pill at the card's top right.
             GlassCard(
               glow: on,
               padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
               child: Column(
                 children: [
-                  Row(
+                  Stack(
+                    alignment: Alignment.center,
                     children: [
                       DesktopStateBadge(
                         label: on
@@ -112,23 +118,17 @@ class _PsiphonDesktopHomeState extends State<PsiphonDesktopHome> {
                                 ? Ember.warn
                                 : Ember.faint,
                       ),
-                      const Spacer(),
-                      Text(
-                        'PSIPHON',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.2,
-                          color: Ember.orange.withValues(alpha: 0.85),
-                        ),
+                      const Align(
+                        alignment: Alignment.centerRight,
+                        child: DesktopEnginePill(label: 'PSIPHON'),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 14),
                   Text(
                     on ? 'Connected to Psiphon' : 'Psiphon',
                     style: const TextStyle(
-                      fontSize: 21,
+                      fontSize: 23,
                       fontWeight: FontWeight.w800,
                       color: Ember.text,
                     ),
@@ -162,6 +162,7 @@ class _PsiphonDesktopHomeState extends State<PsiphonDesktopHome> {
                       busy: busy,
                       onLabel: 'Connected • Disconnect',
                       offLabel: 'Connect',
+                      labelIcon: on ? Icons.graphic_eq_rounded : null,
                       onTap: () => unawaited(_toggle()),
                     ),
                   ),
@@ -225,70 +226,129 @@ class _PsiphonDesktopHomeState extends State<PsiphonDesktopHome> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                // Session: duration, data, rates — the core's own
-                // counters, nothing invented.
+                // Session: the mockup's stacked HERO numbers —
+                // Duration, then Data Used (the core's own byte
+                // counters) — a status row, and the engine strip.
                 Expanded(
                   flex: 10,
                   child: GlassCard(
-                    padding: const EdgeInsets.fromLTRB(18, 15, 18, 10),
+                    padding: const EdgeInsets.fromLTRB(18, 15, 18, 14),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.insights_rounded,
-                                size: 19, color: Ember.orange),
-                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.10),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.insights_rounded,
+                                size: 17,
+                                color: Ember.text,
+                              ),
+                            ),
+                            const SizedBox(width: 9),
                             Text('Session', style: Ember.heading),
                           ],
                         ),
-                        const SizedBox(height: 6),
-                        _DurationRow(sinceMs: running ? state.sinceMs : 0),
-                        DesktopKvRow(
-                          icon: Icons.data_usage_rounded,
-                          label: 'Data used',
+                        const SizedBox(height: 14),
+                        _DurationHero(sinceMs: running ? state.sinceMs : 0),
+                        const SizedBox(height: 12),
+                        const Divider(color: Ember.line, height: 1),
+                        const SizedBox(height: 12),
+                        DesktopHeroStat(
+                          icon: Icons.arrow_upward_rounded,
+                          label: 'DATA USED',
                           value: running ? fmtBytes(totalBytes) : '—',
                         ),
-                        DesktopKvRow(
-                          icon: Icons.arrow_downward_rounded,
-                          label: 'Download',
-                          value: running ? fmtBytes(state.downBytes) : '—',
-                        ),
-                        DesktopKvRow(
-                          icon: Icons.arrow_upward_rounded,
-                          label: 'Upload',
-                          value: running ? fmtBytes(state.upBytes) : '—',
-                          divider: false,
-                        ),
                         if (running) ...[
-                          const SizedBox(height: 8),
-                          Row(
+                          const SizedBox(height: 6),
+                          Directionality(
+                            textDirection: TextDirection.ltr,
+                            child: Text(
+                              '↓ ${fmtBytes(state.downBytes)} · ↑ ${fmtBytes(state.upBytes)}'
+                              '   ·   ↓ ${fmtRate(psiphon.downRate)} · ↑ ${fmtRate(psiphon.upRate)}',
+                              style: Ember.caption,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        const Divider(color: Ember.line, height: 1),
+                        const SizedBox(height: 11),
+                        Row(
+                          children: [
+                            Icon(
+                              on
+                                  ? Icons.check_circle_rounded
+                                  : Icons.radio_button_unchecked_rounded,
+                              size: 17,
+                              color: on ? Ember.green : Ember.faint,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              on
+                                  ? 'Stable • Tunnel up'
+                                  : running
+                                      ? 'Connecting…'
+                                      : 'Not connected',
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w700,
+                                color: on ? Ember.green : Ember.dim,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 11),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 11, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.07),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.10)),
+                          ),
+                          child: Row(
                             children: [
-                              const Icon(Icons.speed_rounded,
-                                  size: 15, color: Ember.faint),
-                              const SizedBox(width: 7),
-                              Directionality(
-                                textDirection: TextDirection.ltr,
+                              const Icon(Icons.shield_rounded,
+                                  size: 15, color: Ember.dim),
+                              const SizedBox(width: 8),
+                              Expanded(
                                 child: Text(
-                                  '↓ ${fmtRate(psiphon.downRate)} · ↑ ${fmtRate(psiphon.upRate)}',
-                                  style: Ember.caption,
+                                  on
+                                      ? 'Psiphon core v2.0.42 • Tunnel OK'
+                                      : 'Psiphon core v2.0.42 • SOCKS 11808',
+                                  style: Ember.caption.copyWith(
+                                    color: Ember.dim,
+                                    fontSize: 12,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
                           ),
-                        ],
+                        ),
                       ],
                     ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 14),
-            DesktopStatusBar(
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(26, 6, 26, 14),
+              child: DesktopStatusBar(
               left: shownCode.isEmpty
                   ? l.psiphonRegionAuto
                   : regionName(shownCode),
               protectionOn: on && settings.vpnMode,
+              ),
             ),
           ],
         );
@@ -297,25 +357,25 @@ class _PsiphonDesktopHomeState extends State<PsiphonDesktopHome> {
   }
 }
 
-/// The session-duration row (ticks while running).
-class _DurationRow extends StatelessWidget {
-  const _DurationRow({required this.sinceMs});
+/// The DURATION hero of the session card (ticks while running).
+class _DurationHero extends StatelessWidget {
+  const _DurationHero({required this.sinceMs});
   final int sinceMs;
 
   @override
   Widget build(BuildContext context) {
     if (sinceMs <= 0) {
-      return const DesktopKvRow(
+      return const DesktopHeroStat(
         icon: Icons.schedule_rounded,
-        label: 'Duration',
+        label: 'DURATION',
         value: '—',
       );
     }
     return StreamBuilder<void>(
       stream: Stream.periodic(const Duration(seconds: 1)),
-      builder: (context, _) => DesktopKvRow(
+      builder: (context, _) => DesktopHeroStat(
         icon: Icons.schedule_rounded,
-        label: 'Duration',
+        label: 'DURATION',
         value: fmtDuration(
           DateTime.now().difference(
             DateTime.fromMillisecondsSinceEpoch(sinceMs),
@@ -347,19 +407,21 @@ class _RegionTile extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Material(
-          color: Ember.cardSoft.withValues(alpha: selected ? 0.9 : 0.5),
+          color: selected
+              ? Ember.orange.withValues(alpha: 0.14)
+              : Colors.white.withValues(alpha: 0.07),
           borderRadius: BorderRadius.circular(13),
           child: InkWell(
             onTap: onTap,
             borderRadius: BorderRadius.circular(13),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(13),
                 border: Border.all(
                   color: selected
                       ? Ember.orange.withValues(alpha: 0.55)
-                      : Ember.line,
+                      : Colors.white.withValues(alpha: 0.10),
                 ),
               ),
               child: Row(

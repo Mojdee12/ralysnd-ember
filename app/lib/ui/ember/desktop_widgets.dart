@@ -19,11 +19,15 @@ class DesktopHeader extends StatelessWidget {
     required this.title,
     required this.subtitle,
     this.actions = const [],
+    this.titleSize = 30,
   });
 
   final String title;
   final String subtitle;
   final List<Widget> actions;
+
+  /// The V2Ray mockup's title is oversized; the other pages use 30.
+  final double titleSize;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -35,8 +39,8 @@ class DesktopHeader extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    fontSize: 27,
+                  style: TextStyle(
+                    fontSize: titleSize,
                     fontWeight: FontWeight.w800,
                     color: Ember.text,
                     height: 1.1,
@@ -109,9 +113,11 @@ class DesktopStatusBar extends StatelessWidget {
       );
 }
 
-/// The wide toggle pill of the mockups' connection cards: gradient
-/// orange with its knob at the left while connected, a dark pill
-/// with the knob at the right while off. One tap toggles.
+/// The wide toggle pill of the mockups' connection cards: while ON
+/// an orange GRADIENT pill with a big pale knob at the LEFT and a
+/// bold white label; while OFF the same shape and height in dark
+/// glass, the knob still at the left in muted orange, the label
+/// "Connect". One tap toggles.
 class DesktopTogglePill extends StatelessWidget {
   const DesktopTogglePill({
     super.key,
@@ -120,6 +126,7 @@ class DesktopTogglePill extends StatelessWidget {
     required this.onLabel,
     required this.offLabel,
     required this.onTap,
+    this.labelIcon,
   });
 
   final bool on;
@@ -127,6 +134,9 @@ class DesktopTogglePill extends StatelessWidget {
   final String onLabel;
   final String offLabel;
   final VoidCallback onTap;
+
+  /// A small glyph before the label (the Psiphon mockup's soundwave).
+  final IconData? labelIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -136,62 +146,257 @@ class DesktopTogglePill extends StatelessWidget {
         onTap: busy ? null : onTap,
         borderRadius: BorderRadius.circular(999),
         child: Container(
-          height: 52,
-          padding: const EdgeInsets.symmetric(horizontal: 7),
+          height: 54,
           decoration: BoxDecoration(
             gradient: on ? Ember.gradient : null,
-            color: on ? null : Ember.cardSoft,
+            color: on ? null : Colors.white.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(999),
             border: on
                 ? null
-                : Border.all(color: Ember.orange.withValues(alpha: 0.4)),
+                : Border.all(color: Colors.white.withValues(alpha: 0.16)),
             boxShadow: on
                 ? [
                     BoxShadow(
-                      color: Ember.orange.withValues(alpha: 0.35),
-                      blurRadius: 16,
+                      color: Ember.orange.withValues(alpha: 0.45),
+                      blurRadius: 20,
                       spreadRadius: 1,
                     ),
                   ]
                 : const [],
           ),
-          child: Row(
+          child: Stack(
             children: [
-              if (on) _knob(dark: true),
-              Expanded(
-                child: Text(
-                  busy
-                      ? '…'
-                      : on
-                          ? onLabel
-                          : offLabel,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 15.5,
-                    fontWeight: FontWeight.w800,
-                    color: on ? const Color(0xFF1A1206) : Ember.text,
+              Center(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (labelIcon != null && !busy) ...[
+                      Icon(labelIcon, size: 19, color: Ember.text),
+                      const SizedBox(width: 8),
+                    ],
+                    Text(
+                      busy ? '…' : (on ? onLabel : offLabel),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: Ember.text,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Positioned(
+                left: 7,
+                top: 7,
+                bottom: 7,
+                child: Container(
+                  width: 40,
+                  decoration: BoxDecoration(
+                    gradient: on
+                        ? const LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Color(0xFFFFF6E0), Color(0xFFFFD9A0)],
+                          )
+                        : null,
+                    color: on ? null : const Color(0xFF7A4210),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.30),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
                   ),
                 ),
               ),
-              if (!on) _knob(dark: false),
             ],
           ),
         ),
       ),
     );
   }
+}
 
-  Widget _knob({required bool dark}) => Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: dark ? const Color(0xFFFFD9A8) : Ember.orange,
-          shape: BoxShape.circle,
+/// The mockups' settings switch: a wide orange pill with the pale
+/// knob at the LEFT while on; a grey pill with the knob at the RIGHT
+/// while off. (The knob side is the mockups' own convention, the
+/// same as the connection pill.)
+class DesktopSwitch extends StatelessWidget {
+  const DesktopSwitch({super.key, required this.value, required this.onChanged});
+
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onChanged == null ? null : () => onChanged!(!value),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          width: 62,
+          height: 34,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            gradient: value ? Ember.gradient : null,
+            color: value ? null : const Color(0xFF3B3C45),
+            boxShadow: value
+                ? [
+                    BoxShadow(
+                      color: Ember.orange.withValues(alpha: 0.35),
+                      blurRadius: 10,
+                    ),
+                  ]
+                : const [],
+          ),
+          child: AnimatedAlign(
+            duration: const Duration(milliseconds: 180),
+            alignment: value ? Alignment.centerLeft : Alignment.centerRight,
+            child: Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: value
+                    ? const Color(0xFFFFE9C4)
+                    : const Color(0xFFD8D8DE),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
-        child: Icon(
-          Icons.power_settings_new_rounded,
-          size: 20,
-          color: dark ? const Color(0xFF7A3A00) : const Color(0xFF1A1206),
+      );
+}
+
+/// The outlined engine pill at the connection cards' top right
+/// ("MOZILLA" / "PSIPHON" in the mockups): orange letterspaced text
+/// in a thin orange outline.
+class DesktopEnginePill extends StatelessWidget {
+  const DesktopEnginePill({super.key, required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+        decoration: BoxDecoration(
+          border: Border.all(color: Ember.orange.withValues(alpha: 0.65)),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.2,
+            color: Ember.orange,
+          ),
+        ),
+      );
+}
+
+/// A hero stat of the session cards: a small-caps label with an
+/// orange glyph above a big bold value — the numbers dominate, as
+/// in the mockups ("12.4 MB/s" under DOWNLOAD).
+class DesktopHeroStat extends StatelessWidget {
+  const DesktopHeroStat({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.valueSize = 27,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final double valueSize;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: Ember.orange),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.1,
+                  color: Ember.dim,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: valueSize,
+                fontWeight: FontWeight.w800,
+                color: Ember.text,
+                height: 1.05,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      );
+}
+
+/// One capture-mode chip (Proxy only / System proxy / TUN), shared
+/// by the desktop Settings page's Connection card.
+class DesktopModeChip extends StatelessWidget {
+  const DesktopModeChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(999),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+            decoration: BoxDecoration(
+              gradient: selected ? Ember.gradient : null,
+              color: selected ? null : Colors.white.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(999),
+              border: selected
+                  ? null
+                  : Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w800,
+                color: selected ? const Color(0xFF1A1206) : Ember.dim,
+              ),
+            ),
+          ),
         ),
       );
 }
@@ -290,14 +495,19 @@ class DesktopPingPill extends StatelessWidget {
         ),
       );
     }
-    final color = pingColor(ms);
+    // The mockups' pills are saturated pastel fills with dark text:
+    // light green, yellow, orange-red by latency band.
+    final (fill, ink) = ms < 100
+        ? (const Color(0xFF9BDC7F), const Color(0xFF1E2A10))
+        : ms < 250
+            ? (const Color(0xFFFFC94D), const Color(0xFF33230A))
+            : (const Color(0xFFFF9E6B), const Color(0xFF3A1C08));
     return SizedBox(
       width: 88,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 5),
         decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.18),
-          border: Border.all(color: color.withValues(alpha: 0.5)),
+          color: fill,
           borderRadius: BorderRadius.circular(999),
         ),
         alignment: Alignment.center,
@@ -306,7 +516,7 @@ class DesktopPingPill extends StatelessWidget {
           style: TextStyle(
             fontSize: 12.5,
             fontWeight: FontWeight.w800,
-            color: color,
+            color: ink,
           ),
         ),
       ),
@@ -432,10 +642,10 @@ class DesktopActionButton extends StatelessWidget {
               border: Border.all(
                 color: primary
                     ? Ember.orange.withValues(alpha: 0.75)
-                    : Ember.line,
+                    : Colors.white.withValues(alpha: 0.16),
               ),
               borderRadius: BorderRadius.circular(13),
-              color: Ember.card.withValues(alpha: 0.6),
+              color: Colors.white.withValues(alpha: 0.07),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -467,4 +677,104 @@ class DesktopActionButton extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The rail's brand mark, as the mockups draw it: a FLAME inside a
+/// SHIELD OUTLINE, orange-red gradient, no tile behind it. Painted
+/// (not the app icon) so it stays crisp at rail size.
+class EmberShieldMark extends StatelessWidget {
+  const EmberShieldMark({super.key, this.size = 72});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        painter: _ShieldFlamePainter(),
+        size: Size(size, size * 1.08),
+      );
+}
+
+class _ShieldFlamePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final sx = size.width / 100;
+    final sy = size.height / 108;
+    canvas.save();
+    canvas.scale(sx, sy);
+
+    const shieldGradient = LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [Color(0xFFFFB347), Color(0xFFFF6A1A), Color(0xFFFF4A17)],
+      stops: [0, 0.55, 1],
+    );
+    final unit = Offset.zero & const Size(100, 108);
+    final shield = Path()
+      ..moveTo(50, 3)
+      ..cubicTo(63, 9, 76, 11, 88, 11)
+      ..cubicTo(88, 44, 85, 76, 50, 105)
+      ..cubicTo(15, 76, 12, 44, 12, 11)
+      ..cubicTo(24, 11, 37, 9, 50, 3)
+      ..close();
+    // A faint warm interior, then the gradient outline.
+    canvas.drawPath(
+      shield,
+      Paint()
+        ..style = PaintingStyle.fill
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x2EFF7A18), Color(0x05FF7A18)],
+        ).createShader(unit),
+    );
+    canvas.drawPath(
+      shield,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5.2
+        ..strokeJoin = StrokeJoin.round
+        ..shader = shieldGradient.createShader(unit),
+    );
+
+    // The flame: an outer body and a lighter inner tongue.
+    final flame = Path()
+      ..moveTo(50, 24)
+      ..cubicTo(55, 34, 66, 42, 66, 57)
+      ..cubicTo(66, 71, 59, 81, 50, 81)
+      ..cubicTo(41, 81, 34, 71, 34, 57)
+      ..cubicTo(34, 47, 40, 39, 44, 31)
+      ..cubicTo(45, 37, 47, 41, 50, 45)
+      ..cubicTo(48.5, 37, 48.5, 30, 50, 24)
+      ..close();
+    canvas.drawPath(
+      flame,
+      Paint()
+        ..style = PaintingStyle.fill
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFFFFC46B), Color(0xFFFF7A18), Color(0xFFFF4A17)],
+          stops: [0, 0.5, 1],
+        ).createShader(unit),
+    );
+    final inner = Path()
+      ..moveTo(50, 52)
+      ..cubicTo(53, 57, 58, 61, 58, 68)
+      ..cubicTo(58, 74, 54.5, 79, 50, 79)
+      ..cubicTo(45.5, 79, 42, 74, 42, 68)
+      ..cubicTo(42, 62, 46, 57, 48, 53)
+      ..cubicTo(48.6, 56, 49.2, 58, 50, 60)
+      ..cubicTo(49.6, 56, 49.6, 53.5, 50, 52)
+      ..close();
+    canvas.drawPath(
+      inner,
+      Paint()
+        ..style = PaintingStyle.fill
+        ..color = const Color(0xFFFFE3B3).withValues(alpha: 0.95),
+    );
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

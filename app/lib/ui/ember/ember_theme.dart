@@ -3,10 +3,12 @@
 /// spacing scale everywhere — Mozilla screens and V2Ray screens alike.
 
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../../features.dart';
 import '../country_names.dart';
 import '../local_country_names.dart';
 
@@ -70,6 +72,13 @@ class EmberBackground extends StatelessWidget {
 }
 
 /// A mockup glass card: soft graphite fill, hairline border, big radius.
+///
+/// On the desktop shell (Windows) the same widget renders the Fluent
+/// mockups' LIGHT glass instead: a pale translucent fill over a real
+/// backdrop blur — the dotted map shows through the card — with a
+/// luminous edge and a warm orange rim glow along the top edge (the
+/// [glow] cards, the primary connection cards, glow strongest). The
+/// phone rendering below is untouched.
 class GlassCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -85,6 +94,7 @@ class GlassCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (Features.desktopShell) return _buildDesktopGlass();
     final card = Container(
       padding: padding,
       decoration: BoxDecoration(
@@ -113,6 +123,108 @@ class GlassCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: Ember.radius,
         child: card,
+      ),
+    );
+  }
+
+  /// The desktop light-glass surface (see the class doc).
+  Widget _buildDesktopGlass() {
+    final surface = Container(
+      decoration: BoxDecoration(
+        borderRadius: Ember.radius,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.38),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+          BoxShadow(
+            color: Ember.orange.withValues(alpha: glow ? 0.30 : 0.14),
+            blurRadius: 26,
+            offset: const Offset(0, -5),
+            spreadRadius: -6,
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: Ember.radius,
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Stack(
+            children: [
+              // The pale translucent fill, lighter at the top.
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.white.withValues(alpha: 0.14),
+                        Colors.white.withValues(alpha: 0.07),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              // The warm wash under the rim.
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Ember.orange.withValues(alpha: glow ? 0.20 : 0.10),
+                        Colors.transparent,
+                      ],
+                      stops: const [0, 0.30],
+                    ),
+                  ),
+                ),
+              ),
+              Container(
+                padding: padding,
+                decoration: BoxDecoration(
+                  borderRadius: Ember.radius,
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.20)),
+                ),
+                child: child,
+              ),
+              // The bright rim line along the top edge, fading at the
+              // corners as in the mockups.
+              Positioned(
+                top: 0,
+                left: 26,
+                right: 26,
+                child: Container(
+                  height: 1.4,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Ember.orange.withValues(alpha: 0.05),
+                        Ember.orange.withValues(alpha: glow ? 0.85 : 0.6),
+                        Ember.orange.withValues(alpha: glow ? 0.85 : 0.6),
+                        Ember.orange.withValues(alpha: 0.05),
+                      ],
+                      stops: const [0, 0.25, 0.75, 1],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (onTap == null) return surface;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: Ember.radius,
+        child: surface,
       ),
     );
   }

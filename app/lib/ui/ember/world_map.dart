@@ -42,6 +42,7 @@ class WorldMapPainter extends CustomPainter {
     required this.pulse,
     required this.homeLabel,
     this.faint = false,
+    this.backdrop = false,
     this.pulseAnim,
     super.repaint,
   });
@@ -53,6 +54,11 @@ class WorldMapPainter extends CustomPainter {
   final double pulse;
   final String homeLabel;
   final bool faint;
+
+  /// The desktop shell's backdrop: the Fluent mockups draw the map
+  /// BRIGHT — light blue-grey dots at a clearly readable alpha over
+  /// the deep graphite-navy base — not the phone panel's faint tint.
+  final bool backdrop;
 
   /// When set, the live animation value replaces [pulse] at paint
   /// time (the painter instance itself is not rebuilt per tick).
@@ -74,10 +80,13 @@ class WorldMapPainter extends CustomPainter {
     final dotPaint = Paint()..style = PaintingStyle.fill;
     for (final (pos, ember) in _dots) {
       dotPaint.color = ember
-          ? Ember.orange.withValues(alpha: faint ? 0.10 : 0.30)
-          : const Color(0xFF41454F)
-              .withValues(alpha: faint ? 0.35 : (connected ? 0.95 : 0.75));
-      canvas.drawCircle(pos, 0.62, dotPaint);
+          ? Ember.orange.withValues(
+              alpha: backdrop ? 0.55 : (faint ? 0.10 : 0.30))
+          : backdrop
+              ? const Color(0xFF9DB4D6).withValues(alpha: 0.55)
+              : const Color(0xFF41454F)
+                  .withValues(alpha: faint ? 0.35 : (connected ? 0.95 : 0.75));
+      canvas.drawCircle(pos, backdrop ? 0.72 : 0.62, dotPaint);
     }
     if (faint) return;
 
@@ -207,7 +216,8 @@ class WorldMapPainter extends CustomPainter {
       old.pins != pins ||
       old.selected != selected ||
       old.connected != connected ||
-      old.faint != faint;
+      old.faint != faint ||
+      old.backdrop != backdrop;
 }
 
 /// The map panel of the V2Ray home.
