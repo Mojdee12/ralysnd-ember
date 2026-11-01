@@ -74,11 +74,12 @@ class EmberBackground extends StatelessWidget {
 /// A mockup glass card: soft graphite fill, hairline border, big radius.
 ///
 /// On the desktop shell (Windows) the same widget renders the Fluent
-/// mockups' LIGHT glass instead: a pale translucent fill over a real
-/// backdrop blur — the dotted map shows through the card — with a
-/// luminous edge and a warm orange rim glow along the top edge (the
-/// [glow] cards, the primary connection cards, glow strongest). The
-/// phone rendering below is untouched.
+/// mockups' LIGHT glass instead: a COOL NEUTRAL pale translucent fill
+/// over a real backdrop blur — the dotted map shows through the card
+/// in blue-grey — with a luminous edge and a thin orange rim line
+/// along the top edge (brighter on the [glow] cards, the primary
+/// connection cards). No warm tint washes the fill: orange lives
+/// only in that rim line. The phone rendering below is untouched.
 class GlassCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -138,12 +139,14 @@ class GlassCard extends StatelessWidget {
             blurRadius: 22,
             offset: const Offset(0, 10),
           ),
-          BoxShadow(
-            color: Ember.orange.withValues(alpha: glow ? 0.30 : 0.14),
-            blurRadius: 26,
-            offset: const Offset(0, -5),
-            spreadRadius: -6,
-          ),
+          // NO orange halo shadow, deliberately: the card's
+          // backdrop blur samples everything painted beneath it,
+          // so any filled orange shadow behind the glass bleeds
+          // through the blur and tints the interior sepia (a short
+          // selected row showed exactly that band). The mockups'
+          // warm edge is the bright rim LINE painted on top of the
+          // glass below — stronger on [glow] cards — and that is
+          // the only orange a card carries.
         ],
       ),
       child: ClipRRect(
@@ -152,7 +155,9 @@ class GlassCard extends StatelessWidget {
           filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
           child: Stack(
             children: [
-              // The pale translucent fill, lighter at the top.
+              // The pale translucent fill, lighter at the top — a
+              // cool blue-grey white, so the glass reads neutral
+              // grey like the mockups, never sepia.
               Positioned.fill(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
@@ -160,25 +165,9 @@ class GlassCard extends StatelessWidget {
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [
-                        Colors.white.withValues(alpha: 0.14),
-                        Colors.white.withValues(alpha: 0.07),
+                        const Color(0xFFDDE7F5).withValues(alpha: 0.13),
+                        const Color(0xFFDDE7F5).withValues(alpha: 0.06),
                       ],
-                    ),
-                  ),
-                ),
-              ),
-              // The warm wash under the rim.
-              Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Ember.orange.withValues(alpha: glow ? 0.20 : 0.10),
-                        Colors.transparent,
-                      ],
-                      stops: const [0, 0.30],
                     ),
                   ),
                 ),

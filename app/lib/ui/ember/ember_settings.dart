@@ -129,7 +129,7 @@ class EmberSettings extends StatelessWidget {
           ),
         );
     if (desktop) {
-      // The desktop settings page (2.0.2, desktop_settings.dart):
+      // The desktop settings page (2.0.3, desktop_settings.dart):
       // the Settings mockup's two-column glass cards — General,
       // DNS, Connection (the capture-mode switcher), Routing,
       // About, More — with the engine section appended full-width

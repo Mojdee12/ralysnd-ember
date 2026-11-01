@@ -149,7 +149,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
               title: 'Settings',
               subtitle: 'Manage your app preferences and security',
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 26),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

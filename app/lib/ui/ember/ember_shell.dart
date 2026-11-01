@@ -454,7 +454,10 @@ class _EmberShellState extends State<EmberShell> {
                   center: const Alignment(0, -1.15),
                   radius: 1.15,
                   colors: [
-                    Ember.orange.withValues(alpha: 0.09),
+                    // Kept very faint: this glow sits behind the
+                    // first cards, whose backdrop blur would wash
+                    // their glass warm if it were any stronger.
+                    Ember.orange.withValues(alpha: 0.04),
                     Colors.transparent,
                   ],
                   stops: const [0, 0.55],

@@ -94,7 +94,7 @@ class _PsiphonDesktopHomeState extends State<PsiphonDesktopHome> {
               title: 'Psiphon',
               subtitle: 'Obfuscated Tunnel • Secure Proxy',
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 24),
             // The hero card: its content is CENTERED, as the
             // mockup draws it — the state badge centered at the
             // top, the PSIPHON pill at the card's top right.
@@ -407,8 +407,12 @@ class _RegionTile extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Material(
+          // The selected row stays NEUTRAL glass like the mockup's:
+          // selection reads from the orange radio and border, never
+          // from a warm fill (an orange fill here reintroduced the
+          // sepia cast the glass pass removed).
           color: selected
-              ? Ember.orange.withValues(alpha: 0.14)
+              ? Colors.white.withValues(alpha: 0.11)
               : Colors.white.withValues(alpha: 0.07),
           borderRadius: BorderRadius.circular(13),
           child: InkWell(

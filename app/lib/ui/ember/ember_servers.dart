@@ -169,7 +169,9 @@ class _MozillaServersState extends State<_MozillaServers> {
           const SizedBox(height: 16),
           Text(l.chooseServer, style: Ember.heading),
           Text(l.chooseServerSub, style: Ember.caption),
-          const SizedBox(height: 12),
+          // Desktop: a wider gap, so the smart-pick card's rim glow
+          // can never crowd the subtitle above it.
+          SizedBox(height: widget.desktop ? 20 : 12),
           // The smart pick (mockup 3).
           GlassCard(
             glow: selection == 'fastest',

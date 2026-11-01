@@ -22,7 +22,8 @@ Offset _project(double lat, double lon) => Offset(
     );
 
 /// Land cells as logical offsets, computed once. A deterministic few
-/// carry an ember tint, as in the mockup's sparse orange sparkle.
+/// carry an ember tint (the phone panel's sparse orange sparkle; the
+/// desktop backdrop painter draws every dot monochrome instead).
 final _dots = <(Offset, bool)>[
   for (var r = 0; r < worldMapRows.length; r++)
     for (var c = 0; c < worldMapCols; c++)
@@ -76,14 +77,16 @@ class WorldMapPainter extends CustomPainter {
     );
     canvas.scale(cover);
 
-    // Land dots.
+    // Land dots. The desktop backdrop is MONOCHROME, as the mockups
+    // draw it: every dot the same cool light blue-grey, the ember
+    // sparkle suppressed — orange in a backdrop belongs to pins and
+    // the arc only. (The phone panel keeps its tinted dots.)
     final dotPaint = Paint()..style = PaintingStyle.fill;
     for (final (pos, ember) in _dots) {
-      dotPaint.color = ember
-          ? Ember.orange.withValues(
-              alpha: backdrop ? 0.55 : (faint ? 0.10 : 0.30))
-          : backdrop
-              ? const Color(0xFF9DB4D6).withValues(alpha: 0.55)
+      dotPaint.color = backdrop
+          ? const Color(0xFF9DB4D6).withValues(alpha: 0.55)
+          : ember
+              ? Ember.orange.withValues(alpha: faint ? 0.10 : 0.30)
               : const Color(0xFF41454F)
                   .withValues(alpha: faint ? 0.35 : (connected ? 0.95 : 0.75));
       canvas.drawCircle(pos, backdrop ? 0.72 : 0.62, dotPaint);

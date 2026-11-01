@@ -121,7 +121,7 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
               title: 'Connection',
               subtitle: 'Secure & Fast VPN Engine',
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 24),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

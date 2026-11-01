@@ -117,7 +117,7 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 24),
             GlassCard(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
               child: Column(
