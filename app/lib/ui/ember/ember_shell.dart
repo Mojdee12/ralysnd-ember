@@ -797,8 +797,8 @@ class _DesktopRail extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(22, 26, 18, 26),
                 child: Row(
                   children: [
-                    const EmberShieldMark(size: 52),
-                    const SizedBox(width: 13),
+                    const EmberShieldMark(size: 46),
+                    const SizedBox(width: 11),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -806,7 +806,7 @@ class _DesktopRail extends StatelessWidget {
                           const Text(
                             'Ralysnd Ember',
                             style: TextStyle(
-                              fontSize: 20,
+                              fontSize: 18.5,
                               fontWeight: FontWeight.w800,
                               color: Desk.ink,
                               height: 1.1,
