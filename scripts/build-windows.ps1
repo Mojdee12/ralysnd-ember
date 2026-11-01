@@ -1,12 +1,12 @@
 # Builds the Windows app with its core into dist\:
-# - Firefox-VPN-<version>\: firefox-vpn.exe (the Flutter app),
+# - Ralysnd-Ember-<version>\: ralysnd-ember.exe (the Flutter app),
 #   core\firefox-vpn-core.exe (the Go core, which the app starts with -app),
 #   and core\firefox-vpn-tun.exe (the TUN service, which the app or Setup
 #   installs; scripts\build-windows-tun.ps1 says how it is signed), to run
 #   here;
-# - Firefox-VPN-<version>-Windows-x64.zip: the portable app, a "Firefox VPN"
-#   folder to unpack anywhere (or over an older one);
-# - Firefox-VPN-<version>-Windows-Setup-x64.exe: the installer
+# - Ralysnd-Ember-<version>-Windows-x64.zip: the portable app, a
+#   "Ralysnd Ember" folder to unpack anywhere (or over an older one);
+# - Ralysnd-Ember-<version>-Windows-Setup-x64.exe: the installer
 #   (app\windows\installer\firefox-vpn.iss, Inno Setup 6).
 # The app keeps its data (accounts, settings, logs) in user-data beside it.
 # The zip and the installer are made from a clean copy, never with a
@@ -26,7 +26,7 @@ $match = Select-String -Path "$root\app\pubspec.yaml" -Pattern '^version:\s*(\d+
 if (-not $match) { throw 'No version in app\pubspec.yaml' }
 $version = $match.Matches[0].Groups[1].Value
 if ($AppVersion) { $version = $AppVersion }
-$out = "$root\dist\Firefox-VPN-$version"
+$out = "$root\dist\Ralysnd-Ember-$version"
 if (Test-Path $out) { throw "$out already exists; bump the version in app\pubspec.yaml" }
 
 # Inno Setup's compiler: ISCC on the PATH, else its usual places.
@@ -93,15 +93,15 @@ if (Test-Path "$sidecars\xray.exe") {
 
 # A clean copy named as the user sees it, for the zip and the installer.
 $stage = "$root\dist\.stage-$version"
-$app = "$stage\Firefox VPN"
+$app = "$stage\Ralysnd Ember"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $app | Out-Null
 Get-ChildItem $out -Force | Where-Object { $_.Name -notin 'user-data', 'portable' } | Copy-Item -Destination $app -Recurse
 try {
-    $zip = "$root\dist\Firefox-VPN-$version-Windows-x64.zip"
+    $zip = "$root\dist\Ralysnd-Ember-$version-Windows-x64.zip"
     Compress-Archive -Path $app -DestinationPath $zip -CompressionLevel Optimal -Force
 
-    $setupName = "Firefox-VPN-$version-Windows-Setup-x64"
+    $setupName = "Ralysnd-Ember-$version-Windows-Setup-x64"
     & $iscc /Q "/DAppVersion=$version" "/DSourceDir=$app" "/DOutputDir=$root\dist" "/DOutputName=$setupName" "$root\app\windows\installer\firefox-vpn.iss"
     if ($LASTEXITCODE -ne 0) { throw 'the installer did not build' }
 } finally { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }

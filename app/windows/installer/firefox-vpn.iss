@@ -21,7 +21,7 @@
 ; again.
 
 #define AppName "Ralysnd Ember"
-#define AppExe "firefox-vpn.exe"
+#define AppExe "ralysnd-ember.exe"
 #define AppDir "Ralysnd Ember"
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -33,7 +33,7 @@
   #define OutputDir "."
 #endif
 #ifndef OutputName
-  #define OutputName "Firefox-VPN-Setup"
+  #define OutputName "Ralysnd-Ember-Setup"
 #endif
 
 [Setup]

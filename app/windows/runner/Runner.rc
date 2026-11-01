@@ -92,9 +92,9 @@ BEGIN
             VALUE "CompanyName", "Ralysnd" "\0"
             VALUE "FileDescription", "Ralysnd Ember" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "firefox-vpn" "\0"
+            VALUE "InternalName", "ralysnd-ember" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 Ralysnd" "\0"
-            VALUE "OriginalFilename", "firefox-vpn.exe" "\0"
+            VALUE "OriginalFilename", "ralysnd-ember.exe" "\0"
             VALUE "ProductName", "Ralysnd Ember" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
