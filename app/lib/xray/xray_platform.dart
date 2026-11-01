@@ -26,6 +26,17 @@ class XrayState {
   /// Windows backend records one; the controller surfaces it so a
   /// failed start/test is diagnosable instead of silent.
   final String lastError;
+
+  /// The loopback SOCKS port the running session actually bound
+  /// (0 when stopped or unknown). The Windows backend falls back to
+  /// a free port when the configured one is taken (another proxy
+  /// client, a leftover core), so this can differ from the setting.
+  final int localPort;
+
+  /// A non-failure note about the running session ('' when none) —
+  /// the Windows backend records a port fallback here so the taken
+  /// port is visible instead of silent.
+  final String note;
   const XrayState({
     required this.running,
     required this.name,
@@ -33,6 +44,8 @@ class XrayState {
     required this.upBytes,
     required this.downBytes,
     this.lastError = '',
+    this.localPort = 0,
+    this.note = '',
   });
   static const stopped = XrayState(
     running: false,

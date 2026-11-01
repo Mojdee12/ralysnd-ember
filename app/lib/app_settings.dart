@@ -77,6 +77,14 @@ class AppSettings extends ChangeNotifier {
   /// which is Android's flag and path.
   bool desktopDefaultsApplied = false;
 
+  /// The desktop Mozilla transport default (proxy.transport = "h2")
+  /// has been pinned once (2.0.5): on a UDP-hostile network an "h3"
+  /// value makes every connect first burn the core's whole 20 s
+  /// connect timeout on dead QUIC attempts before the engine falls
+  /// back to H2. After this flag is set, the Settings protocol
+  /// choice owns the value again.
+  bool desktopTransportPinned = false;
+
   /// The 2006 one-time migration has run: the stored language (which
   /// up to 2005 was the shipped Persian default, not necessarily a
   /// deliberate pick) was reset to English once. After this flag is
@@ -207,6 +215,7 @@ class AppSettings extends ChangeNotifier {
         if (j['ember_mode'] case final int v) s.emberMode = v;
         s.ember2DefaultsApplied = j['ember2_defaults'] == true;
         s.desktopDefaultsApplied = j['ember_desktop_defaults'] == true;
+        s.desktopTransportPinned = j['ember_desktop_transport'] == true;
         if (j['ember_en_default'] == true) {
           s.emberEnDefaultApplied = true;
         } else {
@@ -250,6 +259,7 @@ class AppSettings extends ChangeNotifier {
     bool? ember2DefaultsApplied,
     bool? emberEnDefaultApplied,
     bool? desktopDefaultsApplied,
+    bool? desktopTransportPinned,
   }) {
     this.emberMode = emberMode ?? this.emberMode;
     this.emberEnDefaultApplied =
@@ -258,6 +268,8 @@ class AppSettings extends ChangeNotifier {
         ember2DefaultsApplied ?? this.ember2DefaultsApplied;
     this.desktopDefaultsApplied =
         desktopDefaultsApplied ?? this.desktopDefaultsApplied;
+    this.desktopTransportPinned =
+        desktopTransportPinned ?? this.desktopTransportPinned;
     this.hiddenConnectionColumns =
         hiddenConnectionColumns ?? this.hiddenConnectionColumns;
     this.udpNotice = udpNotice ?? this.udpNotice;
@@ -303,6 +315,7 @@ class AppSettings extends ChangeNotifier {
           'ember_mode': emberMode,
           'ember2_defaults': ember2DefaultsApplied,
           'ember_desktop_defaults': desktopDefaultsApplied,
+          'ember_desktop_transport': desktopTransportPinned,
           'ember_en_default': emberEnDefaultApplied,
         }),
       );

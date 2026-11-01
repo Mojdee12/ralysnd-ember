@@ -343,6 +343,9 @@ class XraySettings {
   /// VpnService in VPN mode and ignores this.
   bool tunCapture = true;
 
+  /// Set once the 2.0.5 tunCapture migration has run (see fromJson).
+  bool tunCaptureMigrated = false;
+
   /// The resolver proxied traffic uses, reached through the tunnel.
   /// Default aligned with v2rayNG's generated configs (2005): its
   /// remote DNS is dns.google's DoH. Before 2005 the default was
@@ -378,6 +381,7 @@ class XraySettings {
   Map<String, dynamic> toJson() => {
         'allowInsecure': allowInsecure,
         'tunCapture': tunCapture,
+        'tunCaptureMigrated': tunCaptureMigrated,
         'enableUdp': enableUdp,
         'localDns': localDns,
         'remoteDns': remoteDns,
@@ -407,6 +411,18 @@ class XraySettings {
     final s = XraySettings();
     s.allowInsecure = j['allowInsecure'] as bool? ?? s.allowInsecure;
     s.tunCapture = j['tunCapture'] as bool? ?? s.tunCapture;
+    s.tunCaptureMigrated = j['tunCaptureMigrated'] as bool? ?? false;
+    if (!s.tunCaptureMigrated) {
+      // One-time 2.0.5 migration: through the broken-capture era
+      // (2.0.0–2.0.4) a stored false here left the app "connected"
+      // in proxy mode with no system capture and nothing saying so
+      // — indistinguishable from a deliberate choice in the file,
+      // and never what the affected users wanted. Turn capture ON
+      // once; the flag is persisted on the next save, and the
+      // Settings toggle stays fully effective afterwards.
+      s.tunCapture = true;
+      s.tunCaptureMigrated = true;
+    }
     s.enableUdp = j['enableUdp'] as bool? ?? s.enableUdp;
     s.localDns = j['localDns'] as String? ?? s.localDns;
     s.remoteDns = j['remoteDns'] as String? ?? s.remoteDns;

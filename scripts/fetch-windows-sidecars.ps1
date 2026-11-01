@@ -34,6 +34,10 @@
 #     SHA-256 ca901f48e7d43f92c67cd568b6d466a4cf08c8cf431c74027e75952126d882cb
 #     (GitHub's archive of the tag, hashed 2026-11-01; if GitHub ever
 #     regenerates its archives this check fails loudly, on purpose)
+#   Go 1.26.8 — for the Psiphon build ONLY (see the build site):
+#     https://go.dev/dl/go1.26.8.windows-amd64.zip
+#     SHA-256 b92c3b2adae85a11ba71fe7216daf0d84e82af4c8ab6c5625807f28622043a59
+#     (go.dev's official release index, checked 2026-11-01)
 #
 # Every download is hash-checked before anything is unpacked; a
 # mismatch stops the build. Re-running replaces the sidecars.
@@ -79,8 +83,8 @@ try {
     Copy-Item (Join-Path $wintunDir 'wintun\bin\amd64\wintun.dll') $dest -Force
 
     # Psiphon: verify the source archive, then build the
-    # ConsoleClient for Windows from it (its go.mod pins its own
-    # toolchain; the vendored tree builds offline).
+    # ConsoleClient for Windows from it (the vendored tree builds
+    # offline).
     $psiZip = Join-Path $tmp 'psiphon-tunnel-core-2.0.42.zip'
     Get-Verified `
         'https://github.com/Psiphon-Labs/psiphon-tunnel-core/archive/refs/tags/v2.0.42.zip' `
@@ -91,17 +95,100 @@ try {
     $psiSrc = Join-Path $psiDir 'psiphon-tunnel-core-2.0.42'
     New-Item -ItemType Directory -Force $psiDest | Out-Null
     $psiExe = Join-Path $psiDest 'psiphon-core.exe'
+    # The build's Go is pinned EXACTLY to go1.26.8 — never the
+    # ambient toolchain. tunnel-core v2.0.42's vendored psiphon-tls
+    # mirrors crypto/tls internals via unsafe and panics at init
+    # ("tls: ConnectionState is not equal to tls.ConnectionState:
+    # struct field count mismatch") when built with any other Go;
+    # the ambient Go (the app core's 1.27.x) produced a
+    # psiphon-core.exe that could never start at all, on any
+    # machine. Upstream's own pin is go1.26.8 in both places that
+    # state it: the go.mod toolchain line and ConsoleClient/
+    # Dockerfile's GOVERSION. GOTOOLCHAIN=local keeps the build on
+    # it. (Verified 2026-11-01 with Linux twins of both toolchains:
+    # go1.27.2 → the panic, verbatim; go1.26.8 → init, listeners
+    # and notices as normal.)
+    $goZip = Join-Path $tmp 'go1.26.8.windows-amd64.zip'
+    Get-Verified `
+        'https://go.dev/dl/go1.26.8.windows-amd64.zip' `
+        'b92c3b2adae85a11ba71fe7216daf0d84e82af4c8ab6c5625807f28622043a59' `
+        $goZip
+    $goDir = Join-Path $tmp 'go-psiphon'
+    Expand-Archive -Path $goZip -DestinationPath $goDir -Force
+    $psiGo = Join-Path $goDir 'go\bin\go.exe'
     Push-Location $psiSrc
     try {
         $env:GOOS = 'windows'
         $env:GOARCH = 'amd64'
         $env:CGO_ENABLED = '0'
-        go build -trimpath -ldflags '-s -w' -o $psiExe ./ConsoleClient
+        $env:GOTOOLCHAIN = 'local'
+        & $psiGo build -trimpath -ldflags '-s -w' -o $psiExe ./ConsoleClient
         if ($LASTEXITCODE -ne 0) { throw 'psiphon ConsoleClient build failed' }
     } finally {
         Pop-Location
-        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED, Env:GOTOOLCHAIN -ErrorAction SilentlyContinue
     }
+
+    # Init smoke — the permanent guard for the failure above: the
+    # freshly built binary must actually start, open its listeners
+    # and emit notices, or the whole build fails here instead of on
+    # a user's machine. The config's identity values are read from
+    # the app's own bootstrap constants, so the smoke runs the real
+    # configuration shape with the shipped server list.
+    $smokeDir = Join-Path $tmp 'psi-smoke'
+    $smokeData = Join-Path $smokeDir 'data'
+    New-Item -ItemType Directory -Force $smokeData | Out-Null
+    $bootstrap = Get-Content (Join-Path $root 'app\lib\psiphon\psiphon_bootstrap.dart') -Raw
+    function PsiConst([string]$Name) {
+        $m = [regex]::Match($bootstrap, $Name + "\s*=\s*'([^']*)'")
+        if (-not $m.Success) { throw "bootstrap constant $Name not found" }
+        $m.Groups[1].Value
+    }
+    $smokeConfig = [ordered]@{
+        ClientVersion                          = PsiConst 'clientVersion'
+        PropagationChannelId                   = PsiConst 'propagationChannelId'
+        SponsorId                              = PsiConst 'sponsorId'
+        RemoteServerListSignaturePublicKey     = PsiConst 'remoteServerListSignaturePublicKey'
+        ServerEntrySignaturePublicKey          = PsiConst 'serverEntrySignaturePublicKey'
+        AdditionalParameters                   = PsiConst 'additionalParameters'
+        DataRootDirectory                      = $smokeData
+        LocalSocksProxyPort                    = 11808
+        LocalHttpProxyPort                     = 11809
+        EmitDiagnosticNotices                  = $true
+        EmitBytesTransferred                   = $true
+        EgressRegion                           = ''
+    } | ConvertTo-Json
+    $smokeCfgFile = Join-Path $smokeDir 'psiphon.config'
+    Set-Content -Path $smokeCfgFile -Value $smokeConfig -Encoding utf8
+    $smokeOut = Join-Path $smokeDir 'out.log'
+    $smokeErr = Join-Path $smokeDir 'err.log'
+    $smokeProc = Start-Process -FilePath $psiExe `
+        -ArgumentList '-config', $smokeCfgFile, '-serverList', (Join-Path $root 'app\assets\psiphon\embedded_servers.txt') `
+        -WorkingDirectory $smokeDir `
+        -RedirectStandardOutput $smokeOut -RedirectStandardError $smokeErr `
+        -PassThru -NoNewWindow
+    try {
+        $deadline = (Get-Date).AddSeconds(45)
+        $listening = $false
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $text = '' + (Get-Content $smokeOut -Raw -ErrorAction SilentlyContinue) +
+                (Get-Content $smokeErr -Raw -ErrorAction SilentlyContinue)
+            if ($text -match 'panic:') {
+                throw "psiphon-core.exe panicked at init (wrong Go toolchain?):`n$text"
+            }
+            if ($text -match 'ListeningSocksProxyPort') { $listening = $true; break }
+            if ($smokeProc.HasExited) { break }
+        }
+        if (-not $listening) {
+            throw 'psiphon-core.exe did not open its SOCKS listener within 45s in the init smoke'
+        }
+    } finally {
+        if (-not $smokeProc.HasExited) {
+            Stop-Process -Id $smokeProc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host 'Psiphon init smoke passed (listener up, no panic).'
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

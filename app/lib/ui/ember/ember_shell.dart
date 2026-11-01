@@ -120,6 +120,7 @@ class _EmberShellState extends State<EmberShell> {
     }
     if (widget.desktop) {
       unawaited(_applyDesktopDefaults());
+      unawaited(_applyDesktopTransportDefault());
     }
     if (Platform.isAndroid) {
       _psiphon.load();
@@ -404,6 +405,51 @@ class _EmberShellState extends State<EmberShell> {
       return;
     }
     widget.settings.update(desktopDefaultsApplied: true);
+  }
+
+  bool _desktopTransportApplied = false;
+
+  /// The desktop Mozilla transport default, pinned once (2.0.5):
+  /// proxy.transport = "h2". The core's factory default is already
+  /// "h2", but an install that ever saved "h3" (the Settings
+  /// protocol choice presents H3 first) pays for it on every
+  /// connect on a UDP-hostile network: the H3 session attempt runs
+  /// under the core's whole 20 s connect timeout (config.
+  /// ConnectTimeout) across the server's addresses before the
+  /// engine falls back to H2 — the ~20 s desktop connect delay,
+  /// while Android (H2) connects at once. Pin H2 once, while the
+  /// engine is not running; afterwards the Settings choice owns
+  /// the value (AppSettings.desktopTransportPinned). Desktop only —
+  /// the Android defaults path never calls this.
+  Future<void> _applyDesktopTransportDefault() async {
+    if (widget.settings.desktopTransportPinned ||
+        _desktopTransportApplied) {
+      return;
+    }
+    _desktopTransportApplied = true;
+    // The Mozilla core needs a moment to answer after launch.
+    for (var i = 0; i < 30 && core.status == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    final status = core.status;
+    if (status == null || status.state.phase == Phase.running) {
+      // Nothing answered, or a tunnel is already up: keep the flag
+      // unset so a later launch tries again.
+      _desktopTransportApplied = false;
+      return;
+    }
+    try {
+      await core.editSettings((config) {
+        final proxy = config['proxy'];
+        if (proxy is Map<String, Object?>) {
+          proxy['transport'] = 'h2';
+        }
+      });
+    } catch (_) {
+      _desktopTransportApplied = false;
+      return;
+    }
+    widget.settings.update(desktopTransportPinned: true);
   }
 
   /// The Xray engine's arbitration hook: Mozilla goes fully off first.

@@ -46,10 +46,16 @@
 /// the app never shows connected while traffic would leak direct.
 /// [setOn]'s dns/ipv6 are the Android TUN builder's inputs and are
 /// unused here. A hard kill of the app can orphan xray.exe (Windows
-/// has no parent-death signal and Dart cannot create a job object);
-/// the bridge is not orphaned — its stdin pipe closes with the app,
-/// which takes the TUN down. Graceful exits go through [stop]. The
-/// limits are recorded in M1-AUDIT.md.
+/// has no parent-death signal and Dart cannot create a job object),
+/// so the first start/test of a run reaps leftover copies of THIS
+/// app's sidecar by exact path (core/orphan_cleanup.dart) before
+/// probing ports; if the configured SOCKS port is still taken —
+/// another proxy client (v2rayN defaults to the same 10808), say —
+/// the session falls back to the first free port trio instead of
+/// dying on the bind. The bridge is not orphaned by a hard kill —
+/// its stdin pipe closes with the app, which takes the TUN down.
+/// Graceful exits go through [stop]. The limits are recorded in
+/// M1-AUDIT.md.
 library;
 
 import 'dart:async';
@@ -57,6 +63,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../core/core_api.dart';
+import '../core/orphan_cleanup.dart';
+import '../core/ports.dart';
 import '../core/tun_bridge.dart';
 import 'xray_platform.dart';
 
@@ -77,6 +85,18 @@ class WindowsXrayBackend implements XrayBackend {
   /// The last start/test failure, in words, for [state] — the UI
   /// shows it and it is also written to xray.log.
   String _lastError = '';
+
+  /// The SOCKS port the live session actually bound (the configured
+  /// port, or the fallback [setOn] picked when that was taken).
+  int _localPort = 0;
+
+  /// The session note for [state] ('' when there is nothing to
+  /// say): the port fallback, and the proxy-mode warning — a
+  /// proxy-only session must never read as a full connection.
+  String _portNote = '';
+
+  /// One-shot guard for the startup orphan reap ([_ensureCleaned]).
+  bool _cleanedUp = false;
 
   /// Consecutive throwaway-instance start failures; two in a row
   /// (or one instant exit) raise the firewall/antivirus guidance.
@@ -144,6 +164,31 @@ class WindowsXrayBackend implements XrayBackend {
   Future<Directory> workDir() async =>
       Directory('${CoreLocator.dataDir(const [])}/xray');
 
+  /// Reaps xray.exe processes orphaned by a previous, hard-killed
+  /// app run — only copies of THIS app's sidecar (exact path match;
+  /// another client's core is never touched) and only while this
+  /// backend holds no live process of its own. Runs once per app
+  /// run; best-effort, its failures are logged and ignored.
+  Future<void> _ensureCleaned() async {
+    if (_cleanedUp || _process != null) return;
+    _cleanedUp = true;
+    final killed = await killOrphanedSidecars(
+      exePath: _xrayExe,
+      processName: 'xray.exe',
+    );
+    for (final pid in killed) {
+      await _noteToLog(
+        '[ember] killed orphaned xray.exe (pid $pid) left over '
+        'from a previous run',
+      );
+    }
+  }
+
+  /// Whether the session's whole port trio — SOCKS [socks], its
+  /// HTTP companion and the stats-API port — could bind now.
+  static Future<bool> _trioFree(int socks, int http, int api) async =>
+      await isFree(socks) && await isFree(http) && await isFree(api);
+
   // ---- tunnel ---------------------------------------------------------
 
   @override
@@ -157,27 +202,90 @@ class WindowsXrayBackend implements XrayBackend {
   }) async {
     final dir = await workDir();
     await dir.create(recursive: true);
+    // Reap a previous run's orphaned sidecar first: it may be the
+    // very thing holding the configured port. Then end any session
+    // of this run before probing, so our own listener cannot read
+    // as a conflict.
+    await _ensureCleaned();
     await stop();
     _lastError = '';
-    // The config's HTTP inbound port, for the exit-info requests
-    // (they ride the HTTP proxy — see the library doc). Falls back
-    // to the builder's usual socks+1 pairing when unparsable.
-    _httpPort = socksPort + 1;
+    // The config's inbound ports: SOCKS (the [socksPort] argument,
+    // confirmed from the JSON), its HTTP companion (the exit-info
+    // requests ride it — see the library doc) and the stats-API
+    // port (statsApiPort() in config_builder: SOCKS + 5000).
+    Map<String, dynamic>? doc;
+    var origSocks = socksPort;
+    var origHttp = socksPort + 1;
+    var origApi = socksPort + 5000;
     try {
-      final doc = jsonDecode(config) as Map<String, dynamic>;
+      doc = jsonDecode(config) as Map<String, dynamic>;
       for (final inbound in (doc['inbounds'] as List? ?? const [])) {
-        if (inbound is Map && inbound['protocol'] == 'http') {
-          _httpPort = (inbound['port'] as num).toInt();
-        }
+        if (inbound is! Map) continue;
+        final port = (inbound['port'] as num?)?.toInt();
+        if (port == null) continue;
+        if (inbound['protocol'] == 'socks') origSocks = port;
+        if (inbound['protocol'] == 'http') origHttp = port;
+        if (inbound['tag'] == 'api') origApi = port;
       }
     } catch (_) {
-      // The fallback above stands.
+      doc = null; // The derived defaults above stand.
     }
+    // Port selection: the configured trio when it can bind (the
+    // historical path, config written byte-for-byte), else the
+    // first trio above it where SOCKS, its HTTP companion (same
+    // offset) and SOCKS+5000 are all free — a taken 10808 (another
+    // proxy client's default, a leftover core) must not be able to
+    // kill every connect.
+    var chosen = origSocks;
+    var runConfig = config;
+    var fallbackNote = '';
+    if (!await _trioFree(origSocks, origHttp, origApi)) {
+      chosen = -1;
+      if (doc != null) {
+        for (var k = 1; k <= 60; k++) {
+          final cand = origSocks + k;
+          final http = cand + (origHttp - origSocks);
+          final api = cand + 5000;
+          if (http > 65535 || api > 65535) break;
+          if (await _trioFree(cand, http, api)) {
+            chosen = cand;
+            break;
+          }
+        }
+      }
+      if (chosen < 0) {
+        _lastError = 'the local ports around $origSocks are all in '
+            'use by other programs, so the xray core has nowhere to '
+            'listen. Close the other proxy app (for example v2rayN) '
+            'and try again.';
+        await _noteToLog('[ember] $_lastError');
+        throw StateError(_lastError);
+      }
+      for (final inbound in (doc!['inbounds'] as List? ?? const [])) {
+        if (inbound is! Map) continue;
+        if (inbound['protocol'] == 'socks') inbound['port'] = chosen;
+        if (inbound['protocol'] == 'http') {
+          inbound['port'] = chosen + (origHttp - origSocks);
+        }
+        if (inbound['tag'] == 'api') inbound['port'] = chosen + 5000;
+      }
+      runConfig = jsonEncode(doc);
+      fallbackNote = 'Local port $origSocks was busy; this session '
+          'runs on $chosen.';
+    }
+    _localPort = chosen;
+    _httpPort = chosen + (origHttp - origSocks);
     final configFile = File('${dir.path}/config.json');
-    await configFile.writeAsString(config, flush: true);
+    await configFile.writeAsString(runConfig, flush: true);
     final logFile = File('${dir.path}/xray.log');
     final sink = logFile.openWrite(mode: FileMode.append);
     sink.writeln('--- xray start ${DateTime.now().toIso8601String()} ---');
+    if (fallbackNote.isNotEmpty) {
+      sink.writeln(
+        '[ember] port $origSocks is busy, using $chosen for this '
+        'session',
+      );
+    }
     Process p;
     try {
       p = await Process.start(
@@ -196,7 +304,7 @@ class WindowsXrayBackend implements XrayBackend {
     _process = p;
     _name = name;
     _sinceMs = DateTime.now().millisecondsSinceEpoch;
-    _apiPort = socksPort + 5000; // statsApiPort() in config_builder.
+    _apiPort = chosen + 5000; // statsApiPort(), on the chosen base.
     _up = 0;
     _down = 0;
     p.stdout.listen(sink.add, onError: (_) {});
@@ -213,25 +321,46 @@ class WindowsXrayBackend implements XrayBackend {
     // killed at spawn) otherwise still showed "connected" in proxy
     // mode while nothing listened, and the failure stayed silent.
     try {
-      await _waitForSocks(p, socksPort);
+      await _waitForSocks(p, chosen);
     } on StateError catch (e) {
       final tail = await _logTail(logFile.path);
       _lastError = e.message == 'xray-exited'
           ? 'the xray core exited at start. $firewallGuidance'
               '${tail.isEmpty ? '' : '\nCore log:\n$tail'}'
-          : 'the xray core did not start listening on port $socksPort.'
+          : 'the xray core did not start listening on port $chosen.'
               '${tail.isEmpty ? '' : '\nCore log:\n$tail'}';
       await stop();
       throw StateError(_lastError);
     }
-    if (!tunCapture) return;
+    // The session's state notes, composed now that the core is
+    // verified serving: the port fallback, and — critically — the
+    // capture mode. Proxy mode must never read as a full
+    // connection: the note is what the page's status bar shows
+    // next to the profile name.
+    _portNote = [
+      if (fallbackNote.isNotEmpty) fallbackNote,
+      if (!tunCapture) 'Proxy only — system capture off',
+    ].join(' • ');
+    if (!tunCapture) {
+      sink.writeln(
+        '[ember] proxy mode: system-wide capture (TUN) is OFF — '
+        'only apps pointed at 127.0.0.1:$chosen use this tunnel; '
+        'the rest of the system is not captured',
+      );
+      return;
+    }
+    sink.writeln(
+      '[ember] TUN mode: starting system-wide capture via the TUN '
+      'service (proxy 127.0.0.1:$chosen)',
+    );
     // System-wide capture: the SOCKS inbound is verified serving
     // (above) before the TUN points the system at it.
     try {
       _bridge = await TunBridge.start(
-        socksPort: socksPort,
+        socksPort: chosen,
         skipProgram: 'xray.exe',
         log: sink,
+        logDir: dir,
       );
     } catch (e) {
       _lastError = 'system-wide capture (TUN) failed: $e';
@@ -278,6 +407,8 @@ class WindowsXrayBackend implements XrayBackend {
     _name = '';
     _sinceMs = 0;
     _httpPort = 0;
+    _localPort = 0;
+    _portNote = '';
     if (p == null) return;
     p.kill();
     try {
@@ -309,6 +440,8 @@ class WindowsXrayBackend implements XrayBackend {
       upBytes: _up,
       downBytes: _down,
       lastError: _lastError,
+      localPort: _localPort,
+      note: _portNote,
     );
   }
 
@@ -354,8 +487,13 @@ class WindowsXrayBackend implements XrayBackend {
 
   @override
   Future<Map<String, int>?> trafficStats(int apiPort) async {
+    // While a session runs, its own API port is the truth: it is
+    // the configured port shifted by any fallback [setOn] took,
+    // which the caller's settings-derived value cannot know.
+    final effective =
+        (_process != null && _apiPort != 0) ? _apiPort : apiPort;
     final saved = _apiPort;
-    _apiPort = apiPort;
+    _apiPort = effective;
     try {
       final up = await _counter(
         'outbound>>>proxy>>>traffic>>>uplink',
@@ -382,6 +520,25 @@ class WindowsXrayBackend implements XrayBackend {
     _nextTestPort += 2;
     if (_nextTestPort > 11260) _nextTestPort = 11080;
     return p;
+  }
+
+  /// The next test port pair (SOCKS + its injected HTTP companion)
+  /// that can actually bind: the blind rotation above hands out
+  /// ports another client may already hold, and a throwaway core
+  /// that cannot listen reads as an endless "Failed". Falls back
+  /// to the unchecked rotation if the whole range is taken.
+  static Future<int> _takeTestPort() async {
+    var candidate = _nextTestPort;
+    for (var i = 0; i < 90; i++) {
+      final p = candidate;
+      candidate += 2;
+      if (candidate > 11260) candidate = 11080;
+      if (await isFree(p) && await isFree(p + 1)) {
+        _nextTestPort = candidate;
+        return p;
+      }
+    }
+    return _takePort();
   }
 
   /// An HTTP client whose traffic goes through the core's HTTP
@@ -518,7 +675,8 @@ class WindowsXrayBackend implements XrayBackend {
 
   @override
   Future<int> measureDelay(String testConfig) async {
-    final port = _takePort();
+    await _ensureCleaned();
+    final port = await _takeTestPort();
     final proc = await _startInstance(testConfig, port);
     if (proc == null) return -1;
     try {
@@ -578,7 +736,8 @@ class WindowsXrayBackend implements XrayBackend {
 
   @override
   Future<int> speedTest(String testConfig) async {
-    final port = _takePort();
+    await _ensureCleaned();
+    final port = await _takeTestPort();
     final proc = await _startInstance(testConfig, port);
     if (proc == null) return -1;
     final client = _viaProxy(port + 1, const Duration(seconds: 8));

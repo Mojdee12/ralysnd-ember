@@ -238,6 +238,7 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
               child: DesktopStatusBar(
               left: active != null
                   ? '${active.name} • ${active.protocol.label}'
+                      '${xray.state.running && xray.state.note.isNotEmpty ? ' • ${xray.state.note}' : ''}'
                   : (xray.selected?.name ?? l.noProfileSelected),
               protectionOn: xray.state.running,
               ),

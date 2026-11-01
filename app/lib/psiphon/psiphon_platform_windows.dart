@@ -30,8 +30,12 @@
 ///
 /// Stopping kills the child process (the Windows way; the core's
 /// datastore is crash-tolerant). A hard app kill can orphan the
-/// core holding its ports until it is closed — the same documented
-/// limit as the Xray backend's xray.exe.
+/// core holding its ports until it is closed — so the first start
+/// of a run reaps leftover copies of THIS app's sidecar by exact
+/// path (core/orphan_cleanup.dart), and if the local proxy ports
+/// are still taken (another client's defaults collide the same
+/// way), the session moves to the first free port pair, the config
+/// regenerated on it.
 library;
 
 import 'dart:async';
@@ -41,17 +45,23 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import '../core/core_api.dart';
+import '../core/orphan_cleanup.dart';
+import '../core/ports.dart';
 import '../core/tun_bridge.dart';
 import 'psiphon_bootstrap.dart';
 import 'psiphon_platform.dart';
 
 /// The ConsoleClient config, key for key PsiphonVpnService's
-/// buildConfig (top-level so it can be checked on its own).
+/// buildConfig (top-level so it can be checked on its own). The
+/// ports default to the platform constants; the Windows backend
+/// passes its per-session pair when the defaults were taken.
 Map<String, dynamic> buildPsiphonConfig({
   required String dataRoot,
   required String region,
   required String upstream,
   required List<String> protocols,
+  int socksPort = PsiphonPlatform.socksPort,
+  int httpPort = PsiphonPlatform.httpPort,
 }) =>
     {
       'ClientVersion': PsiphonBootstrap.clientVersion,
@@ -63,8 +73,8 @@ Map<String, dynamic> buildPsiphonConfig({
           PsiphonBootstrap.serverEntrySignaturePublicKey,
       'AdditionalParameters': PsiphonBootstrap.additionalParameters,
       'DataRootDirectory': dataRoot,
-      'LocalSocksProxyPort': PsiphonPlatform.socksPort,
-      'LocalHttpProxyPort': PsiphonPlatform.httpPort,
+      'LocalSocksProxyPort': socksPort,
+      'LocalHttpProxyPort': httpPort,
       'EmitDiagnosticNotices': true,
       'EmitBytesTransferred': true,
       'EgressRegion': region,
@@ -89,6 +99,24 @@ class WindowsPsiphonBackend implements PsiphonBackend {
 
   /// The last failure, in words, for [state] — also in psiphon.log.
   String _lastError = '';
+
+  /// The local proxy ports this run uses: the platform constants,
+  /// or the fallback pair [setOn] picked when those were taken.
+  int _socksPort = PsiphonPlatform.socksPort;
+  int _httpPort = PsiphonPlatform.httpPort;
+
+  /// The core reported it could not bind its local proxies.
+  bool _bindFailed = false;
+
+  /// One-shot guard for the startup orphan reap.
+  bool _cleanedUp = false;
+
+  /// Said when the local proxy ports cannot be had: the usual
+  /// cause is another proxy client holding them.
+  static const portsBusyMessage =
+      "Psiphon's local ports 11808/11809 are already in use by "
+      'another program (for example v2rayN or another proxy app). '
+      'Close it and try again.';
 
   /// When the current core process was spawned (instant-exit
   /// detection for the firewall/antivirus guidance).
@@ -130,6 +158,47 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     final dataRoot = Directory('${dir.path}/data');
     await dataRoot.create(recursive: true);
 
+    final sink = File('${dir.path}/psiphon.log')
+        .openWrite(mode: FileMode.append);
+    _logSink = sink;
+    sink.writeln(
+      '--- psiphon-core start ${DateTime.now().toIso8601String()} ---',
+    );
+
+    _resetRun(vpnMode);
+    _lastError = '';
+    // Reap a previous run's orphaned sidecar first: it may be the
+    // very thing holding the local proxy ports.
+    await _ensureCleaned(sink);
+    // Port selection: the platform pair when it can bind, else the
+    // first free pair above it (same +1 spacing) — a taken 11808
+    // must not be able to kill every connect. The config below is
+    // generated on the chosen pair, and the TUN bridge and the
+    // exit-IP lookup follow it.
+    if (!await isFree(_socksPort) || !await isFree(_httpPort)) {
+      var found = false;
+      for (var k = 1; k <= 60; k++) {
+        final s = PsiphonPlatform.socksPort + k;
+        if (await isFree(s) && await isFree(s + 1)) {
+          _socksPort = s;
+          _httpPort = s + 1;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        _lastError = portsBusyMessage;
+        sink.writeln('[ember] $_lastError');
+        await _closeLog();
+        throw StateError(_lastError);
+      }
+      sink.writeln(
+        '[ember] psiphon ports ${PsiphonPlatform.socksPort}/'
+        '${PsiphonPlatform.httpPort} are busy, using $_socksPort/'
+        '$_httpPort for this session',
+      );
+    }
+
     // The embedded server list ships as a Flutter asset (the same
     // file Android's core reads); the ConsoleClient wants a path.
     final serversFile = File('${dir.path}/embedded_servers.txt');
@@ -146,19 +215,12 @@ class WindowsPsiphonBackend implements PsiphonBackend {
         region: region,
         upstream: upstream,
         protocols: protocols,
+        socksPort: _socksPort,
+        httpPort: _httpPort,
       )),
       flush: true,
     );
 
-    final sink = File('${dir.path}/psiphon.log')
-        .openWrite(mode: FileMode.append);
-    _logSink = sink;
-    sink.writeln(
-      '--- psiphon-core start ${DateTime.now().toIso8601String()} ---',
-    );
-
-    _resetRun(vpnMode);
-    _lastError = '';
     Process proc;
     try {
       proc = await Process.start(
@@ -179,9 +241,10 @@ class WindowsPsiphonBackend implements PsiphonBackend {
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(_onLine, onError: (_) {});
-    proc.stderr
-        .transform(utf8.decoder)
-        .listen((s) => sink.write(s), onError: (_) {});
+    proc.stderr.transform(utf8.decoder).listen((s) {
+      sink.write(s);
+      _scanForBindFailure(s);
+    }, onError: (_) {});
     unawaited(proc.exitCode.then((code) {
       if (identical(_proc, proc)) {
         _proc = null;
@@ -216,6 +279,12 @@ class WindowsPsiphonBackend implements PsiphonBackend {
               : 'psiphon-core-exited (see psiphon.log)',
         );
       }
+      if (_bindFailed) {
+        // The core said its proxies could not bind: fail fast with
+        // the specific reason instead of the 15 s timeout below.
+        await stop();
+        throw StateError(portsBusyMessage);
+      }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     if (!_listening) {
@@ -226,12 +295,20 @@ class WindowsPsiphonBackend implements PsiphonBackend {
       await stop();
       throw StateError(_lastError);
     }
+    if (!vpnMode) {
+      sink.writeln(
+        '[ember] proxy mode: system-wide capture (TUN) is OFF — '
+        'only apps pointed at 127.0.0.1:$_socksPort use this '
+        'tunnel; the rest of the system is not captured',
+      );
+    }
     if (vpnMode) {
       try {
         _bridge = await TunBridge.start(
-          socksPort: PsiphonPlatform.socksPort,
+          socksPort: _socksPort,
           skipProgram: 'psiphon-core.exe',
           log: sink,
+          logDir: dir,
         );
       } catch (e) {
         _lastError = 'system-wide capture (TUN) failed: $e';
@@ -259,12 +336,47 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     _region = '';
     _clientAddress = '';
     _regions = [];
+    _socksPort = PsiphonPlatform.socksPort;
+    _httpPort = PsiphonPlatform.httpPort;
+    _bindFailed = false;
+  }
+
+  /// Reaps psiphon-core.exe processes orphaned by a previous,
+  /// hard-killed app run — only copies of THIS app's sidecar
+  /// (exact path match) and only while this backend holds no live
+  /// process of its own. Once per app run; best-effort.
+  Future<void> _ensureCleaned(IOSink sink) async {
+    if (_cleanedUp || _proc != null) return;
+    _cleanedUp = true;
+    final killed = await killOrphanedSidecars(
+      exePath: _coreExe,
+      processName: 'psiphon-core.exe',
+    );
+    for (final pid in killed) {
+      sink.writeln(
+        '[ember] killed orphaned psiphon-core.exe (pid $pid) left '
+        'over from a previous run',
+      );
+    }
+  }
+
+  /// Watches core output for a bind failure of the local proxies,
+  /// so the run can fail fast with the specific ports-busy message
+  /// instead of the generic 15 s timeout.
+  void _scanForBindFailure(String text) {
+    if (_bindFailed) return;
+    if (text.contains('already in use') ||
+        text.contains('Only one usage of each socket address')) {
+      _bindFailed = true;
+      _lastError = portsBusyMessage;
+    }
   }
 
   /// One stdout line from the core: a JSON notice, tee'd to the log
   /// (the controller's log viewer reads psiphon.log, as on Android).
   void _onLine(String line) {
     _logSink?.writeln(line);
+    _scanForBindFailure(line);
     Map<String, dynamic> notice;
     try {
       notice = jsonDecode(line) as Map<String, dynamic>;
@@ -405,7 +517,7 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     const timeout = Duration(seconds: 6);
     final client = HttpClient()
       ..connectionTimeout = timeout
-      ..findProxy = (_) => 'PROXY 127.0.0.1:${PsiphonPlatform.httpPort}';
+      ..findProxy = (_) => 'PROXY 127.0.0.1:$_httpPort';
     try {
       final request = await client.getUrl(Uri.parse(url)).timeout(timeout);
       final response = await request.close().timeout(timeout);

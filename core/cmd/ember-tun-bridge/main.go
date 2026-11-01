@@ -22,11 +22,18 @@
 // the TUN (the tunapi programs mechanism, protocol 2). For Xray that
 // is xray.exe itself; for Psiphon, psiphon-core.exe.
 //
-// Stdout is a tiny line protocol for the parent: "UP <adapter>"
-// once the TUN is routed, "DOWN <reason>" when it ends by itself,
-// "ERROR <code> <message>" when the start failed. Diagnostics go to
-// stderr. Exit code 0 is a clean end (stdin closed, or DOWN after a
-// running session); 1 is a failed start.
+// Stdout is a tiny line protocol for the parent: "UP <adapter>
+// index=<i> luid=<l> proxy=<addr> service=<version> protocol=<n>"
+// once the TUN is routed — printed only after the service has
+// answered "opened" (with the adapter) and "routed", so UP is the
+// service's own confirmation that the session is established, not
+// merely that this process spawned. "DOWN <reason>" when it ends
+// by itself, "ERROR <code> <message>" when the start failed. The
+// handshake stages and the session parameters also go to stderr,
+// which the parent tees into its tunlink.log, so every start
+// attempt leaves a record of how far it got. Exit code 0 is a
+// clean end (stdin closed, or DOWN after a running session); 1 is
+// a failed start.
 package main
 
 import (
@@ -69,15 +76,18 @@ func (s *stringList) Set(v string) error {
 }
 
 func run(proxy string, skips []string) int {
+	fmt.Fprintf(os.Stderr, "ember-tun-bridge %s: start proxy=%s skip=%v\n", version.Current, proxy, skips)
 	if err := ensureService(); err != nil {
 		fmt.Printf("ERROR service-missing %s\n", err)
 		return 1
 	}
-	conn, err := hello()
+	conn, peer, err := hello()
 	if err != nil {
 		fmt.Printf("ERROR %s\n", errText(err))
 		return 1
 	}
+	protocol := tunapi.Common(peer.Protocol, peer.MinProtocol)
+	fmt.Fprintf(os.Stderr, "hello ok: service=%s protocol=%d\n", peer.Version, protocol)
 
 	programs := make([]tunapi.Program, 0, len(skips))
 	for _, name := range skips {
@@ -95,6 +105,8 @@ func run(proxy string, skips []string) int {
 		return 1
 	}
 	iface := reply.Interface
+	fmt.Fprintf(os.Stderr, "session opened: adapter=%q index=%d luid=%d proxy=%s programs=%v\n",
+		iface.Name, iface.Index, iface.LUID, proxy, skips)
 	if reply, err = ask(conn, tunapi.Message{Type: tunapi.TypeRoute}); err == nil && reply.Type != tunapi.TypeRouted {
 		err = fmt.Errorf("unexpected reply %q", reply.Type)
 	}
@@ -104,7 +116,9 @@ func run(proxy string, skips []string) int {
 		fmt.Printf("ERROR route-failed %s\n", errText(err))
 		return 1
 	}
-	fmt.Printf("UP %s\n", iface.Name)
+	fmt.Fprintf(os.Stderr, "session routed: adapter=%q\n", iface.Name)
+	fmt.Printf("UP %s index=%d luid=%d proxy=%s service=%s protocol=%d\n",
+		iface.Name, iface.Index, iface.LUID, proxy, peer.Version, protocol)
 
 	// Hold the session until stdin closes (the parent is gone or
 	// stopping us), the service ends it, or we are interrupted.
@@ -216,25 +230,27 @@ func ensureService() error {
 // hello dials the service and exchanges hellos, updating an older
 // service from the copy beside this helper first when it speaks an
 // overlapping protocol — internal/desktop's connect, reduced to one
-// update attempt. The returned connection is ready for open.
-func hello() (*tunapi.Conn, error) {
+// update attempt. The returned connection is ready for open; the
+// returned message is the service's hello (its version and protocol
+// range), for the session record.
+func hello() (*tunapi.Conn, tunapi.Message, error) {
 	for attempt := 0; ; attempt++ {
 		conn, peer, err := dialHello()
 		if err != nil {
-			return nil, err
+			return nil, tunapi.Message{}, err
 		}
 		incompatible := peer.Type == tunapi.TypeError
 		if incompatible && peer.MinProtocol > tunapi.Protocol {
 			conn.Close()
-			return nil, fmt.Errorf("app-outdated the TUN service %s is newer than this app %s", peer.Version, version.Current)
+			return nil, tunapi.Message{}, fmt.Errorf("app-outdated the TUN service %s is newer than this app %s", peer.Version, version.Current)
 		}
 		older := incompatible || version.Newer(version.Current, peer.Version)
 		if !older || attempt > 0 {
 			if incompatible {
 				conn.Close()
-				return nil, fmt.Errorf("service-outdated the TUN service %s is older than this app %s and speaks no common protocol", peer.Version, version.Current)
+				return nil, tunapi.Message{}, fmt.Errorf("service-outdated the TUN service %s is older than this app %s and speaks no common protocol", peer.Version, version.Current)
 			}
-			return conn, nil
+			return conn, peer, nil
 		}
 		// Older but overlapping (or incompatible-but-maybe-fixable):
 		// ask it to update from the bundled copy, then redial. A
@@ -248,18 +264,18 @@ func hello() (*tunapi.Conn, error) {
 		conn.Close()
 		if uerr != nil {
 			if incompatible {
-				return nil, fmt.Errorf("service-outdated the TUN service %s did not update: %w", peer.Version, uerr)
+				return nil, tunapi.Message{}, fmt.Errorf("service-outdated the TUN service %s did not update: %w", peer.Version, uerr)
 			}
 			// It still speaks this build's protocol; start over on a
 			// fresh connection and proceed without the update.
-			conn2, _, err2 := dialHello()
+			conn2, peer2, err2 := dialHello()
 			if err2 != nil {
-				return nil, err2
+				return nil, tunapi.Message{}, err2
 			}
-			return conn2, nil
+			return conn2, peer2, nil
 		}
 		if err := waitForService(); err != nil {
-			return nil, err
+			return nil, tunapi.Message{}, err
 		}
 	}
 }
