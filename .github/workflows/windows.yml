@@ -1,0 +1,63 @@
+# Ralysnd Ember for Windows (PLAN.md §2, Route A): builds the app,
+# the Go core and the TUN service with the tree's own pipeline
+# (scripts/build-windows.ps1) on a free windows-latest runner and
+# uploads the portable zip and the installer as one artifact.
+#
+# Manual runs while iterating ("Run workflow"); the tree's build.yml
+# keeps its own test/release jobs — this workflow is only the Ember
+# Windows deliverable. Action majors match build.yml's pins.
+#
+# Optional secret: FIREFOX_VPN_SIGNING_KEY (scripts/signing-key.ps1)
+# — without it the build takes no in-app updates, by design.
+name: ember-windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.47.7 # the same pin as .github/workflows/build.yml
+
+jobs:
+  build:
+    runs-on: windows-latest # VS 2022 + Windows SDK included
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/go.mod # go 1.27.2, the core's own pin
+          cache-dependency-path: core/go.sum
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # Inno Setup 6 is not relied on from the image (build.yml does
+      # the same): ISCC must be on the machine for build-windows.ps1.
+      - name: Inno Setup
+        run: choco upgrade innosetup -y --no-progress
+
+      # The Xray engine's pinned sidecars (xray.exe + wintun.dll +
+      # geo data) into tools\sidecars\xray, hash-verified.
+      - name: Fetch sidecars
+        shell: pwsh
+        run: ./scripts/fetch-windows-sidecars.ps1
+
+      - name: Build
+        shell: pwsh
+        env:
+          FIREFOX_VPN_SIGNING_KEY: ${{ secrets.FIREFOX_VPN_SIGNING_KEY }}
+        run: ./scripts/build-windows.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ember-windows
+          path: |
+            dist/*.zip
+            dist/*Setup*.exe
+          if-no-files-found: error
