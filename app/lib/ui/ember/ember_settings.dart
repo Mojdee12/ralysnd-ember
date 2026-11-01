@@ -9,9 +9,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app_info.dart';
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
 import '../../core/core_controller.dart';
+import '../../core/models.dart';
 import '../../features.dart';
 import '../../l10n/app_localizations.dart';
 import '../../lantern/lantern_controller.dart';
@@ -21,6 +23,7 @@ import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../bypass_apps_page.dart';
 import '../settings_page.dart';
+import 'desktop_widgets.dart';
 import 'ember_info.dart';
 import 'ember_theme.dart';
 import 'lantern_pages.dart';
@@ -29,6 +32,17 @@ import 'warp_pages.dart';
 import 'xray_logs_page.dart';
 
 class EmberSettings extends StatelessWidget {
+  final CoreController core;
+  final XrayController xray;
+  final PsiphonController psiphon;
+  final LanternController lantern;
+  final WarpController warp;
+  final AppSettings settings;
+
+  /// The Windows desktop shell: the settings are the mockup's
+  /// two-column card grid at full width, not the phone column.
+  final bool desktop;
+
   const EmberSettings({
     super.key,
     required this.core,
@@ -37,14 +51,8 @@ class EmberSettings extends StatelessWidget {
     required this.lantern,
     required this.warp,
     required this.settings,
+    this.desktop = false,
   });
-
-  final CoreController core;
-  final XrayController xray;
-  final PsiphonController psiphon;
-  final LanternController lantern;
-  final WarpController warp;
-  final AppSettings settings;
 
   @override
   Widget build(BuildContext context) {
@@ -53,34 +61,16 @@ class EmberSettings extends StatelessWidget {
     final psiphonMode = settings.emberMode == 2;
     final lanternMode = settings.emberMode == 3;
     final warpMode = settings.emberMode == 4;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
-      children: [
-        const Center(
-          child: Icon(
-            Icons.local_fire_department_rounded,
-            color: Ember.orange,
-            size: 34,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Center(child: Text(l.navSettings, style: Ember.title)),
-        Center(child: Text('Ralysnd Ember', style: Ember.caption)),
-        const SizedBox(height: 20),
-        if (v2ray)
-          _XraySection(xray: xray)
-        else if (psiphonMode)
-          _PsiphonSection(psiphon: psiphon)
-        else if (lanternMode)
-          _LanternSection(lantern: lantern)
-        else if (warpMode)
-          _WarpSection(warp: warp)
-        else
-          _MozillaSection(core: core),
-        const SizedBox(height: 18),
-        Text(l.generalSection, style: Ember.heading),
-        const SizedBox(height: 10),
-        GlassCard(
+    final engineSection = v2ray
+        ? _XraySection(xray: xray)
+        : psiphonMode
+            ? _PsiphonSection(psiphon: psiphon)
+            : lanternMode
+                ? _LanternSection(lantern: lantern)
+                : warpMode
+                    ? _WarpSection(warp: warp)
+                    : _MozillaSection(core: core);
+    final generalCard = GlassCard(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           child: Column(
             children: [
@@ -137,7 +127,95 @@ class EmberSettings extends StatelessWidget {
               ),
             ],
           ),
+        );
+    if (desktop) {
+      // The desktop arrangement (mockup E settings): the header,
+      // then a two-column grid — the engine's own section at the
+      // left; General and About cards at the right — and the
+      // status bar. Every control is the same one the phone column
+      // shows; only the arrangement differs.
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(26, 20, 26, 14),
+        children: [
+          const DesktopHeader(
+            title: 'Settings',
+            subtitle: 'Manage your app preferences and security',
+          ),
+          const SizedBox(height: 18),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: engineSection),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(l.generalSection, style: Ember.heading),
+                    const SizedBox(height: 10),
+                    generalCard,
+                    const SizedBox(height: 18),
+                    Text('About', style: Ember.heading),
+                    const SizedBox(height: 10),
+                    GlassCard(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Built by Rayan Vakili • Ralysnd',
+                            style: TextStyle(
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w700,
+                              color: Ember.text,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            'Ralysnd Ember • Version $appVersion',
+                            style: Ember.caption,
+                          ),
+                          const SizedBox(height: 5),
+                          Text(l.licenseNote, style: Ember.caption),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          DesktopStatusBar(
+            left: 'Settings are saved automatically',
+            protectionOn:
+                core.status?.state.phase == Phase.running ||
+                    xray.state.running ||
+                    psiphon.state.connected,
+          ),
+        ],
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+      children: [
+        const Center(
+          child: Icon(
+            Icons.local_fire_department_rounded,
+            color: Ember.orange,
+            size: 34,
+          ),
         ),
+        const SizedBox(height: 6),
+        Center(child: Text(l.navSettings, style: Ember.title)),
+        Center(child: Text('Ralysnd Ember', style: Ember.caption)),
+        const SizedBox(height: 20),
+        engineSection,
+        const SizedBox(height: 18),
+        Text(l.generalSection, style: Ember.heading),
+        const SizedBox(height: 10),
+        generalCard,
       ],
     );
   }

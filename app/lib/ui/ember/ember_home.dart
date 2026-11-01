@@ -18,6 +18,9 @@ import '../../warp/warp_controller.dart';
 import '../../xray/exit_info.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
+import 'desktop_mozilla.dart';
+import 'desktop_psiphon.dart';
+import 'desktop_v2ray.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'profile_country.dart';
@@ -38,6 +41,7 @@ class EmberHome extends StatelessWidget {
     required this.onOpenAccounts,
     required this.stopOtherEngine,
     this.hideModeSwitch = false,
+    this.desktop = false,
   });
 
   final CoreController core;
@@ -57,8 +61,30 @@ class EmberHome extends StatelessWidget {
   /// switch (or tagline) at the top of the home page there.
   final bool hideModeSwitch;
 
+  /// The Windows desktop shell: the home is the Fluent mockups'
+  /// dashboard (desktop_mozilla.dart / desktop_v2ray.dart /
+  /// desktop_psiphon.dart), not the phone page at all. Android
+  /// never sets this.
+  final bool desktop;
+
   @override
   Widget build(BuildContext context) {
+    // The desktop dashboards are their own pages (mockup E and its
+    // siblings); the phone layout below is untouched for Android.
+    if (desktop) {
+      return switch (mode) {
+        1 => V2rayDesktopPage(xray: xray),
+        2 => PsiphonDesktopHome(psiphon: psiphon),
+        _ => MozillaDesktopHome(
+            core: core,
+            xray: xray,
+            onOpenServers: onOpenServers,
+            onOpenAccounts: onOpenAccounts,
+            onOpenV2ray: () => onModeChanged(1),
+            stopOtherEngine: stopOtherEngine,
+          ),
+      };
+    }
     final l = AppLocalizations.of(context);
     // The engines this platform offers (features.dart): on Windows
     // the switch holds Mozilla / V2Ray / Psiphon only.

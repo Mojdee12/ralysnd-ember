@@ -14,6 +14,7 @@ import '../../features.dart';
 import '../../l10n/app_localizations.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
+import 'desktop_v2ray.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'profile_editor.dart';
@@ -27,6 +28,7 @@ class EmberServers extends StatelessWidget {
     required this.xray,
     required this.v2ray,
     required this.onOpenAccounts,
+    this.desktop = false,
   });
 
   final CoreController core;
@@ -34,17 +36,24 @@ class EmberServers extends StatelessWidget {
   final bool v2ray;
   final VoidCallback onOpenAccounts;
 
+  /// The Windows desktop shell: the V2Ray list is the clean-grid
+  /// desktop page (the same one the V2Ray engine home shows).
+  final bool desktop;
+
   @override
   Widget build(BuildContext context) => v2ray
-      ? _V2rayServers(xray: xray, onOpenAccounts: onOpenAccounts)
-      : _MozillaServers(core: core);
+      ? (desktop
+          ? V2rayDesktopPage(xray: xray)
+          : _V2rayServers(xray: xray, onOpenAccounts: onOpenAccounts))
+      : _MozillaServers(core: core, desktop: desktop);
 }
 
 // ---------------------------------------------------------------- Mozilla
 
 class _MozillaServers extends StatefulWidget {
-  const _MozillaServers({required this.core});
+  const _MozillaServers({required this.core, this.desktop = false});
   final CoreController core;
+  final bool desktop;
 
   @override
   State<_MozillaServers> createState() => _MozillaServersState();
@@ -117,7 +126,9 @@ class _MozillaServersState extends State<_MozillaServers> {
     return ListenableBuilder(
       listenable: widget.core,
       builder: (context, _) => ListView(
-        padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+        padding: widget.desktop
+            ? const EdgeInsets.fromLTRB(26, 20, 26, 18)
+            : const EdgeInsets.fromLTRB(18, 12, 18, 18),
         children: [
           Row(
             children: [

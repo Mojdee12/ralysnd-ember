@@ -71,6 +71,12 @@ class AppSettings extends ChangeNotifier {
   /// have been applied to the core once.
   bool ember2DefaultsApplied = false;
 
+  /// The DESKTOP counterpart: the Windows first-run default (Mozilla
+  /// capture mode "clear" → "tun" when the TUN service is installed)
+  /// has been applied once. Separate from [ember2DefaultsApplied],
+  /// which is Android's flag and path.
+  bool desktopDefaultsApplied = false;
+
   /// The 2006 one-time migration has run: the stored language (which
   /// up to 2005 was the shipped Persian default, not necessarily a
   /// deliberate pick) was reset to English once. After this flag is
@@ -200,6 +206,7 @@ class AppSettings extends ChangeNotifier {
         }
         if (j['ember_mode'] case final int v) s.emberMode = v;
         s.ember2DefaultsApplied = j['ember2_defaults'] == true;
+        s.desktopDefaultsApplied = j['ember_desktop_defaults'] == true;
         if (j['ember_en_default'] == true) {
           s.emberEnDefaultApplied = true;
         } else {
@@ -242,12 +249,15 @@ class AppSettings extends ChangeNotifier {
     int? emberMode,
     bool? ember2DefaultsApplied,
     bool? emberEnDefaultApplied,
+    bool? desktopDefaultsApplied,
   }) {
     this.emberMode = emberMode ?? this.emberMode;
     this.emberEnDefaultApplied =
         emberEnDefaultApplied ?? this.emberEnDefaultApplied;
     this.ember2DefaultsApplied =
         ember2DefaultsApplied ?? this.ember2DefaultsApplied;
+    this.desktopDefaultsApplied =
+        desktopDefaultsApplied ?? this.desktopDefaultsApplied;
     this.hiddenConnectionColumns =
         hiddenConnectionColumns ?? this.hiddenConnectionColumns;
     this.udpNotice = udpNotice ?? this.udpNotice;
@@ -292,6 +302,7 @@ class AppSettings extends ChangeNotifier {
           'hidden_connection_columns': hiddenConnectionColumns.toList(),
           'ember_mode': emberMode,
           'ember2_defaults': ember2DefaultsApplied,
+          'ember_desktop_defaults': desktopDefaultsApplied,
           'ember_en_default': emberEnDefaultApplied,
         }),
       );

@@ -108,6 +108,15 @@ class _EmberShellState extends State<EmberShell> {
     if (Platform.isAndroid || Platform.isWindows) {
       unawaited(_xray.load());
     }
+    if (Platform.isWindows) {
+      // The desktop Psiphon page binds the controller's settings
+      // and regions; load its store like Xray's (Android loads it
+      // in its own block below).
+      unawaited(_psiphon.load());
+    }
+    if (widget.desktop) {
+      unawaited(_applyDesktopDefaults());
+    }
     if (Platform.isAndroid) {
       _psiphon.load();
       _lantern.load();
@@ -117,10 +126,52 @@ class _EmberShellState extends State<EmberShell> {
       // Keep the controllers' view of their services fresh on return.
       unawaited(_xray.refreshState());
     }
+    _startShotHarness();
+  }
+
+  // ── SCREENSHOT HARNESS (win-work copy only) ─────────────────────
+  // When EMBER_SHOT_DIR is set, cycle the shell through its main
+  // pages on a timer (Mozilla home → V2Ray → Psiphon → Servers →
+  // Settings, ~6 s each) and write the current page's name to
+  // $EMBER_SHOT_DIR/current.txt at every step, so an outside capture
+  // script can photograph each page deterministically. The variable
+  // is never set in normal use; the harness is then fully inert.
+  final List<Timer> _shotTimers = [];
+
+  void _startShotHarness() {
+    final dir = Platform.environment['EMBER_SHOT_DIR'];
+    if (dir == null || dir.isEmpty) return;
+    const steps = <({int mode, int tab, String name})>[
+      (mode: 0, tab: 0, name: 'mozilla'),
+      (mode: 1, tab: 0, name: 'v2ray'),
+      (mode: 2, tab: 0, name: 'psiphon'),
+      (mode: 0, tab: 1, name: 'servers'),
+      (mode: 0, tab: 3, name: 'settings'),
+    ];
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+      _shotTimers.add(
+        Timer(Duration(seconds: 5 + 6 * i), () {
+          if (!mounted) return;
+          setState(() {
+            mode = step.mode;
+            _tab = step.tab;
+          });
+          try {
+            File('$dir/current.txt').writeAsStringSync(step.name);
+          } catch (_) {
+            // A failed marker must never disturb the app.
+          }
+        }),
+      );
+    }
   }
 
   @override
   void dispose() {
+    for (final t in _shotTimers) {
+      t.cancel();
+    }
     _xray.dispose();
     _psiphon.dispose();
     _lantern.dispose();
@@ -175,6 +226,49 @@ class _EmberShellState extends State<EmberShell> {
       return;
     }
     widget.settings.update(ember2DefaultsApplied: true);
+  }
+
+  bool _desktopDefaultsApplied = false;
+
+  /// The desktop counterpart of [_applyEmber2Defaults] for the
+  /// Mozilla capture mode (Part B): the Go core's factory default
+  /// system_proxy.mode is "clear" — proxy-only, so a fresh Windows
+  /// install connects and pings while NO system traffic flows (the
+  /// first on-PC failure). Once per install, when the core first
+  /// answers and is not running: if the TUN service is installed
+  /// and the mode is still "clear", switch it to TUN. When the
+  /// service is not installed the mode is left alone — the desktop
+  /// Mozilla home shows the mode and the TUN install note, so the
+  /// state is never silent. The flag is desktop-only
+  /// (AppSettings.desktopDefaultsApplied); the Android flag and
+  /// path are untouched.
+  Future<void> _applyDesktopDefaults() async {
+    if (widget.settings.desktopDefaultsApplied || _desktopDefaultsApplied) {
+      return;
+    }
+    _desktopDefaultsApplied = true;
+    // The Mozilla core needs a moment to answer after launch.
+    for (var i = 0; i < 30 && core.status == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    final status = core.status;
+    if (status == null || status.state.phase == Phase.running) {
+      // Nothing answered, or a tunnel is already up (auto-connect):
+      // keep the flag unset so a later launch tries again.
+      _desktopDefaultsApplied = false;
+      return;
+    }
+    try {
+      if (status.tunSupported &&
+          (status.tun?.installed ?? false) &&
+          status.systemProxy == 'clear') {
+        await core.setSystemProxy('tun');
+      }
+    } catch (_) {
+      _desktopDefaultsApplied = false;
+      return;
+    }
+    widget.settings.update(desktopDefaultsApplied: true);
   }
 
   /// The Xray engine's arbitration hook: Mozilla goes fully off first.
@@ -244,6 +338,7 @@ class _EmberShellState extends State<EmberShell> {
         onOpenAccounts: () => setState(() => _tab = 2),
         stopOtherEngine: stopXray,
         hideModeSwitch: widget.desktop,
+        desktop: widget.desktop,
       ),
       // In Psiphon mode the Servers tab is the exit-region list and
       // the Accounts tab the no-account status page; Lantern mode
@@ -261,6 +356,7 @@ class _EmberShellState extends State<EmberShell> {
           xray: _xray,
           v2ray: v2ray,
           onOpenAccounts: () => setState(() => _tab = 2),
+          desktop: widget.desktop,
         ),
       if (psiphonMode)
         PsiphonAboutView(psiphon: _psiphon)
@@ -277,6 +373,7 @@ class _EmberShellState extends State<EmberShell> {
         lantern: _lantern,
         warp: _warp,
         settings: widget.settings,
+        desktop: widget.desktop,
       ),
     ];
     if (widget.desktop) return _buildDesktop(l, pages);
@@ -353,39 +450,39 @@ class _EmberShellState extends State<EmberShell> {
             ),
             Row(
               children: [
-                _DesktopRail(
-                  engines: [
-                    for (final m in Features.engineModes)
-                      (mode: m, label: engineLabel(m)),
-                  ],
-                  tab: _tab,
-                  mode: mode,
-                  onEngine: (m) => setState(() {
-                    mode = m;
-                    _tab = 0;
-                  }),
-                  onServers: () => setState(() => _tab = 1),
-                  onAccounts: () => setState(() => _tab = 2),
-                  onSettings: () => setState(() => _tab = 3),
-                  serversLabel: l.navServers,
-                  settingsLabel: l.navSettings,
-                  accountsLabel:
-                      mode == 1 ? l.navSubscriptions : l.navAccounts,
+                ListenableBuilder(
+                  listenable: core,
+                  builder: (context, _) {
+                    final account = core.status?.activeAccount;
+                    return _DesktopRail(
+                      engines: [
+                        for (final m in Features.engineModes)
+                          (mode: m, label: engineLabel(m)),
+                      ],
+                      tab: _tab,
+                      mode: mode,
+                      onEngine: (m) => setState(() {
+                        mode = m;
+                        _tab = 0;
+                      }),
+                      onServers: () => setState(() => _tab = 1),
+                      onAccounts: () => setState(() => _tab = 2),
+                      onSettings: () => setState(() => _tab = 3),
+                      serversLabel: l.navServers,
+                      settingsLabel: l.navSettings,
+                      accountEmail: account?.email ?? '',
+                      accountName: account?.name ?? '',
+                    );
+                  },
                 ),
                 Expanded(
                   child: Column(
                     children: [
                       if (widget.banner != null) widget.banner!,
                       Expanded(
-                        child: Align(
-                          alignment: Alignment.topCenter,
-                          child: ConstrainedBox(
-                            constraints:
-                                const BoxConstraints(maxWidth: 1120),
-                            child:
-                                IndexedStack(index: _tab, children: pages),
-                          ),
-                        ),
+                        // The desktop pages use the full window
+                        // width (mockup E) — no phone-width cap.
+                        child: IndexedStack(index: _tab, children: pages),
                       ),
                     ],
                   ),
@@ -409,9 +506,11 @@ IconData _engineIcon(int mode) => switch (mode) {
       _ => Icons.bolt_rounded,
     };
 
-/// The desktop shell's left rail: brand block, one entry per offered
-/// engine (selecting one opens its home), Servers and Settings, and
-/// the Accounts entry at the foot.
+/// The desktop shell's left rail, as mockup E draws it (~250 px):
+/// the big flame brand block at the top, one entry per offered
+/// engine, a divider, Servers and Settings, and the account chip
+/// (initials avatar + the signed-in email, or "No account") pinned
+/// at the bottom — a tap on it opens the Accounts page.
 class _DesktopRail extends StatelessWidget {
   const _DesktopRail({
     required this.engines,
@@ -423,7 +522,8 @@ class _DesktopRail extends StatelessWidget {
     required this.onSettings,
     required this.serversLabel,
     required this.settingsLabel,
-    required this.accountsLabel,
+    required this.accountEmail,
+    required this.accountName,
   });
 
   final List<({int mode, String label})> engines;
@@ -435,12 +535,14 @@ class _DesktopRail extends StatelessWidget {
   final VoidCallback onSettings;
   final String serversLabel;
   final String settingsLabel;
-  final String accountsLabel;
+  final String accountEmail;
+  final String accountName;
 
   @override
   Widget build(BuildContext context) {
+    final who = accountEmail.isNotEmpty ? accountEmail : accountName;
     return Container(
-      width: 212,
+      width: 250,
       decoration: BoxDecoration(
         color: Ember.surface.withValues(alpha: 0.78),
         border: const Border(right: BorderSide(color: Ember.line)),
@@ -448,30 +550,35 @@ class _DesktopRail extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // The brand block: big flame over the name, centered.
           Padding(
-            padding: const EdgeInsets.fromLTRB(18, 20, 18, 16),
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(18, 26, 18, 20),
+            child: Column(
               children: [
                 Container(
-                  width: 38,
-                  height: 38,
+                  width: 64,
+                  height: 64,
                   decoration: BoxDecoration(
                     gradient: Ember.gradient,
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Ember.orange.withValues(alpha: 0.35),
+                        blurRadius: 18,
+                        spreadRadius: 1,
+                      ),
+                    ],
                   ),
                   child: const Icon(
                     Icons.local_fire_department_rounded,
                     color: Color(0xFF1A1206),
-                    size: 22,
+                    size: 36,
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Ralysnd Ember',
-                    style: Ember.heading.copyWith(fontSize: 15.5),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                const SizedBox(height: 11),
+                Text(
+                  'Ralysnd Ember',
+                  style: Ember.heading.copyWith(fontSize: 16.5),
                 ),
               ],
             ),
@@ -484,7 +591,7 @@ class _DesktopRail extends StatelessWidget {
               onTap: () => onEngine(e.mode),
             ),
           const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 10),
             child: Divider(color: Ember.line, height: 1),
           ),
           _RailItem(
@@ -500,20 +607,79 @@ class _DesktopRail extends StatelessWidget {
             onTap: onSettings,
           ),
           const Spacer(),
-          _RailItem(
-            icon: Icons.people_rounded,
-            label: accountsLabel,
-            selected: tab == 2,
-            onTap: onAccounts,
+          // The account chip pinned at the foot.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onAccounts,
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: tab == 2
+                        ? Ember.orange.withValues(alpha: 0.16)
+                        : Ember.card.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Ember.line),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: const BoxDecoration(
+                          color: Ember.cardSoft,
+                          shape: BoxShape.circle,
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          _initials(who),
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                            color: Ember.orange,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          who.isEmpty ? 'No account' : who,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: Ember.text,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
-          const SizedBox(height: 14),
         ],
       ),
     );
   }
+
+  /// The avatar's initials: the first letters of the first two
+  /// words of the name/email, or "?" with no account.
+  static String _initials(String who) {
+    final parts =
+        who.split(RegExp(r'[\s@._-]+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) return parts.first[0].toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
 }
 
-/// One rail entry: the mockups' ember-gradient pill when selected.
+/// One rail entry: the mockups' translucent ember fill with an
+/// orange edge bar when selected, plain dim text otherwise.
 class _RailItem extends StatelessWidget {
   const _RailItem({
     required this.icon,
@@ -529,32 +695,43 @@ class _RailItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fg = selected ? const Color(0xFF1A1206) : Ember.dim;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           child: Container(
             padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
             decoration: BoxDecoration(
-              gradient: selected ? Ember.gradient : null,
-              borderRadius: BorderRadius.circular(14),
+              color: selected
+                  ? Ember.orange.withValues(alpha: 0.20)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              border: Border(
+                left: BorderSide(
+                  color: selected ? Ember.orange : Colors.transparent,
+                  width: 3,
+                ),
+              ),
             ),
             child: Row(
               children: [
-                Icon(icon, size: 20, color: fg),
-                const SizedBox(width: 12),
+                Icon(
+                  icon,
+                  size: 21,
+                  color: selected ? Ember.orange : Ember.dim,
+                ),
+                const SizedBox(width: 13),
                 Expanded(
                   child: Text(
                     label,
                     style: TextStyle(
-                      fontSize: 14,
+                      fontSize: 14.5,
                       fontWeight: FontWeight.w700,
-                      color: selected ? const Color(0xFF1A1206) : Ember.text,
+                      color: selected ? Ember.text : Ember.dim,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),

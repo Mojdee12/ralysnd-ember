@@ -12,9 +12,17 @@ library;
 import 'dart:io';
 
 abstract final class Features {
+  /// SCREENSHOT HARNESS OVERRIDE (win-work copy only): with
+  /// EMBER_FORCE_DESKTOP=1 in the environment, this build behaves
+  /// like the Windows one — desktop Fluent shell, Windows engine
+  /// scope — so the real app can be rendered and photographed on
+  /// Linux. Unset (every normal run) nothing changes anywhere.
+  static final bool forceDesktop =
+      Platform.environment['EMBER_FORCE_DESKTOP'] == '1';
+
   /// The desktop shell (left rail, Fluent glass) instead of the phone
   /// shell with its bottom navigation.
-  static final bool desktopShell = Platform.isWindows;
+  static final bool desktopShell = Platform.isWindows || forceDesktop;
 
   /// Engines offered on this platform.
   static final bool mozilla = true;
@@ -22,9 +30,10 @@ abstract final class Features {
   static final bool psiphon = true;
 
   /// No Windows backend exists for these two (user's scope cut for the
-  /// Windows version); Android keeps both.
-  static final bool lantern = !Platform.isWindows;
-  static final bool warp = !Platform.isWindows;
+  /// Windows version); Android keeps both. The screenshot harness's
+  /// forceDesktop counts as Windows here so the rail matches.
+  static final bool lantern = !Platform.isWindows && !forceDesktop;
+  static final bool warp = !Platform.isWindows && !forceDesktop;
 
   /// The Ember engine modes (settings.emberMode) this platform may
   /// show, in rail/switch order: 0 Mozilla, 1 V2Ray, 2 Psiphon,

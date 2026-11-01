@@ -174,8 +174,11 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 ; The TUN service, always (no task to choose), with its own administrator
 ; prompt; declined, the app installs it the first time TUN mode is chosen.
 ; Not in a silent run: no prompt there, and an installed service updates
-; itself from the app.
-Filename: "{app}\core\firefox-vpn-tun.exe"; Parameters: "install"; Flags: waituntilterminated skipifsilent; Check: not TunServiceInstalled
+; itself from the app. No "only when not installed" check: every install
+; refreshes the service to the bundled build (Install() replaces an
+; existing service) — a reinstall over an older service must never leave
+; a stale service behind to mismatch the new app's protocol.
+Filename: "{app}\core\firefox-vpn-tun.exe"; Parameters: "install"; Flags: waituntilterminated skipifsilent
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 ; The TUN service goes with the app: through its pipe, with no prompt while
