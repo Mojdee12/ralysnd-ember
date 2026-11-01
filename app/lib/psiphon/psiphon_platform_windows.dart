@@ -9,8 +9,11 @@
 /// from PsiphonConstants.kt), the same embedded server list (the
 /// app's bundled assets/psiphon/embedded_servers.txt, handed over
 /// with the ConsoleClient's -serverList flag). The core announces
-/// everything on stdout as JSON notices; they map onto [PsiphonState]
-/// exactly as the MobileLibrary callbacks do on Android:
+/// everything as JSON notices **on stderr** — the ConsoleClient's
+/// notice writer defaults to os.Stderr and has no stdout mode (the
+/// only alternative is its -notices file flag) — and they map onto
+/// [PsiphonState] exactly as the MobileLibrary callbacks do on
+/// Android:
 ///
 ///   Tunnels {count}            count 0 = connecting, >= 1 = connected
 ///   ListeningSocksProxyPort    the core is up (running)
@@ -237,13 +240,19 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     }
     _proc = proc;
     _spawnedAt = DateTime.now();
-    proc.stdout
+    // The notices live on STDERR (see the library doc): parse that
+    // stream line by line. Parsing stdout instead was the 2.0.0–2.0.5
+    // defect — the core ran healthily, its notices landed in the log
+    // via the old raw tee, and the listener wait timed out on a core
+    // that had been up for seconds. Stdout carries nothing in tunnel
+    // mode; keep draining it into the log so a stray write can never
+    // block the pipe and stays visible.
+    proc.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(_onLine, onError: (_) {});
-    proc.stderr.transform(utf8.decoder).listen((s) {
+    proc.stdout.transform(utf8.decoder).listen((s) {
       sink.write(s);
-      _scanForBindFailure(s);
     }, onError: (_) {});
     unawaited(proc.exitCode.then((code) {
       if (identical(_proc, proc)) {
@@ -288,9 +297,10 @@ class WindowsPsiphonBackend implements PsiphonBackend {
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     if (!_listening) {
-      _lastError = 'psiphon-core did not open its proxies within '
-          '15s — its own notices above say why (network unreachable '
-          'or every server refused)';
+      _lastError = 'psiphon-core started but did not open its local '
+          'proxies within 15s — the core\'s own notices in '
+          'psiphon.log above show what it was doing (it may still '
+          'be retrying servers, or something stopped it binding)';
       sink.writeln('[ember] $_lastError');
       await stop();
       throw StateError(_lastError);
@@ -372,8 +382,10 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     }
   }
 
-  /// One stdout line from the core: a JSON notice, tee'd to the log
+  /// One stderr line from the core: a JSON notice, tee'd to the log
   /// (the controller's log viewer reads psiphon.log, as on Android).
+  /// Non-notice stderr text (a Go panic dump, say) is logged the
+  /// same way and simply fails the decode below.
   void _onLine(String line) {
     _logSink?.writeln(line);
     _scanForBindFailure(line);
