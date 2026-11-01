@@ -150,32 +150,19 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
               subtitle: 'Manage your app preferences and security',
             ),
             const SizedBox(height: 26),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: _generalCard(l)),
-                const SizedBox(width: 16),
-                Expanded(child: _dnsCard(l)),
-              ],
-            ),
+            // Sample A: the cards stack full-width, one per
+            // section, rows hairline-separated inside each.
+            _generalCard(l),
             const SizedBox(height: 16),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: _connectionCard(l, mode, note)),
-                const SizedBox(width: 16),
-                Expanded(child: _routingCard(l)),
-              ],
-            ),
+            _connectionCard(l, mode, note),
             const SizedBox(height: 16),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: _AboutCard(core: core)),
-                const SizedBox(width: 16),
-                Expanded(child: _moreCard(l)),
-              ],
-            ),
+            _dnsCard(l),
+            const SizedBox(height: 16),
+            _routingCard(l),
+            const SizedBox(height: 16),
+            _AboutCard(core: core),
+            const SizedBox(height: 16),
+            _moreCard(l),
                   const SizedBox(height: 16),
                   widget.engineSection,
                 ],
@@ -270,8 +257,8 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
           const SizedBox(height: 10),
           Text(
             'Remote DNS',
-            style: Ember.caption.copyWith(
-              color: Ember.dim,
+            style: Desk.caption.copyWith(
+              color: Desk.dim,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -283,7 +270,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
             onSubmitted: _setDohUrl,
           ),
           const SizedBox(height: 8),
-          Text(l.dnsCustomHint, style: Ember.caption),
+          Text(l.dnsCustomHint, style: Desk.caption),
         ],
       ),
     );
@@ -339,7 +326,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
                     : 'Proxy only: apps that use the local proxy are '
                         'covered; the rest of the system connects '
                         'directly. Pick TUN for every app.',
-            style: Ember.caption,
+            style: Desk.caption,
           ),
           if (note != null) ...[
             const SizedBox(height: 10),
@@ -415,7 +402,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
             subtitle: l.routingDirectHint,
             divider: false,
             trailing: const Icon(Icons.chevron_right_rounded,
-                size: 20, color: Ember.faint),
+                size: 20, color: Desk.faint),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => SettingsPage(
@@ -448,7 +435,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
             title: l.allSettings,
             subtitle: 'Languages, updates, accounts and diagnostics',
             trailing: const Icon(Icons.chevron_right_rounded,
-                size: 20, color: Ember.faint),
+                size: 20, color: Desk.faint),
             onTap: () => open(SettingsPage(
               core: core,
               settings: widget.settings,
@@ -459,7 +446,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
             title: l.languageRow,
             subtitle: 'App language and appearance',
             trailing: const Icon(Icons.chevron_right_rounded,
-                size: 20, color: Ember.faint),
+                size: 20, color: Desk.faint),
             onTap: () => open(SettingsPage(
               core: core,
               settings: widget.settings,
@@ -472,7 +459,7 @@ class _DesktopSettingsPageState extends State<DesktopSettingsPage> {
             subtitle: 'About the app and its engines',
             divider: false,
             trailing: const Icon(Icons.chevron_right_rounded,
-                size: 20, color: Ember.faint),
+                size: 20, color: Desk.faint),
             onTap: () => open(const EmberInfoPage()),
           ),
         ],
@@ -533,31 +520,31 @@ class _AboutCardState extends State<_AboutCard> {
           const SizedBox(height: 12),
           Text(
             'Built by Rayan Vakili • Ralysnd',
-            style: Ember.body.copyWith(fontWeight: FontWeight.w700),
+            style: Desk.body.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 5),
-          Text(l.licenseNote, style: Ember.caption),
+          Text(l.licenseNote, style: Desk.caption),
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.07),
+              color: Colors.white.withValues(alpha: 0.50),
               borderRadius: BorderRadius.circular(11),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+              border: Border.all(color: Desk.line),
             ),
             child: Row(
               children: [
                 const Icon(Icons.system_update_alt_rounded,
-                    size: 17, color: Ember.dim),
+                    size: 17, color: Desk.dim),
                 const SizedBox(width: 9),
-                Text('Ralysnd Ember', style: Ember.body),
+                Text('Ralysnd Ember', style: Desk.body),
                 const Spacer(),
                 const Text(
                   'v$appVersion',
                   style: TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.w700,
-                    color: Ember.text,
+                    color: Desk.ink,
                   ),
                 ),
               ],
@@ -567,6 +554,10 @@ class _AboutCardState extends State<_AboutCard> {
           Row(
             children: [
               OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Desk.ink,
+                  side: const BorderSide(color: Desk.line),
+                ),
                 onPressed: _checking ? null : () => unawaited(_check()),
                 icon: _checking
                     ? const SizedBox(
@@ -582,7 +573,7 @@ class _AboutCardState extends State<_AboutCard> {
                 Expanded(
                   child: Text(
                     _result,
-                    style: Ember.caption,
+                    style: Desk.caption,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -608,13 +599,14 @@ class _CardTitle extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.10),
+              color: Colors.white.withValues(alpha: 0.65),
               borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Desk.line),
             ),
-            child: Icon(icon, size: 17, color: Ember.text),
+            child: Icon(icon, size: 17, color: Desk.ink),
           ),
           const SizedBox(width: 9),
-          Text(title, style: Ember.heading),
+          Text(title, style: Desk.heading.copyWith(fontSize: 17)),
         ],
       );
 }
@@ -641,18 +633,20 @@ class _SettingRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final row = Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
+      padding: const EdgeInsets.symmetric(vertical: 11),
       child: Row(
         children: [
-          Icon(icon, size: 19, color: Ember.dim),
+          Icon(icon, size: 19, color: Desk.faint),
           const SizedBox(width: 11),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: Ember.body),
+                Text(title,
+                    style: Desk.body.copyWith(
+                        fontSize: 15, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
-                Text(subtitle, style: Ember.caption),
+                Text(subtitle, style: Desk.caption),
               ],
             ),
           ),
@@ -671,7 +665,7 @@ class _SettingRow extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
             child: row,
           ),
-        if (divider) const Divider(color: Ember.line, height: 1),
+        if (divider) const Divider(color: Desk.line, height: 1),
       ],
     );
   }
@@ -709,26 +703,26 @@ class _DohFieldState extends State<_DohField> {
         controller: _controller,
         enabled: widget.enabled,
         onSubmitted: widget.onSubmitted,
-        style: const TextStyle(fontSize: 13.5, color: Ember.text),
+        style: const TextStyle(fontSize: 13.5, color: Desk.ink),
         decoration: InputDecoration(
           isDense: true,
           filled: true,
-          fillColor: Colors.black.withValues(alpha: 0.22),
+          fillColor: Colors.white.withValues(alpha: 0.55),
           prefixIcon:
-              const Icon(Icons.lock_rounded, size: 16, color: Ember.faint),
+              const Icon(Icons.lock_rounded, size: 16, color: Desk.faint),
           prefixIconConstraints:
               const BoxConstraints(minWidth: 36, minHeight: 0),
           hintText: 'https://…',
-          hintStyle: const TextStyle(color: Ember.faint),
+          hintStyle: const TextStyle(color: Desk.faint),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(11),
-            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+            borderSide: const BorderSide(color: Desk.line),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(11),
-            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+            borderSide: const BorderSide(color: Desk.line),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(11),

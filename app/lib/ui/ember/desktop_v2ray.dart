@@ -130,33 +130,55 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(26, 20, 26, 8),
                 children: [
-            DesktopHeader(
-              title: 'V2Ray',
-              titleSize: 46,
-              subtitle:
-                  'Manage V2Ray protocols • Real-time routing and performance',
-              actions: [
-                DesktopActionButton(
-                  icon: Icons.add_rounded,
-                  label: 'Add',
-                  onTap: () => unawaited(openProfileEditor(context, xray)),
-                ),
-                DesktopActionButton(
-                  icon: Icons.download_rounded,
-                  label: 'Import',
-                  onTap: () => unawaited(showPasteSheet(context, xray)),
-                ),
-                DesktopActionButton(
-                  icon: Icons.list_rounded,
-                  label: 'Test All',
-                  primary: true,
-                  busy: _testingAll,
-                  onTap:
-                      xray.profiles.isEmpty ? null : () => unawaited(_testAll()),
-                ),
-              ],
+            // THE HEADER CARD (sample 2): the page title and the
+            // big toggle at the left, Add / Import / Test All at
+            // the right, all on one glass card.
+            GlassCard(
+              glow: xray.state.running,
+              padding: const EdgeInsets.fromLTRB(24, 18, 24, 18),
+              child: Row(
+                children: [
+                  const Text(
+                    'V2Ray',
+                    style: TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w800,
+                      color: Desk.ink,
+                      height: 1.1,
+                    ),
+                  ),
+                  if (xray.selected != null) ...[
+                    const SizedBox(width: 22),
+                    DesktopHeroToggle(
+                      on: xray.state.running,
+                      busy: xray.connecting,
+                      onTap: () => unawaited(_connectSelected()),
+                    ),
+                  ],
+                  const Spacer(),
+                  DesktopActionButton(
+                    icon: Icons.add_rounded,
+                    label: 'Add',
+                    onTap: () => unawaited(openProfileEditor(context, xray)),
+                  ),
+                  DesktopActionButton(
+                    icon: Icons.download_rounded,
+                    label: 'Import',
+                    onTap: () => unawaited(showPasteSheet(context, xray)),
+                  ),
+                  DesktopActionButton(
+                    icon: Icons.speed_rounded,
+                    label: 'Test All',
+                    primary: true,
+                    busy: _testingAll,
+                    onTap: xray.profiles.isEmpty
+                        ? null
+                        : () => unawaited(_testAll()),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
             GlassCard(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
               child: Column(
@@ -170,29 +192,17 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
                           children: [
                             Text(
                               'Server Configs',
-                              style:
-                                  Ember.heading.copyWith(fontSize: 19),
+                              style: Desk.heading.copyWith(fontSize: 19),
                             ),
                             const SizedBox(height: 3),
                             Text(
                               '${latDigits(xray.profiles.length)} configs'
                               '${active != null ? ' • 1 active' : ''}',
-                              style: Ember.caption,
+                              style: Desk.caption,
                             ),
                           ],
                         ),
                       ),
-                      if (xray.selected != null)
-                        SizedBox(
-                          width: 210,
-                          child: DesktopTogglePill(
-                            on: xray.state.running,
-                            busy: xray.connecting,
-                            onLabel: 'Connected',
-                            offLabel: 'Connect',
-                            onTap: () => unawaited(_connectSelected()),
-                          ),
-                        ),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -224,11 +234,19 @@ class _V2rayDesktopPageState extends State<V2rayDesktopPage> {
                   else
                     for (var i = 0; i < shown.length; i++) ...[
                       if (i > 0)
-                        const Divider(color: Ember.line, height: 1),
+                        const Divider(color: Desk.line, height: 1),
                       _ConfigRow(xray: xray, profile: shown[i]),
                     ],
                 ],
               ),
+            ),
+            const SizedBox(height: 16),
+            // The session card (sample 2): the three hero columns
+            // over the live rates and the session clock. A live
+            // island of its own.
+            ListenableBuilder(
+              listenable: xray,
+              builder: (context, _) => _V2raySessionCard(xray: xray),
             ),
                 ],
               ),
@@ -281,78 +299,70 @@ class _ConfigRow extends StatelessWidget {
       _ => 'None',
     };
     final subtitle =
-        '$transport • Port ${latDigits(profile.port)} • $security';
+        '${profile.address}:${latDigits(profile.port)} • $transport • $security';
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: () => xray.select(profile),
         borderRadius: BorderRadius.circular(14),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
-            gradient: selected
-                ? LinearGradient(
-                    colors: [
-                      Ember.orange.withValues(alpha: 0.32),
-                      Ember.orange.withValues(alpha: 0.10),
-                    ],
-                  )
-                : null,
+            gradient: selected ? Desk.peachGradient : null,
+            color: selected ? null : Colors.white.withValues(alpha: 0.45),
             borderRadius: BorderRadius.circular(14),
-            border: selected
-                ? Border.all(color: Ember.orange.withValues(alpha: 0.55))
-                : null,
+            border: Border.all(
+              color: selected
+                  ? Ember.orange.withValues(alpha: 0.55)
+                  : Desk.line,
+            ),
           ),
           child: Row(
             children: [
-              // The protocol badge: orange on the selected row.
+              // The protocol pill: a small orange capsule, as the
+              // samples draw it.
               Container(
-                width: 118,
-                padding: const EdgeInsets.symmetric(vertical: 9),
+                constraints: const BoxConstraints(minWidth: 64),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
-                  gradient: selected ? Ember.gradient : null,
-                  color: selected
-                      ? null
-                      : Colors.white.withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(11),
-                  border: selected
-                      ? null
-                      : Border.all(
-                          color: Colors.white.withValues(alpha: 0.12)),
+                  gradient: Ember.gradient,
+                  borderRadius: BorderRadius.circular(999),
                 ),
                 alignment: Alignment.center,
                 child: Text(
                   profile.protocol.label,
-                  style: TextStyle(
-                    fontSize: 13,
+                  style: const TextStyle(
+                    fontSize: 11.5,
                     fontWeight: FontWeight.w800,
-                    color: selected ? Colors.white : Ember.dim,
+                    color: Colors.white,
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       profile.name,
-                      style: Ember.heading.copyWith(fontSize: 15.5),
+                      style: Desk.heading.copyWith(fontSize: 15.5),
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 3),
                     Text(
                       subtitle,
-                      style: Ember.caption,
+                      style: Desk.caption.copyWith(fontSize: 12.5),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
               ),
               const SizedBox(width: 14),
-              // The fixed right column: traffic line, then the pill —
-              // the pill's right edge is the same x in every row.
+              // The fixed right column: traffic line, then the
+              // color-coded ping text — the same right edge in
+              // every row.
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
@@ -367,7 +377,7 @@ class _ConfigRow extends StatelessWidget {
                         profileHasTotals(profile)
                             ? 'Used traffic: ${fmtBytes(profile.totalDownBytes + profile.totalUpBytes)}'
                             : 'Used traffic: —',
-                        style: Ember.caption.copyWith(color: Ember.dim),
+                        style: Desk.caption.copyWith(color: Desk.dim),
                       ),
                     ),
                   ),
@@ -383,8 +393,8 @@ class _ConfigRow extends StatelessWidget {
               const SizedBox(width: 6),
               PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert_rounded,
-                    color: Ember.faint, size: 20),
-                color: Ember.card,
+                    color: Desk.faint, size: 20),
+                color: Colors.white,
                 onSelected: (v) => unawaited(_act(context, v)),
                 itemBuilder: (_) => [
                   PopupMenuItem(value: 'delay', child: Text(l.delayTest)),
@@ -399,13 +409,13 @@ class _ConfigRow extends StatelessWidget {
                   PopupMenuItem(
                     value: 'delete',
                     child: Text(l.deleteProfile,
-                        style: const TextStyle(color: Ember.red)),
+                        style: const TextStyle(color: Desk.red)),
                   ),
                 ],
               ),
               if (running)
                 const Icon(Icons.check_circle_rounded,
-                    size: 20, color: Ember.green),
+                    size: 20, color: Desk.green),
             ],
           ),
         ),
@@ -451,5 +461,71 @@ class _ConfigRow extends StatelessWidget {
       case 'delete':
         await xray.deleteProfile(profile);
     }
+  }
+}
+
+/// The V2Ray page's session card (sample 2): UPLOAD / DOWNLOAD /
+/// TIME hero columns over the controller's live rates and the
+/// session clock; dashes while disconnected.
+class _V2raySessionCard extends StatelessWidget {
+  const _V2raySessionCard({required this.xray});
+
+  final XrayController xray;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = xray.state;
+    final running = state.running;
+    final (upValue, upUnit) = rateParts(running ? xray.upRate : 0);
+    final (downValue, downUnit) = rateParts(running ? xray.downRate : 0);
+    return GlassCard(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 18),
+      child: DesktopHeroRow(
+        stats: [
+          DesktopHeroStat(
+            icon: Icons.arrow_upward_rounded,
+            label: 'UPLOAD',
+            value: running ? upValue : '—',
+            unit: running ? upUnit : '',
+          ),
+          DesktopHeroStat(
+            icon: Icons.arrow_downward_rounded,
+            label: 'DOWNLOAD',
+            value: running ? downValue : '—',
+            unit: running ? downUnit : '',
+          ),
+          _XrayTimeHero(sinceMs: running ? state.sinceMs : 0),
+        ],
+      ),
+    );
+  }
+}
+
+/// The TIME hero of the V2Ray session card (ticks while running).
+class _XrayTimeHero extends StatelessWidget {
+  const _XrayTimeHero({required this.sinceMs});
+  final int sinceMs;
+
+  @override
+  Widget build(BuildContext context) {
+    if (sinceMs <= 0) {
+      return const DesktopHeroStat(
+        icon: Icons.schedule_rounded,
+        label: 'TIME',
+        value: '—',
+      );
+    }
+    return StreamBuilder<void>(
+      stream: Stream.periodic(const Duration(seconds: 1)),
+      builder: (context, _) => DesktopHeroStat(
+        icon: Icons.schedule_rounded,
+        label: 'TIME',
+        value: fmtDuration(
+          DateTime.now().difference(
+            DateTime.fromMillisecondsSinceEpoch(sinceMs),
+          ),
+        ),
+      ),
+    );
   }
 }

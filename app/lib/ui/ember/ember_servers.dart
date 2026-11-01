@@ -15,6 +15,7 @@ import '../../l10n/app_localizations.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import 'desktop_v2ray.dart';
+import 'desktop_widgets.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'profile_editor.dart';
@@ -99,7 +100,14 @@ class _MozillaServersState extends State<_MozillaServers> {
       final list = await widget.core.call(
         (api) => api.pingLocations([for (final l in _locations) l.code]),
       );
-      if (mounted) setState(() => _locations = list.locations);
+      // The desktop Servers page auto-sorts fastest-first after a
+      // ping run (display only; the core's order is untouched, and
+      // the connected row keeps its highlight wherever it lands).
+      if (mounted) {
+        setState(() => _locations = widget.desktop
+            ? sortedLocationsByPing(list.locations)
+            : list.locations);
+      }
     } catch (e) {
       // The old numbers stay, but the failure is said out loud now.
       if (mounted) setState(() => _pingError = e.toString());
@@ -132,12 +140,16 @@ class _MozillaServersState extends State<_MozillaServers> {
               .contains(q);
     }).toList();
 
+    if (widget.desktop) {
+      return ListenableBuilder(
+        listenable: widget.core,
+        builder: (context, _) => _buildDesktop(l, selection, shown),
+      );
+    }
     return ListenableBuilder(
       listenable: widget.core,
       builder: (context, _) => ListView(
-        padding: widget.desktop
-            ? const EdgeInsets.fromLTRB(26, 20, 26, 18)
-            : const EdgeInsets.fromLTRB(18, 12, 18, 18),
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
         children: [
           Row(
             children: [
@@ -246,6 +258,133 @@ class _MozillaServersState extends State<_MozillaServers> {
       ),
     );
   }
+  /// The desktop Servers page (Sample A): the smart-pick card,
+  /// then ONE big glass card — "Mozilla Locations", the orange
+  /// outline Test-all button, the search field, and the location
+  /// rows inside it. After a ping run the rows stand fastest-first
+  /// (see _pingAll); the connected row keeps its peach tint and
+  /// orange check wherever it lands, and ping numbers follow the
+  /// user's color rule (green ≤ 150 ms, yellow above).
+  Widget _buildDesktop(
+    AppLocalizations l,
+    String selection,
+    List<Location> shown,
+  ) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(26, 22, 26, 18),
+      children: [
+        // The smart pick, in the same glass.
+        GlassCard(
+          glow: selection == 'fastest',
+          onTap: () => _pick('fastest'),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: const BoxDecoration(
+                  gradient: Ember.gradient,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.bolt_rounded,
+                  color: Color(0xFF1A1206),
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(l.smartPick, style: Desk.heading),
+                    Text(l.smartPickSub, style: Desk.caption),
+                  ],
+                ),
+              ),
+              EmberChip(
+                label: l.optimalChip,
+                selected: selection == 'fastest',
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        GlassCard(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Mozilla Locations',
+                      style: TextStyle(
+                        fontSize: 25,
+                        fontWeight: FontWeight.w800,
+                        color: Desk.ink,
+                      ),
+                    ),
+                  ),
+                  DesktopActionButton(
+                    icon: Icons.refresh_rounded,
+                    label: l.pingAll,
+                    primary: true,
+                    busy: _pinging,
+                    onTap: _pinging ? null : () => unawaited(_pingAll()),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                onChanged: (v) => setState(() => _query = v),
+                style: Desk.body,
+                decoration: emberField(
+                  context,
+                  l.searchCountry,
+                  prefix: const Icon(Icons.search_rounded,
+                      color: Desk.faint, size: 20),
+                ),
+              ),
+              if (_pingError.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    _pingError,
+                    style: Desk.caption.copyWith(color: Desk.red),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              if (_loading)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(
+                    child: CircularProgressIndicator(color: Ember.orange),
+                  ),
+                )
+              else if (shown.isEmpty)
+                EmberEmpty(
+                  icon: Icons.public_off_rounded,
+                  text: l.noServersFound,
+                )
+              else
+                for (var i = 0; i < shown.length; i++) ...[
+                  if (i > 0) const Divider(color: Desk.line, height: 1),
+                  _DesktopLocationRow(
+                    location: shown[i],
+                    selected: selection == shown[i].code ||
+                        (selection.isEmpty && shown[i].recommended),
+                    onTap: () => _pick(shown[i].code),
+                  ),
+                ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
 }
 
 class _LocationRow extends StatelessWidget {
@@ -319,6 +458,101 @@ class _LocationRow extends StatelessWidget {
               child: const Icon(Icons.check_rounded, color: Color(0xFF1A1206), size: 17),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// One location row inside the desktop Servers card: a round
+/// flag, the bold "City • Country" line, and the color-coded
+/// ping at the right; the connected row is peach-tinted with an
+/// orange check circle.
+class _DesktopLocationRow extends StatelessWidget {
+  const _DesktopLocationRow({
+    required this.location,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final Location location;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final ms = location.pingMs;
+    final country =
+        localizedCountryName(context, location.code, location.name);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          decoration: BoxDecoration(
+            gradient: selected ? Desk.peachGradient : null,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              FlagCircle(code: location.code, size: 40),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Text(
+                  location.city.isEmpty
+                      ? country
+                      : '${location.city} • $country',
+                  style: const TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w700,
+                    color: Desk.ink,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (ms > 0)
+                Text(
+                  '${latDigits(ms)} ${l.msUnit}',
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w700,
+                    color: deskPingColor(ms),
+                  ),
+                )
+              else if (location.pingError.isNotEmpty)
+                Flexible(
+                  child: Text(
+                    location.pingError,
+                    overflow: TextOverflow.ellipsis,
+                    style: Desk.caption.copyWith(color: Desk.red),
+                  ),
+                )
+              else
+                const Text(
+                  '—',
+                  style: TextStyle(fontSize: 14, color: Desk.faint),
+                ),
+              if (selected) ...[
+                const SizedBox(width: 10),
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: const BoxDecoration(
+                    gradient: Ember.gradient,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 15,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/core_controller.dart';
+import '../../features.dart';
 import '../../core/models.dart';
 import '../../l10n/app_localizations.dart';
 import '../../xray/xray_controller.dart';
@@ -186,7 +187,7 @@ class _AccountCard extends StatelessWidget {
                 EmberChip(label: l.signInNeeded, dot: Ember.red),
               PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert_rounded, color: Ember.faint, size: 20),
-                color: Ember.card,
+                color: Features.desktopShell ? Colors.white : Ember.card,
                 onSelected: (v) {
                   if (v == 'refresh') unawaited(core.refreshQuota(account));
                   if (v == 'remove') unawaited(core.remove(account));
@@ -298,8 +299,10 @@ class _SubCard extends StatelessWidget {
                 Container(
                   width: 62,
                   height: 62,
-                  decoration: const BoxDecoration(
-                    color: Ember.cardSoft,
+                  decoration: BoxDecoration(
+                    color: Features.desktopShell
+                        ? Colors.white.withValues(alpha: 0.6)
+                        : Ember.cardSoft,
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(
@@ -328,7 +331,7 @@ class _SubCard extends StatelessWidget {
                             color: Ember.faint,
                             size: 20,
                           ),
-                          color: Ember.card,
+                          color: Features.desktopShell ? Colors.white : Ember.card,
                           onSelected: (v) async {
                             if (v == 'update') {
                               try {
@@ -423,7 +426,7 @@ Future<void> showAddSubscriptionSheet(
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: Ember.surface,
+    backgroundColor: Features.desktopShell ? Colors.white : Ember.surface,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
     ),

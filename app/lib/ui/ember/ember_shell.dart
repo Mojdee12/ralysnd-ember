@@ -9,6 +9,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -607,17 +608,27 @@ class _EmberShellState extends State<EmberShell> {
           _ => l.modeWarp,
         };
     return Scaffold(
-      backgroundColor: const Color(0xFF11141C),
+      backgroundColor: const Color(0xFFE9EEF4),
       body: Stack(
         children: [
-          // The mockups' backdrop: a deep graphite-navy base with
-          // the dotted world map BRIGHT across the whole window;
-          // each glass card blurs it locally (no global blur — that
-          // is what washed the map out in 2.0.1). The whole backdrop
-          // sits in a RepaintBoundary: it is fully static, so its
-          // layer is painted once and composited under everything,
-          // never repainted by page rebuilds or value ticks.
-          const Positioned.fill(child: ColoredBox(color: Color(0xFF11141C))),
+          // The Sample A backdrop: a pale blue-grey base with the
+          // monochrome dotted world map across the whole window;
+          // each glass card blurs it locally (no global blur). The
+          // whole backdrop sits in a RepaintBoundary: it is fully
+          // static, so its layer is painted once and composited
+          // under everything, never repainted by page rebuilds or
+          // value ticks.
+          const Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xFFDCE5EF), Color(0xFFF0F3F7)],
+                ),
+              ),
+            ),
+          ),
           Positioned.fill(
             child: RepaintBoundary(
               child: Stack(
@@ -645,7 +656,7 @@ class _EmberShellState extends State<EmberShell> {
                             // Kept very faint: this glow sits behind the
                             // first cards, whose backdrop blur would wash
                             // their glass warm if it were any stronger.
-                            Ember.orange.withValues(alpha: 0.04),
+                            Ember.orange.withValues(alpha: 0.05),
                             Colors.transparent,
                           ],
                           stops: const [0, 0.55],
@@ -653,8 +664,8 @@ class _EmberShellState extends State<EmberShell> {
                       ),
                     ),
                   ),
-                  // The mockups' map calms toward the bottom edge, so
-                  // the status bar stays readable over it.
+                  // The map calms toward the bottom edge, so the
+                  // status bar stays readable over it.
                   const Positioned.fill(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
@@ -664,7 +675,7 @@ class _EmberShellState extends State<EmberShell> {
                           colors: [
                             Colors.transparent,
                             Colors.transparent,
-                            Color(0x9911141C),
+                            Color(0x59FFFFFF),
                           ],
                           stops: [0, 0.74, 1],
                         ),
@@ -725,9 +736,9 @@ class _EmberShellState extends State<EmberShell> {
 /// The Fluent rail's engine glyphs, echoing the mockups (globe,
 /// linked nodes, umbrella).
 IconData _engineIcon(int mode) => switch (mode) {
-      0 => Icons.public_rounded,
+      0 => Icons.verified_user_rounded,
       1 => Icons.hub_rounded,
-      2 => Icons.umbrella_rounded,
+      2 => Icons.public_rounded,
       3 => Icons.highlight_rounded,
       _ => Icons.bolt_rounded,
     };
@@ -767,114 +778,147 @@ class _DesktopRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final who = accountEmail.isNotEmpty ? accountEmail : accountName;
-    return Container(
-      width: 250,
-      decoration: BoxDecoration(
-        color: Ember.surface.withValues(alpha: 0.78),
-        border: const Border(right: BorderSide(color: Ember.line)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // The brand block: the mockups' shield-and-flame mark
-          // over the name, centered (no app-icon tile).
-          const Padding(
-            padding: EdgeInsets.fromLTRB(18, 24, 18, 20),
-            child: Column(
-              children: [
-                EmberShieldMark(size: 66),
-                SizedBox(height: 10),
-                Text(
-                  'Ralysnd Ember',
-                  style: TextStyle(
-                    fontSize: 16.5,
-                    fontWeight: FontWeight.w700,
-                    color: Ember.text,
-                  ),
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          width: 260,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.55),
+            border: const Border(right: BorderSide(color: Desk.line)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // The brand block, as the samples draw it: the
+              // shield-and-flame mark at the left, the name large
+              // beside it, "V P N" letter-spaced beneath the name.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 26, 18, 26),
+                child: Row(
+                  children: [
+                    const EmberShieldMark(size: 52),
+                    const SizedBox(width: 13),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Ralysnd Ember',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: Desk.ink,
+                              height: 1.1,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            'V P N',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 2.5,
+                              color: Desk.faint,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-          for (final e in engines)
-            _RailItem(
-              icon: _engineIcon(e.mode),
-              label: e.label,
-              selected: tab == 0 && mode == e.mode,
-              onTap: () => onEngine(e.mode),
-            ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-            child: Divider(color: Ember.line, height: 1),
-          ),
-          _RailItem(
-            icon: Icons.layers_rounded,
-            label: serversLabel,
-            selected: tab == 1,
-            onTap: onServers,
-          ),
-          _RailItem(
-            icon: Icons.settings_rounded,
-            label: settingsLabel,
-            selected: tab == 3,
-            onTap: onSettings,
-          ),
-          const Spacer(),
-          // The account chip pinned at the foot.
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onAccounts,
-                borderRadius: BorderRadius.circular(14),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 9),
-                  decoration: BoxDecoration(
-                    color: tab == 2
-                        ? Ember.orange.withValues(alpha: 0.16)
-                        : Ember.card.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Ember.line),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 34,
-                        height: 34,
-                        decoration: const BoxDecoration(
-                          color: Ember.cardSoft,
-                          shape: BoxShape.circle,
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          _initials(who),
-                          style: const TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w800,
-                            color: Ember.orange,
-                          ),
+              ),
+              for (final e in engines)
+                _RailItem(
+                  icon: _engineIcon(e.mode),
+                  label: e.label,
+                  selected: tab == 0 && mode == e.mode,
+                  onTap: () => onEngine(e.mode),
+                ),
+              const SizedBox(height: 10),
+              _RailItem(
+                icon: Icons.layers_rounded,
+                label: serversLabel,
+                selected: tab == 1,
+                onTap: onServers,
+              ),
+              _RailItem(
+                icon: Icons.settings_rounded,
+                label: settingsLabel,
+                selected: tab == 3,
+                onTap: onSettings,
+              ),
+              const Spacer(),
+              // The account chip pinned at the foot: an avatar
+              // circle with an orange ring, the email, a chevron.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 18),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: onAccounts,
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        gradient: tab == 2 ? Desk.peachGradient : null,
+                        color: tab == 2
+                            ? null
+                            : Colors.white.withValues(alpha: 0.65),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: tab == 2 ? Ember.orange : Desk.line,
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          who.isEmpty ? 'No account' : who,
-                          style: const TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                            color: Ember.text,
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 34,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Ember.orange, width: 2),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              _initials(who),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: Desk.ink,
+                              ),
+                            ),
                           ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              who.isEmpty ? 'No account' : who,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                                color: Desk.ink,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 19,
+                            color: Desk.faint,
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -890,8 +934,10 @@ class _DesktopRail extends StatelessWidget {
   }
 }
 
-/// One rail entry: the mockups' translucent ember fill with an
-/// orange edge bar when selected, plain dim text otherwise.
+/// One rail entry: the samples' tall row (~64 px) — icon and
+/// label at generous spacing; selected rows wear the peach tint
+/// with a solid orange bar at the left edge and ink text, the
+/// rest stay dim on the glass.
 class _RailItem extends StatelessWidget {
   const _RailItem({
     required this.icon,
@@ -908,24 +954,22 @@ class _RailItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+            height: 60,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
             decoration: BoxDecoration(
-              color: selected
-                  ? Ember.orange.withValues(alpha: 0.20)
-                  : Colors.transparent,
+              gradient: selected ? Desk.peachGradient : null,
               borderRadius: BorderRadius.circular(12),
               border: Border(
                 left: BorderSide(
                   color: selected ? Ember.orange : Colors.transparent,
-                  width: 3,
+                  width: 4,
                 ),
               ),
             ),
@@ -933,17 +977,17 @@ class _RailItem extends StatelessWidget {
               children: [
                 Icon(
                   icon,
-                  size: 21,
-                  color: selected ? Ember.orange : Ember.dim,
+                  size: 23,
+                  color: selected ? Desk.ink : Desk.dim,
                 ),
-                const SizedBox(width: 13),
+                const SizedBox(width: 14),
                 Expanded(
                   child: Text(
                     label,
                     style: TextStyle(
-                      fontSize: 14.5,
+                      fontSize: 15.5,
                       fontWeight: FontWeight.w700,
-                      color: selected ? Ember.text : Ember.dim,
+                      color: selected ? Desk.ink : Desk.dim,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),

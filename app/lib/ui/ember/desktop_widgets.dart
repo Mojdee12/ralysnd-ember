@@ -10,9 +10,9 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 
-/// The mockups' page header: a large title, a muted subtitle, and
-/// optional actions at the right (the V2Ray page's Add / Import /
-/// Test All buttons).
+/// The Sample A page header: a large ink title, a muted subtitle,
+/// and optional actions at the right (the V2Ray page's Add / Import
+/// / Test All buttons).
 class DesktopHeader extends StatelessWidget {
   const DesktopHeader({
     super.key,
@@ -42,12 +42,12 @@ class DesktopHeader extends StatelessWidget {
                   style: TextStyle(
                     fontSize: titleSize,
                     fontWeight: FontWeight.w800,
-                    color: Ember.text,
+                    color: Desk.ink,
                     height: 1.1,
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(subtitle, style: Ember.dimStyle.copyWith(fontSize: 13.5)),
+                Text(subtitle, style: Desk.dimStyle.copyWith(fontSize: 13.5)),
               ],
             ),
           ),
@@ -59,8 +59,9 @@ class DesktopHeader extends StatelessWidget {
       );
 }
 
-/// The mockups' bottom status bar: a summary line at the left and
-/// the protection state at the right, over a hairline.
+/// The Sample A bottom status bar: a frosted strip over a
+/// hairline — shield + "Protection: ON" at the LEFT (ON in ember
+/// orange), the page's detail line small and grey at the RIGHT.
 class DesktopStatusBar extends StatelessWidget {
   const DesktopStatusBar({
     super.key,
@@ -68,6 +69,7 @@ class DesktopStatusBar extends StatelessWidget {
     required this.protectionOn,
   });
 
+  /// The detail text shown at the bar's right end.
   final String left;
   final bool protectionOn;
 
@@ -75,37 +77,42 @@ class DesktopStatusBar extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.fromLTRB(4, 10, 4, 2),
         decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: Ember.line)),
+          border: Border(top: BorderSide(color: Desk.line)),
         ),
         child: Row(
           children: [
             Icon(
-              protectionOn
-                  ? Icons.check_circle_outline_rounded
-                  : Icons.radio_button_unchecked_rounded,
-              size: 16,
-              color: protectionOn ? Ember.green : Ember.faint,
+              Icons.shield_rounded,
+              size: 17,
+              color: protectionOn ? Ember.orange : Desk.faint,
             ),
             const SizedBox(width: 7),
-            Expanded(
-              child: Text(
-                left,
-                style: Ember.caption.copyWith(fontSize: 12.5),
-                overflow: TextOverflow.ellipsis,
+            Text.rich(
+              TextSpan(
+                children: [
+                  const TextSpan(text: 'Protection: '),
+                  TextSpan(
+                    text: protectionOn ? 'ON' : 'OFF',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: protectionOn ? Ember.orange : Desk.faint,
+                    ),
+                  ),
+                ],
+              ),
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: Desk.inkSoft,
               ),
             ),
-            Icon(
-              Icons.shield_rounded,
-              size: 16,
-              color: protectionOn ? Ember.orange : Ember.faint,
-            ),
-            const SizedBox(width: 6),
-            Text(
-              protectionOn ? 'Protection: ON' : 'Protection: OFF',
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w800,
-                color: protectionOn ? Ember.orange : Ember.faint,
+            const Spacer(),
+            Flexible(
+              child: Text(
+                left,
+                style: Desk.caption.copyWith(fontSize: 12.5),
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
               ),
             ),
           ],
@@ -149,11 +156,12 @@ class DesktopTogglePill extends StatelessWidget {
           height: 54,
           decoration: BoxDecoration(
             gradient: on ? Ember.gradient : null,
-            color: on ? null : Colors.white.withValues(alpha: 0.08),
+            color: on ? null : const Color(0xFFDFE4EB),
             borderRadius: BorderRadius.circular(999),
             border: on
                 ? null
-                : Border.all(color: Colors.white.withValues(alpha: 0.16)),
+                : Border.all(
+                    color: const Color(0xFF2A3444).withValues(alpha: 0.10)),
             boxShadow: on
                 ? [
                     BoxShadow(
@@ -171,15 +179,17 @@ class DesktopTogglePill extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (labelIcon != null && !busy) ...[
-                      Icon(labelIcon, size: 19, color: Ember.text),
+                      Icon(labelIcon,
+                          size: 19,
+                          color: on ? Colors.white : Desk.inkSoft),
                       const SizedBox(width: 8),
                     ],
                     Text(
                       busy ? '…' : (on ? onLabel : offLabel),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
-                        color: Ember.text,
+                        color: on ? Colors.white : Desk.inkSoft,
                       ),
                     ),
                   ],
@@ -199,11 +209,11 @@ class DesktopTogglePill extends StatelessWidget {
                             colors: [Color(0xFFFFF6E0), Color(0xFFFFD9A0)],
                           )
                         : null,
-                    color: on ? null : const Color(0xFF7A4210),
+                    color: on ? null : Colors.white,
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.30),
+                        color: Colors.black.withValues(alpha: 0.18),
                         blurRadius: 6,
                         offset: const Offset(0, 2),
                       ),
@@ -240,7 +250,7 @@ class DesktopSwitch extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(999),
             gradient: value ? Ember.gradient : null,
-            color: value ? null : const Color(0xFF3B3C45),
+            color: value ? null : const Color(0xFFD8DEE6),
             boxShadow: value
                 ? [
                     BoxShadow(
@@ -259,7 +269,7 @@ class DesktopSwitch extends StatelessWidget {
               decoration: BoxDecoration(
                 color: value
                     ? const Color(0xFFFFE9C4)
-                    : const Color(0xFFD8D8DE),
+                    : Colors.white,
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
@@ -302,58 +312,99 @@ class DesktopEnginePill extends StatelessWidget {
       );
 }
 
-/// A hero stat of the session cards: a small-caps label with an
-/// orange glyph above a big bold value — the numbers dominate, as
-/// in the mockups ("12.4 MB/s" under DOWNLOAD).
+/// A hero stat of the Sample A session cards: an orange outline
+/// icon, a small letter-spaced caps label under it, then a HUGE
+/// number with a smaller unit — one centered column of the card's
+/// three, exactly as the samples draw UPLOAD / DOWNLOAD / TIME.
 class DesktopHeroStat extends StatelessWidget {
   const DesktopHeroStat({
     super.key,
     required this.icon,
     required this.label,
     required this.value,
-    this.valueSize = 27,
+    this.unit = '',
+    this.valueSize = 32,
   });
 
   final IconData icon;
   final String label;
   final String value;
+
+  /// The smaller unit after the number ("MB/s"); empty when the
+  /// value already carries its own scale (a duration, "—").
+  final String unit;
   final double valueSize;
 
   @override
   Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 15, color: Ember.orange),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.1,
-                  color: Ember.dim,
-                ),
-              ),
-            ],
+          Icon(icon, size: 21, color: Ember.orange),
+          const SizedBox(height: 7),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.6,
+              color: Desk.dim,
+            ),
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: 6),
           Directionality(
             textDirection: TextDirection.ltr,
-            child: Text(
-              value,
-              style: TextStyle(
-                fontSize: valueSize,
-                fontWeight: FontWeight.w800,
-                color: Ember.text,
-                height: 1.05,
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: value,
+                    style: TextStyle(
+                      fontSize: valueSize,
+                      fontWeight: FontWeight.w800,
+                      color: Desk.ink,
+                      height: 1.05,
+                    ),
+                  ),
+                  if (unit.isNotEmpty)
+                    TextSpan(
+                      text: ' $unit',
+                      style: TextStyle(
+                        fontSize: valueSize * 0.45,
+                        fontWeight: FontWeight.w700,
+                        color: Desk.inkSoft,
+                        height: 1.05,
+                      ),
+                    ),
+                ],
               ),
               overflow: TextOverflow.ellipsis,
             ),
           ),
+        ],
+      );
+}
+
+/// The three hero columns of a session card, divided by hairlines
+/// as the samples draw them.
+class DesktopHeroRow extends StatelessWidget {
+  const DesktopHeroRow({super.key, required this.stats});
+
+  final List<Widget> stats;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < stats.length; i++) ...[
+            if (i > 0)
+              Container(
+                width: 1,
+                height: 86,
+                color: Desk.line,
+              ),
+            Expanded(child: stats[i]),
+          ],
         ],
       );
 }
@@ -382,18 +433,18 @@ class DesktopModeChip extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
             decoration: BoxDecoration(
               gradient: selected ? Ember.gradient : null,
-              color: selected ? null : Colors.white.withValues(alpha: 0.07),
+              color: selected ? null : Colors.white.withValues(alpha: 0.55),
               borderRadius: BorderRadius.circular(999),
               border: selected
                   ? null
-                  : Border.all(color: Colors.white.withValues(alpha: 0.14)),
+                  : Border.all(color: Desk.line),
             ),
             child: Text(
               label,
               style: TextStyle(
                 fontSize: 12.5,
                 fontWeight: FontWeight.w800,
-                color: selected ? const Color(0xFF1A1206) : Ember.dim,
+                color: selected ? const Color(0xFF1A1206) : Desk.dim,
               ),
             ),
           ),
@@ -439,10 +490,12 @@ class DesktopStateBadge extends StatelessWidget {
       );
 }
 
-/// The V2Ray grid's ping column: one fixed width (88 px) in every
-/// row so the values form a straight right-aligned column, exactly
-/// as the approved clean mockup fixed it. States: a colored pill, a
-/// spinner while testing, "Failed" in ember red, an em dash.
+/// The V2Ray rows' ping column: one fixed width (88 px) in every
+/// row so the values form a straight right-aligned column. The
+/// number is plain colored TEXT (the Sample A rows carry no pill):
+/// GREEN at or under 150 ms, YELLOW above it — the user's color
+/// rule. A spinner while testing, "Failed" in ember red, an em
+/// dash when unmeasured.
 class DesktopPingPill extends StatelessWidget {
   const DesktopPingPill({
     super.key,
@@ -476,11 +529,11 @@ class DesktopPingPill extends StatelessWidget {
         width: 88,
         child: Text(
           'Failed',
-          textAlign: TextAlign.center,
+          textAlign: TextAlign.right,
           style: TextStyle(
-            fontSize: 13,
+            fontSize: 14,
             fontWeight: FontWeight.w700,
-            color: Ember.red,
+            color: Desk.red,
           ),
         ),
       );
@@ -490,33 +543,105 @@ class DesktopPingPill extends StatelessWidget {
         width: 88,
         child: Text(
           '—',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: Ember.faint),
+          textAlign: TextAlign.right,
+          style: TextStyle(fontSize: 14, color: Desk.faint),
         ),
       );
     }
-    // The mockups' pills are saturated pastel fills with dark text:
-    // light green, yellow, orange-red by latency band.
-    final (fill, ink) = ms < 100
-        ? (const Color(0xFF9BDC7F), const Color(0xFF1E2A10))
-        : ms < 250
-            ? (const Color(0xFFFFC94D), const Color(0xFF33230A))
-            : (const Color(0xFFFF9E6B), const Color(0xFF3A1C08));
     return SizedBox(
       width: 88,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        decoration: BoxDecoration(
-          color: fill,
-          borderRadius: BorderRadius.circular(999),
+      child: Text(
+        '${latDigits(ms)} $unit',
+        textAlign: TextAlign.right,
+        style: TextStyle(
+          fontSize: 14.5,
+          fontWeight: FontWeight.w700,
+          color: deskPingColor(ms),
         ),
-        alignment: Alignment.center,
-        child: Text(
-          '${latDigits(ms)} $unit',
-          style: TextStyle(
-            fontSize: 12.5,
-            fontWeight: FontWeight.w800,
-            color: ink,
+      ),
+    );
+  }
+}
+
+/// The hero cards' big toggle of the samples: a wide orange
+/// GRADIENT pill with a big pale knob (left while on, per the
+/// app's switch convention), no label inside — the card's title
+/// carries the words. Off: a pale grey pill, white knob at the
+/// right. One tap toggles; a spinner replaces the knob while busy.
+class DesktopHeroToggle extends StatelessWidget {
+  const DesktopHeroToggle({
+    super.key,
+    required this.on,
+    required this.busy,
+    required this.onTap,
+  });
+
+  final bool on;
+  final bool busy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: busy ? null : onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          width: 116,
+          height: 58,
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            gradient: on ? Ember.gradient : null,
+            color: on ? null : const Color(0xFFD8DEE6),
+            borderRadius: BorderRadius.circular(999),
+            boxShadow: on
+                ? [
+                    BoxShadow(
+                      color: Ember.orange.withValues(alpha: 0.40),
+                      blurRadius: 18,
+                      offset: const Offset(0, 5),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: AnimatedAlign(
+            duration: const Duration(milliseconds: 180),
+            alignment: on ? Alignment.centerLeft : Alignment.centerRight,
+            child: busy
+                ? const SizedBox(
+                    width: 46,
+                    height: 46,
+                    child: Padding(
+                      padding: EdgeInsets.all(10),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.6,
+                        color: Colors.white,
+                      ),
+                    ),
+                  )
+                : Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      gradient: on
+                          ? const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Color(0xFFFFF6E0), Color(0xFFFFD9A0)],
+                            )
+                          : null,
+                      color: on ? null : Colors.white,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.18),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                  ),
           ),
         ),
       ),
@@ -541,7 +666,7 @@ class FlagRect extends StatelessWidget {
         width: width,
         height: height,
         child: const Center(
-          child: Icon(Icons.public_rounded, size: 22, color: Ember.dim),
+          child: Icon(Icons.public_rounded, size: 22, color: Desk.dim),
         ),
       );
     }
@@ -556,7 +681,7 @@ class FlagRect extends StatelessWidget {
           placeholderBuilder: (_) => Center(
             child: Text(
               code.toUpperCase(),
-              style: const TextStyle(fontSize: 12, color: Ember.dim),
+              style: const TextStyle(fontSize: 12, color: Desk.dim),
             ),
           ),
         ),
@@ -588,22 +713,22 @@ class DesktopKvRow extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 9),
             child: Row(
               children: [
-                Icon(icon, size: 17, color: Ember.faint),
+                Icon(icon, size: 17, color: Desk.faint),
                 const SizedBox(width: 9),
-                Text(label, style: Ember.dimStyle),
+                Text(label, style: Desk.dimStyle),
                 const Spacer(),
                 Directionality(
                   textDirection: TextDirection.ltr,
                   child: Text(
                     value,
-                    style: Ember.heading.copyWith(fontSize: 14.5),
+                    style: Desk.heading.copyWith(fontSize: 14.5),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
           ),
-          if (divider) const Divider(color: Ember.line, height: 1),
+          if (divider) const Divider(color: Desk.line, height: 1),
         ],
       );
 }
@@ -628,7 +753,7 @@ class DesktopActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = primary ? Ember.orange : Ember.text;
+    final color = primary ? Ember.orange : Desk.ink;
     return Padding(
       padding: const EdgeInsets.only(left: 9),
       child: Material(
@@ -641,11 +766,11 @@ class DesktopActionButton extends StatelessWidget {
             decoration: BoxDecoration(
               border: Border.all(
                 color: primary
-                    ? Ember.orange.withValues(alpha: 0.75)
-                    : Colors.white.withValues(alpha: 0.16),
+                    ? Ember.orange.withValues(alpha: 0.85)
+                    : Desk.line,
               ),
               borderRadius: BorderRadius.circular(13),
-              color: Colors.white.withValues(alpha: 0.07),
+              color: Colors.white.withValues(alpha: 0.55),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -777,4 +902,13 @@ class _ShieldFlamePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Splits a byte rate into the hero stat's number and unit
+/// ("86.3" + "MB/s") from the shared byte formatter.
+(String, String) rateParts(int bytesPerSec) {
+  final b = fmtBytes(bytesPerSec);
+  final i = b.indexOf(' ');
+  if (i < 0) return (b, '/s');
+  return (b.substring(0, i), '${b.substring(i + 1)}/s');
 }

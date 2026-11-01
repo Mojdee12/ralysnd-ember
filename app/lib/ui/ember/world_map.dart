@@ -91,7 +91,7 @@ class WorldMapPainter extends CustomPainter {
     final dotPaint = Paint()..style = PaintingStyle.fill;
     for (final (pos, ember) in _dots) {
       dotPaint.color = backdrop
-          ? const Color(0xFF9DB4D6).withValues(alpha: 0.55)
+          ? const Color(0xFF8AA5C6).withValues(alpha: 0.66)
           : ember
               ? Ember.orange.withValues(alpha: faint ? 0.10 : 0.30)
               : const Color(0xFF41454F)

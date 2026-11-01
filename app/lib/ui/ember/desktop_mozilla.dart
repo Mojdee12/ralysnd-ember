@@ -164,118 +164,85 @@ class _MozillaDesktopHomeState extends State<MozillaDesktopHome> {
           children: [
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.fromLTRB(26, 20, 26, 8),
+                padding: const EdgeInsets.fromLTRB(26, 22, 26, 8),
                 children: [
-            DesktopHeader(
-              title: 'Connection',
-              subtitle: 'Secure & Fast VPN Engine',
-            ),
-            const SizedBox(height: 24),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // LEFT: the status card.
-                Expanded(
-                  flex: 11,
-                  child: GlassCard(
-                    glow: on,
-                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+            // THE HERO CARD (Sample A): the huge two-line title
+            // and the flag + location line at the left, the big
+            // orange toggle pill at the right, vertically centered.
+            GlassCard(
+              glow: on,
+              padding: const EdgeInsets.fromLTRB(28, 24, 28, 22),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            DesktopStateBadge(
-                              label: on ? 'SECURE' : 'OFF',
-                              color: on ? Ember.green : Ember.faint,
-                            ),
-                            const Spacer(),
-                            const DesktopEnginePill(label: 'MOZILLA'),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
                         Text(
                           on
-                              ? 'Connected to Mozilla VPN'
-                              : 'Mozilla VPN',
+                              ? 'Connected to\nMozilla VPN'
+                              : busy
+                                  ? 'Connecting…\nMozilla VPN'
+                                  : 'Not connected\nMozilla VPN',
                           style: const TextStyle(
-                            fontSize: 21,
+                            fontSize: 31,
                             fontWeight: FontWeight.w800,
-                            color: Ember.text,
+                            color: Desk.ink,
+                            height: 1.12,
                           ),
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 14),
                         Row(
                           children: [
-                            FlagRect(code: countryCode, width: 34),
+                            FlagRect(code: countryCode, width: 32),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
                                 countryName.isEmpty
                                     ? l.recommendedServer
                                     : '${localizedCountryName(context, countryCode, countryName)}${city.isEmpty ? '' : ' • $city'}',
-                                style: Ember.body,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: Desk.inkSoft,
+                                ),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 7),
                         Text(
                           exitIp.isEmpty
-                              ? 'Exit IP: —'
-                              : 'Exit IP: $exitIp',
-                          style: Ember.dimStyle,
-                        ),
-                        const SizedBox(height: 16),
-                        DesktopTogglePill(
-                          on: on,
-                          busy: busy,
-                          onLabel: 'Connected',
-                          offLabel: 'Connect',
-                          onTap: () => unawaited(_toggle(!on)),
-                        ),
-                        const SizedBox(height: 13),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(
-                              Icons.shield_rounded,
-                              size: 15,
-                              color: Ember.orange,
-                            ),
-                            const SizedBox(width: 6),
-                            Flexible(
-                              child: Text(
-                                footerFacts,
-                                style: Ember.caption.copyWith(fontSize: 12.5),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
+                              ? 'Exit IP: —  •  $footerFacts'
+                              : 'Exit IP: $exitIp  •  $footerFacts',
+                          style: Desk.caption.copyWith(fontSize: 12.5),
                         ),
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(width: 16),
-                // RIGHT: "Session Traffic" — the mockup's card: two
-                // HERO stats (the desktop core exposes no per-session
-                // byte counters, so the heroes are the session time
-                // and the account's quota left — real data only),
-                // then the mockup's icon rows. It is a live island:
-                // the quota figures move with the core's polls, so
-                // it listens on its own and the rest of the page
-                // does not rebuild with them.
-                Expanded(
-                  flex: 10,
-                  child: ListenableBuilder(
-                    listenable: widget.core,
-                    builder: (context, _) =>
-                        _SessionTrafficCard(core: widget.core),
+                  const SizedBox(width: 20),
+                  DesktopHeroToggle(
+                    on: on,
+                    busy: busy,
+                    onTap: () => unawaited(_toggle(!on)),
                   ),
-                ),
-              ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // The session card: the samples' three hero columns
+            // (TIME here leads: the desktop core exposes no
+            // per-session byte counters, so the heroes are the
+            // session clock and the account's quota — real data
+            // only), then the exit row. A live island: the quota
+            // figures move with the core's polls, so it listens on
+            // its own and the rest of the page does not rebuild
+            // with them.
+            ListenableBuilder(
+              listenable: widget.core,
+              builder: (context, _) => _SessionTrafficCard(core: widget.core),
             ),
             // The slim TUN warning: only while TUN is chosen but
             // not running (tunNote is null in every healthy state,
@@ -358,8 +325,14 @@ class _SessionTrafficCard extends StatelessWidget {
         ? exit!.countryName
         : (proxy?.countryName ?? '');
     final exitIp = (exit?.ipv4.isNotEmpty ?? false) ? exit!.ipv4 : '';
+    final mode = status == null ? 'clear' : connectionModeShown(status);
+    final modeLabel = switch (mode) {
+      'tun' => 'TUN',
+      'set' => 'System proxy',
+      _ => 'Proxy only',
+    };
     return GlassCard(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+      padding: const EdgeInsets.fromLTRB(24, 18, 24, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -368,58 +341,63 @@ class _SessionTrafficCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.10),
+                  color: Colors.white.withValues(alpha: 0.65),
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Desk.line),
                 ),
                 child: const Icon(
                   Icons.insights_rounded,
                   size: 17,
-                  color: Ember.text,
+                  color: Desk.ink,
                 ),
               ),
               const SizedBox(width: 9),
-              Text('Session Traffic', style: Ember.heading),
+              Text('Session Traffic', style: Desk.heading),
+            ],
+          ),
+          const SizedBox(height: 18),
+          DesktopHeroRow(
+            stats: [
+              _SessionHero(startedAt: proxy?.startedAt),
+              DesktopHeroStat(
+                icon: Icons.pie_chart_rounded,
+                label: 'QUOTA USED',
+                value: usage == null
+                    ? '—'
+                    : usage.unlimited
+                        ? 'Unlimited'
+                        : fmtGigabytes(usage.usedBytes),
+                unit: usage == null || usage.unlimited ? '' : 'GB',
+                valueSize: usage != null && usage.unlimited ? 21 : 32,
+              ),
+              DesktopHeroStat(
+                icon: Icons.data_usage_rounded,
+                label: 'QUOTA LEFT',
+                value: usage == null
+                    ? '—'
+                    : usage.unlimited
+                        ? 'Unlimited'
+                        : fmtGigabytes(usage.remainingBytes),
+                unit: usage == null || usage.unlimited ? '' : 'GB',
+                valueSize: usage != null && usage.unlimited ? 21 : 32,
+              ),
             ],
           ),
           const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _SessionHero(startedAt: proxy?.startedAt),
-              ),
-              Expanded(
-                child: DesktopHeroStat(
-                  icon: Icons.data_usage_rounded,
-                  label: 'QUOTA LEFT',
-                  value: usage == null
-                      ? '—'
-                      : usage.unlimited
-                          ? 'Unlimited'
-                          : '${fmtGigabytes(usage.remainingBytes)} GB',
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          const Divider(color: Ember.line, height: 1),
+          const Divider(color: Desk.line, height: 1),
           const SizedBox(height: 12),
-          _TrafficRow(
-            icon: Icons.pie_chart_rounded,
-            label: 'Quota used',
-            value: usage == null
-                ? '—'
-                : usage.unlimited
-                    ? 'Unlimited plan'
-                    : '${fmtGigabytes(usage.usedBytes)} of ${fmtGigabytes(usage.limitBytes)} GB',
-          ),
-          const SizedBox(height: 9),
           _TrafficRow(
             icon: Icons.public_rounded,
             label: 'Exit',
             value: exitIp.isEmpty
                 ? '—'
                 : '$exitIp${countryName.isEmpty ? '' : ' • ${localizedCountryName(context, countryCode, countryName)}'}',
+          ),
+          const SizedBox(height: 9),
+          _TrafficRow(
+            icon: Icons.cable_rounded,
+            label: 'Capture',
+            value: modeLabel,
           ),
         ],
       ),
@@ -439,7 +417,7 @@ class _SessionHero extends StatelessWidget {
     if (startedAt == null) {
       return const DesktopHeroStat(
         icon: Icons.schedule_rounded,
-        label: 'SESSION',
+        label: 'TIME',
         value: '—',
       );
     }
@@ -447,7 +425,7 @@ class _SessionHero extends StatelessWidget {
       stream: Stream.periodic(const Duration(seconds: 1)),
       builder: (context, _) => DesktopHeroStat(
         icon: Icons.schedule_rounded,
-        label: 'SESSION',
+        label: 'TIME',
         value: fmtDuration(DateTime.now().difference(startedAt!)),
       ),
     );
@@ -470,7 +448,7 @@ class _TrafficRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
         children: [
-          Icon(icon, size: 17, color: Ember.dim),
+          Icon(icon, size: 17, color: Desk.dim),
           const SizedBox(width: 9),
           Expanded(
             child: Directionality(
@@ -480,12 +458,12 @@ class _TrafficRow extends StatelessWidget {
                   children: [
                     TextSpan(
                       text: '$label: ',
-                      style: const TextStyle(color: Ember.dim),
+                      style: const TextStyle(color: Desk.dim),
                     ),
                     TextSpan(
                       text: value,
                       style: const TextStyle(
-                        color: Ember.text,
+                        color: Desk.ink,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -653,7 +631,7 @@ class _StripRow extends StatelessWidget {
       _ => profile.network.toUpperCase(),
     };
     return Material(
-      color: Colors.white.withValues(alpha: 0.09),
+      color: Colors.white.withValues(alpha: 0.50),
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onTap,
@@ -661,7 +639,7 @@ class _StripRow extends StatelessWidget {
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+            border: Border.all(color: Desk.line),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
           child: Row(

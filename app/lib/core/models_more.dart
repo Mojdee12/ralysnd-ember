@@ -231,3 +231,30 @@ class ProxyConnection {
 
   bool get open => end == null;
 }
+
+/// The display rank of a location after a ping run: answered
+/// first (0), never-answered next (1), failed (the core returned
+/// an error) last (2).
+int locationPingRank(Location l) =>
+    l.pingMs > 0 ? 0 : (l.pingError.isNotEmpty ? 2 : 1);
+
+/// A STABLE fastest-first ordering of [locations] for display:
+/// measured pings ascending, then unmeasured, then failed; equal
+/// keys keep their previous relative order. Display only — the
+/// core's own list order is never written back.
+List<Location> sortedLocationsByPing(List<Location> locations) {
+  final decorated = [
+    for (var i = 0; i < locations.length; i++) (i, locations[i]),
+  ];
+  decorated.sort((a, b) {
+    final ra = locationPingRank(a.$2);
+    final rb = locationPingRank(b.$2);
+    if (ra != rb) return ra.compareTo(rb);
+    if (ra == 0) {
+      final byPing = a.$2.pingMs.compareTo(b.$2.pingMs);
+      if (byPing != 0) return byPing;
+    }
+    return a.$1.compareTo(b.$1);
+  });
+  return [for (final d in decorated) d.$2];
+}

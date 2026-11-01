@@ -40,17 +40,71 @@ abstract final class Ember {
   static const cardRadius = 24.0;
   static const radius = BorderRadius.all(Radius.circular(cardRadius));
 
+  // On the desktop shell the same five styles speak the Sample A
+  // light palette (dark ink on pale glass); the phone styles below
+  // are untouched.
+  static TextStyle get title => Features.desktopShell
+      ? const TextStyle(
+          fontSize: 21, fontWeight: FontWeight.w800, color: Desk.ink)
+      : const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: text);
+  static TextStyle get heading => Features.desktopShell
+      ? const TextStyle(
+          fontSize: 16, fontWeight: FontWeight.w700, color: Desk.ink)
+      : const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: text);
+  static TextStyle get body => Features.desktopShell
+      ? const TextStyle(fontSize: 14, color: Desk.ink, height: 1.35)
+      : const TextStyle(fontSize: 14, color: text, height: 1.35);
+  static TextStyle get dimStyle => Features.desktopShell
+      ? const TextStyle(fontSize: 13, color: Desk.dim, height: 1.35)
+      : const TextStyle(fontSize: 13, color: dim, height: 1.35);
+  static TextStyle get caption => Features.desktopShell
+      ? const TextStyle(fontSize: 11.5, color: Desk.faint, height: 1.3)
+      : const TextStyle(fontSize: 11.5, color: faint, height: 1.3);
+}
+
+/// The Sample A desktop palette (the approved 2.0.7 mockup set):
+/// near-black ink on pale blue-grey glass, one ember orange, the
+/// peach tint of selected rows, and the user's ping colors (green
+/// at or under 150 ms, yellow above). Desktop surfaces only — the
+/// phone palette above never reads these.
+abstract final class Desk {
+  static const ink = Color(0xFF17191D);
+  static const inkSoft = Color(0xFF3A3F47);
+  static const dim = Color(0xFF626A76);
+  static const faint = Color(0xFF98A0AC);
+  static const line = Color(0x1E2A3444);
+  static const green = Color(0xFF1E9E4A);
+  static const yellow = Color(0xFFC99300);
+  static const red = Color(0xFFE5484D);
+  static const orange = Ember.orange;
+  static const cardRadius = 20.0;
+  static const radius = BorderRadius.all(Radius.circular(cardRadius));
+
+  /// The selected-row tint of the samples: a peach wash, stronger
+  /// at the left edge, fading into the glass.
+  static const peachGradient = LinearGradient(
+    begin: Alignment.centerLeft,
+    end: Alignment.centerRight,
+    colors: [Color(0x8CFFC38F), Color(0x2EFFDDBE)],
+  );
+
   static TextStyle get title =>
-      const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: text);
+      const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: ink);
   static TextStyle get heading =>
-      const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: text);
+      const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: ink);
   static TextStyle get body =>
-      const TextStyle(fontSize: 14, color: text, height: 1.35);
+      const TextStyle(fontSize: 14, color: ink, height: 1.35);
   static TextStyle get dimStyle =>
       const TextStyle(fontSize: 13, color: dim, height: 1.35);
   static TextStyle get caption =>
       const TextStyle(fontSize: 11.5, color: faint, height: 1.3);
 }
+
+/// The user's ping color rule (2.0.7): a measured delay reads
+/// GREEN at or under 150 ms and YELLOW above it, on every desktop
+/// surface that prints a ping. (Failures keep their red treatment
+/// at the call sites; this is only called for measured values.)
+Color deskPingColor(int ms) => ms <= 150 ? Desk.green : Desk.yellow;
 
 /// The app background: near-black with a faint ember glow at the top.
 class EmberBackground extends StatelessWidget {
@@ -73,13 +127,13 @@ class EmberBackground extends StatelessWidget {
 
 /// A mockup glass card: soft graphite fill, hairline border, big radius.
 ///
-/// On the desktop shell (Windows) the same widget renders the Fluent
-/// mockups' LIGHT glass instead: a COOL NEUTRAL pale translucent fill
-/// over a real backdrop blur — the dotted map shows through the card
-/// in blue-grey — with a luminous edge and a thin orange rim line
-/// along the top edge (brighter on the [glow] cards, the primary
-/// connection cards). No warm tint washes the fill: orange lives
-/// only in that rim line. The phone rendering below is untouched.
+/// On the desktop shell (Windows) the same widget renders the
+/// Sample A glass instead (the approved 2.0.7 mockup set): a pale
+/// near-white translucent fill (white ~0.80 → 0.68) over a real
+/// backdrop blur — the blue-grey dotted map shows through faintly —
+/// a hairline border, a soft diffuse shadow, and the warm orange
+/// rim line along the top edge (brighter on [glow] cards). Radius
+/// 20, the samples' corner. The phone rendering below is untouched.
 class GlassCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -128,7 +182,7 @@ class GlassCard extends StatelessWidget {
     );
   }
 
-  /// The desktop light-glass surface (see the class doc).
+  /// The desktop Sample A glass surface (see the class doc).
   Widget _buildDesktopGlass() {
     // A RepaintBoundary around the glass: the card's backdrop blur
     // becomes its own composited layer, so a repaint anywhere else
@@ -137,32 +191,31 @@ class GlassCard extends StatelessWidget {
     final surface = RepaintBoundary(
       child: Container(
       decoration: BoxDecoration(
-        borderRadius: Ember.radius,
+        borderRadius: Desk.radius,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.38),
-            blurRadius: 22,
+            color: const Color(0xFF2A3444).withValues(alpha: 0.13),
+            blurRadius: 26,
             offset: const Offset(0, 10),
           ),
           // NO orange halo shadow, deliberately: the card's
           // backdrop blur samples everything painted beneath it,
           // so any filled orange shadow behind the glass bleeds
-          // through the blur and tints the interior sepia (a short
-          // selected row showed exactly that band). The mockups'
+          // through the blur and tints the interior. The samples'
           // warm edge is the bright rim LINE painted on top of the
           // glass below — stronger on [glow] cards — and that is
           // the only orange a card carries.
         ],
       ),
       child: ClipRRect(
-        borderRadius: Ember.radius,
+        borderRadius: Desk.radius,
         child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
           child: Stack(
             children: [
-              // The pale translucent fill, lighter at the top — a
-              // cool blue-grey white, so the glass reads neutral
-              // grey like the mockups, never sepia.
+              // The pale near-white fill of the samples, a touch
+              // lighter at the top: white ~0.80 → 0.68 over the
+              // blurred pale backdrop.
               Positioned.fill(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
@@ -170,8 +223,8 @@ class GlassCard extends StatelessWidget {
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [
-                        const Color(0xFFDDE7F5).withValues(alpha: 0.13),
-                        const Color(0xFFDDE7F5).withValues(alpha: 0.06),
+                        Colors.white.withValues(alpha: 0.80),
+                        Colors.white.withValues(alpha: 0.68),
                       ],
                     ),
                   ),
@@ -180,26 +233,27 @@ class GlassCard extends StatelessWidget {
               Container(
                 padding: padding,
                 decoration: BoxDecoration(
-                  borderRadius: Ember.radius,
-                  border:
-                      Border.all(color: Colors.white.withValues(alpha: 0.20)),
+                  borderRadius: Desk.radius,
+                  border: Border.all(
+                    color: const Color(0xFF2A3444).withValues(alpha: 0.10),
+                  ),
                 ),
                 child: child,
               ),
               // The bright rim line along the top edge, fading at the
-              // corners as in the mockups.
+              // corners as in the samples.
               Positioned(
                 top: 0,
                 left: 26,
                 right: 26,
                 child: Container(
-                  height: 1.4,
+                  height: 1.6,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [
                         Ember.orange.withValues(alpha: 0.05),
-                        Ember.orange.withValues(alpha: glow ? 0.85 : 0.6),
-                        Ember.orange.withValues(alpha: glow ? 0.85 : 0.6),
+                        Ember.orange.withValues(alpha: glow ? 0.95 : 0.7),
+                        Ember.orange.withValues(alpha: glow ? 0.95 : 0.7),
                         Ember.orange.withValues(alpha: 0.05),
                       ],
                       stops: const [0, 0.25, 0.75, 1],
@@ -218,7 +272,7 @@ class GlassCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: Ember.radius,
+        borderRadius: Desk.radius,
         child: surface,
       ),
     );
@@ -501,7 +555,9 @@ class UsageBar extends StatelessWidget {
         borderRadius: BorderRadius.circular(height),
         child: Container(
           height: height,
-          color: const Color(0xFF2A2B33),
+          color: Features.desktopShell
+              ? const Color(0xFFDFE4EB)
+              : const Color(0xFF2A2B33),
           child: Align(
             alignment: AlignmentDirectional.centerStart,
             child: FractionallySizedBox(
@@ -566,6 +622,56 @@ class EmberChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Desktop (Sample A region-chip treatment): the selected chip
+    // is a peach tint with an orange border and a check; the rest
+    // are pale glass chips with ink text.
+    if (Features.desktopShell) {
+      final chip = Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          gradient: selected ? Desk.peachGradient : null,
+          color: selected ? null : Colors.white.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: selected ? Ember.orange : Desk.line,
+            width: selected ? 1.2 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (selected) ...[
+              const Icon(Icons.check_rounded, size: 15, color: Ember.orange),
+              const SizedBox(width: 5),
+            ] else if (dot != null) ...[
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: selected ? Desk.ink : Desk.dim,
+              ),
+            ),
+          ],
+        ),
+      );
+      if (onTap == null) return chip;
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(999),
+          child: chip,
+        ),
+      );
+    }
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       decoration: BoxDecoration(
@@ -806,13 +912,16 @@ class FlagCircle extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         width: size,
         height: size,
-        decoration: const BoxDecoration(
-          color: Ember.cardSoft,
+        decoration: BoxDecoration(
+          color: Features.desktopShell
+              ? Colors.white.withValues(alpha: 0.6)
+              : Ember.cardSoft,
           shape: BoxShape.circle,
         ),
         child: ClipOval(
           child: code.isEmpty
-              ? Icon(Icons.public, size: size * 0.55, color: Ember.dim)
+              ? Icon(Icons.public, size: size * 0.55,
+                  color: Features.desktopShell ? Desk.dim : Ember.dim)
               : SvgPicture.asset(
                   'assets/flags/${code.toLowerCase()}.svg',
                   fit: BoxFit.cover,
@@ -934,9 +1043,32 @@ class EmberButton extends StatelessWidget {
       );
 }
 
-/// An input field in the Ember field style.
+/// An input field in the Ember field style (the Sample A pale
+/// glass field on the desktop shell).
 InputDecoration emberField(BuildContext context, String hint, {Widget? prefix}) =>
-    InputDecoration(
+    Features.desktopShell
+        ? InputDecoration(
+            hintText: hint,
+            hintStyle: const TextStyle(color: Desk.faint, fontSize: 13.5),
+            prefixIcon: prefix,
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.55),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: Desk.line),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: Desk.line),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: Ember.orange, width: 1.4),
+            ),
+          )
+        : InputDecoration(
       hintText: hint,
       hintStyle: const TextStyle(color: Ember.faint, fontSize: 13.5),
       prefixIcon: prefix,
@@ -973,11 +1105,15 @@ class EmberEmpty extends StatelessWidget {
             Container(
               width: 64,
               height: 64,
-              decoration: const BoxDecoration(
-                color: Ember.cardSoft,
+              decoration: BoxDecoration(
+                color: Features.desktopShell
+                    ? Colors.white.withValues(alpha: 0.6)
+                    : Ember.cardSoft,
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon, color: Ember.faint, size: 30),
+              child: Icon(icon,
+                  color: Features.desktopShell ? Desk.faint : Ember.faint,
+                  size: 30),
             ),
             const SizedBox(height: 14),
             Text(text, style: Ember.dimStyle, textAlign: TextAlign.center),

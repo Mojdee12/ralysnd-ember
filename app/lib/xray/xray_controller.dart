@@ -311,13 +311,24 @@ class XrayController extends ChangeNotifier {
   }
 
   void sortProfilesByDelay() {
-    profiles.sort((a, b) {
-      final ad = a.delayMs < 0 ? 1 << 30 : a.delayMs;
-      final bd = b.delayMs < 0 ? 1 << 30 : b.delayMs;
-      return ad.compareTo(bd);
-    });
+    profiles = sortedByDelay(profiles);
     unawaited(_save());
     notifyListeners();
+  }
+
+  /// Whether a test-all run is in flight: single delay results
+  /// landing inside it do not re-sort until the run completes.
+  bool _testingAll = false;
+
+  /// After one delay result lands outside a test-all run, the
+  /// list re-sorts itself fastest-first (the user's auto-sort)
+  /// and the new order is persisted as the stored order. Inside
+  /// a run the plain save stands; the run's end sorts once.
+  Future<void> _afterDelayTest() async {
+    if (!_testingAll) {
+      profiles = sortedByDelay(profiles);
+    }
+    await _save();
   }
 
   void sortProfilesByName() {
@@ -554,13 +565,13 @@ class XrayController extends ChangeNotifier {
       p.delayMs = ms;
       p.delayFailed = ms < 0;
       if (ms < 0) await _adoptBackendError();
-      await _save();
+      await _afterDelayTest();
       return ms;
     } catch (_) {
       p.delayMs = -1;
       p.delayFailed = true;
       await _adoptBackendError();
-      await _save();
+      await _afterDelayTest();
       return -1;
     } finally {
       _testing.remove(p.id);
@@ -568,18 +579,27 @@ class XrayController extends ChangeNotifier {
     }
   }
 
-  /// Delays for every profile, a few at a time.
+  /// Delays for every profile, a few at a time. When the run
+  /// completes the list auto-sorts fastest-first and the new
+  /// order is persisted (the user's auto-sort).
   Future<void> testAllDelays() async {
-    final queue = List.of(profiles);
-    Future<void> worker() async {
-      while (queue.isNotEmpty) {
-        final p = queue.removeAt(0);
-        await testDelay(p);
+    _testingAll = true;
+    try {
+      final queue = List.of(profiles);
+      Future<void> worker() async {
+        while (queue.isNotEmpty) {
+          final p = queue.removeAt(0);
+          await testDelay(p);
+        }
       }
-    }
 
-    await Future.wait([worker(), worker(), worker(), worker()]);
-    notifyListeners();
+      await Future.wait([worker(), worker(), worker(), worker()]);
+    } finally {
+      _testingAll = false;
+      profiles = sortedByDelay(profiles);
+      unawaited(_save());
+      notifyListeners();
+    }
   }
 
   /// The download rate (bytes/s) through one profile's own core.

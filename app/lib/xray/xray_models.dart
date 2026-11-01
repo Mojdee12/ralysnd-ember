@@ -465,3 +465,30 @@ class XraySettings {
     return s;
   }
 }
+
+/// The auto-sort rank of a profile by its last delay test:
+/// measured first (0), never-measured next (1), failed last (2).
+int delaySortRank(Profile p) =>
+    p.delayFailed ? 2 : (p.delayMs >= 0 ? 0 : 1);
+
+/// A STABLE fastest-first ordering of [profiles]: measured delays
+/// ascending, then unmeasured profiles, then failed ones; profiles
+/// that compare equal keep their previous relative order (Dart's
+/// List.sort is not stable, so the original index breaks ties).
+/// Returns a new list; the input is not modified.
+List<Profile> sortedByDelay(List<Profile> profiles) {
+  final decorated = [
+    for (var i = 0; i < profiles.length; i++) (i, profiles[i]),
+  ];
+  decorated.sort((a, b) {
+    final ra = delaySortRank(a.$2);
+    final rb = delaySortRank(b.$2);
+    if (ra != rb) return ra.compareTo(rb);
+    if (ra == 0) {
+      final byDelay = a.$2.delayMs.compareTo(b.$2.delayMs);
+      if (byDelay != 0) return byDelay;
+    }
+    return a.$1.compareTo(b.$1);
+  });
+  return [for (final d in decorated) d.$2];
+}
