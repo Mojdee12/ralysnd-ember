@@ -1,9 +1,12 @@
 # Builds the Windows app with its core into dist\:
 # - Ralysnd-Ember-<version>\: ralysnd-ember.exe (the Flutter app),
 #   core\firefox-vpn-core.exe (the Go core, which the app starts with -app),
-#   and core\firefox-vpn-tun.exe (the TUN service, which the app or Setup
-#   installs; scripts\build-windows-tun.ps1 says how it is signed), to run
-#   here;
+#   core\firefox-vpn-tun.exe (the TUN service, which the app or Setup
+#   installs; scripts\build-windows-tun.ps1 says how it is signed),
+#   core\ember-tun-bridge.exe (the app's helper that holds a TUN
+#   session with that service for the Xray and Psiphon engines),
+#   xray\ (the Xray engine's sidecars) and psiphon\psiphon-core.exe
+#   (the Psiphon engine's ConsoleClient), to run here;
 # - Ralysnd-Ember-<version>-Windows-x64.zip: the portable app, a
 #   "Ralysnd Ember" folder to unpack anywhere (or over an older one);
 # - Ralysnd-Ember-<version>-Windows-Setup-x64.exe: the installer
@@ -74,6 +77,10 @@ try {
     if ($public) { $ldflags += " -X github.com/armanlife/firefox-vpn-client/core/internal/signing.Key=$public" }
     go build -trimpath -ldflags $ldflags -o "$out\core\firefox-vpn-core.exe" ./cmd/firefox-vpn-core
     if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
+    # The TUN bridge the Xray and Psiphon backends spawn for
+    # system-wide capture (it speaks to the TUN service below).
+    go build -trimpath -ldflags $ldflags -o "$out\core\ember-tun-bridge.exe" ./cmd/ember-tun-bridge
+    if ($LASTEXITCODE -ne 0) { throw 'go build (tun bridge) failed' }
     & "$PSScriptRoot\build-windows-tun.ps1" -Version $version -Out "$out\core" -PublicKey $public
 } finally { Pop-Location }
 
@@ -89,6 +96,20 @@ if (Test-Path "$sidecars\xray.exe") {
     Write-Host "Xray sidecars copied from $sidecars"
 } else {
     Write-Warning "No Xray sidecars in $sidecars (run scripts\fetch-windows-sidecars.ps1 first): the V2Ray engine will have no core"
+}
+
+# The Psiphon engine's sidecar (scripts\fetch-windows-sidecars.ps1
+# builds it from the pinned tunnel-core source): psiphon\psiphon-core.exe
+# beside the app, where the Windows Psiphon backend looks for it.
+# Absent, the build still succeeds: the Psiphon engine then has no
+# core to start (it says so), everything else works.
+$psiSidecar = "$root\tools\sidecars\psiphon"
+if (Test-Path "$psiSidecar\psiphon-core.exe") {
+    New-Item -ItemType Directory -Force "$out\psiphon" | Out-Null
+    Copy-Item "$psiSidecar\*" "$out\psiphon" -Recurse -Force
+    Write-Host "Psiphon sidecar copied from $psiSidecar"
+} else {
+    Write-Warning "No Psiphon sidecar in $psiSidecar (run scripts\fetch-windows-sidecars.ps1 first): the Psiphon engine will have no core"
 }
 
 # A clean copy named as the user sees it, for the zip and the installer.

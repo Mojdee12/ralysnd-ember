@@ -492,6 +492,7 @@ class XrayController extends ChangeNotifier {
         socksPort: settings.socksPort,
         dns: settings.localDns,
         ipv6: settings.ipv6Route,
+        tunCapture: settings.tunCapture,
       );
       // The service reports itself once the tunnel is really up.
       for (var i = 0; i < 40; i++) {

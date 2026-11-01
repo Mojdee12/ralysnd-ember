@@ -22,14 +22,24 @@
 ///   dart:io's own SOCKS support (HttpClient.findProxy), not a
 ///   hand-rolled handshake.
 ///
-/// Mode note: this is Xray's proxy mode — the tunnel exists as the
-/// config's SOCKS/HTTP inbounds on loopback, like the Android proxy
-/// mode. [setOn]'s dns/ipv6 are the Android TUN builder's inputs and
-/// are unused here; system-wide capture (native TUN inbound or the
-/// sing-tun bridge) is the PLAN §3 spike, not this backend. A hard
-/// kill of the app can orphan xray.exe (Windows has no parent-death
-/// signal and Dart cannot create a job object); graceful exits go
-/// through [stop]. Both limits are recorded in M1-AUDIT.md.
+/// Mode note: [setOn]'s [tunCapture] chooses the mode. Off is proxy
+/// mode — the tunnel exists as the config's SOCKS/HTTP inbounds on
+/// loopback, like the Android proxy mode. On (the default) adds
+/// system-wide capture: the bundled ember-tun-bridge helper holds a
+/// session with the installed TUN service (the tree's own privileged
+/// service, core/internal/tunapi) that routes the whole system into
+/// the config's SOCKS inbound, xray.exe itself kept outside the TUN
+/// (see M1-AUDIT.md for why the bridge, not Xray's native TUN
+/// inbound: the adapter needs an elevated process, and the only
+/// sanctioned elevation channel in the tree is that service, whose
+/// protocol forwards TUN→SOCKS). A failed bridge fails the connect:
+/// the app never shows connected while traffic would leak direct.
+/// [setOn]'s dns/ipv6 are the Android TUN builder's inputs and are
+/// unused here. A hard kill of the app can orphan xray.exe (Windows
+/// has no parent-death signal and Dart cannot create a job object);
+/// the bridge is not orphaned — its stdin pipe closes with the app,
+/// which takes the TUN down. Graceful exits go through [stop]. The
+/// limits are recorded in M1-AUDIT.md.
 library;
 
 import 'dart:async';
@@ -37,10 +47,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../core/core_api.dart';
+import '../core/tun_bridge.dart';
 import 'xray_platform.dart';
 
 class WindowsXrayBackend implements XrayBackend {
   Process? _process;
+  TunBridge? _bridge;
   String _name = '';
   int _sinceMs = 0;
   int _apiPort = 0;
@@ -69,6 +81,7 @@ class WindowsXrayBackend implements XrayBackend {
     required int socksPort,
     required String dns,
     required bool ipv6,
+    bool tunCapture = false,
   }) async {
     final dir = await workDir();
     await dir.create(recursive: true);
@@ -97,10 +110,57 @@ class WindowsXrayBackend implements XrayBackend {
         await sink.close();
       }),
     );
+    if (!tunCapture) return;
+    // System-wide capture: the SOCKS inbound must really be serving
+    // before the TUN points the system at it, and a core that died
+    // on its config must fail the connect rather than capture into
+    // a dead port.
+    await _waitForSocks(p, socksPort);
+    try {
+      _bridge = await TunBridge.start(
+        socksPort: socksPort,
+        skipProgram: 'xray.exe',
+        log: sink,
+      );
+    } catch (_) {
+      await stop();
+      rethrow;
+    }
+    final bridge = _bridge!;
+    unawaited(bridge.down.then((_) {
+      // The TUN ended under a live core: tear the run down so the
+      // state goes stopped instead of leaking traffic direct.
+      if (identical(_bridge, bridge) && _process != null) {
+        unawaited(stop());
+      }
+    }));
+  }
+
+  /// Waits until the fresh core accepts on its SOCKS port (10 s),
+  /// failing when the process exits first.
+  Future<void> _waitForSocks(Process p, int socksPort) async {
+    for (var i = 0; i < 40; i++) {
+      if (!identical(_process, p)) throw StateError('xray-exited');
+      try {
+        final socket = await Socket.connect(
+          '127.0.0.1',
+          socksPort,
+          timeout: const Duration(milliseconds: 500),
+        );
+        await socket.close();
+        return;
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
+    throw StateError('xray-no-listen');
   }
 
   @override
   Future<void> stop() async {
+    final bridge = _bridge;
+    _bridge = null;
+    if (bridge != null) await bridge.stop();
     final p = _process;
     _process = null;
     _name = '';

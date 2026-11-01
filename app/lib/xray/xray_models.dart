@@ -337,6 +337,12 @@ class XraySettings {
   bool enableUdp = true;
   String localDns = '1.1.1.1';
 
+  /// Desktop only: capture the whole system through the TUN service
+  /// (true), or serve only the local proxies (false — proxy mode).
+  /// The Windows backend's mode choice; Android always runs its
+  /// VpnService in VPN mode and ignores this.
+  bool tunCapture = true;
+
   /// The resolver proxied traffic uses, reached through the tunnel.
   /// Default aligned with v2rayNG's generated configs (2005): its
   /// remote DNS is dns.google's DoH. Before 2005 the default was
@@ -371,6 +377,7 @@ class XraySettings {
 
   Map<String, dynamic> toJson() => {
         'allowInsecure': allowInsecure,
+        'tunCapture': tunCapture,
         'enableUdp': enableUdp,
         'localDns': localDns,
         'remoteDns': remoteDns,
@@ -399,6 +406,7 @@ class XraySettings {
   factory XraySettings.fromJson(Map<String, dynamic> j) {
     final s = XraySettings();
     s.allowInsecure = j['allowInsecure'] as bool? ?? s.allowInsecure;
+    s.tunCapture = j['tunCapture'] as bool? ?? s.tunCapture;
     s.enableUdp = j['enableUdp'] as bool? ?? s.enableUdp;
     s.localDns = j['localDns'] as String? ?? s.localDns;
     s.remoteDns = j['remoteDns'] as String? ?? s.remoteDns;

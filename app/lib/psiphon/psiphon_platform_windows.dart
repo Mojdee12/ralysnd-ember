@@ -1,0 +1,348 @@
+/// The Psiphon engine on Windows: the Psiphon tunnel-core
+/// ConsoleClient — v2.0.42, the exact release the Android AAR wraps —
+/// shipped as the psiphon\psiphon-core.exe sidecar and driven as a
+/// child process. (Psiphon is GPLv3, like the Mozilla core this app
+/// already ships; the sidecar is a separate unmodified program.)
+///
+/// The JSON config is PsiphonVpnService.buildConfig's twin: the same
+/// keys, the same bootstrap values (psiphon_bootstrap.dart, generated
+/// from PsiphonConstants.kt), the same embedded server list (the
+/// app's bundled assets/psiphon/embedded_servers.txt, handed over
+/// with the ConsoleClient's -serverList flag). The core announces
+/// everything on stdout as JSON notices; they map onto [PsiphonState]
+/// exactly as the MobileLibrary callbacks do on Android:
+///
+///   Tunnels {count}            count 0 = connecting, >= 1 = connected
+///   ListeningSocksProxyPort    the core is up (running)
+///   AvailableEgressRegions     state.regions
+///   ClientRegion               state.region
+///   ClientAddress              state.clientAddress
+///   BytesTransferred {sent, received}   deltas, accumulated here —
+///                              Android's service sums the same way
+///
+/// VPN mode: the core only serves its local proxies, so once they
+/// listen, the bundled TUN bridge (core/tun_bridge.dart) points the
+/// service's system TUN at the SOCKS port, with psiphon-core.exe
+/// itself kept outside the TUN. If the bridge cannot start, the
+/// connect fails — the engine never silently runs proxy-only when
+/// VPN mode was asked. The [dns] setting is Android's TUN DNS; the
+/// Windows TUN service answers DNS itself, so it is unused here.
+///
+/// Stopping kills the child process (the Windows way; the core's
+/// datastore is crash-tolerant). A hard app kill can orphan the
+/// core holding its ports until it is closed — the same documented
+/// limit as the Xray backend's xray.exe.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/services.dart';
+
+import '../core/core_api.dart';
+import '../core/tun_bridge.dart';
+import 'psiphon_bootstrap.dart';
+import 'psiphon_platform.dart';
+
+/// The ConsoleClient config, key for key PsiphonVpnService's
+/// buildConfig (top-level so it can be checked on its own).
+Map<String, dynamic> buildPsiphonConfig({
+  required String dataRoot,
+  required String region,
+  required String upstream,
+  required List<String> protocols,
+}) =>
+    {
+      'ClientVersion': PsiphonBootstrap.clientVersion,
+      'PropagationChannelId': PsiphonBootstrap.propagationChannelId,
+      'SponsorId': PsiphonBootstrap.sponsorId,
+      'RemoteServerListSignaturePublicKey':
+          PsiphonBootstrap.remoteServerListSignaturePublicKey,
+      'ServerEntrySignaturePublicKey':
+          PsiphonBootstrap.serverEntrySignaturePublicKey,
+      'AdditionalParameters': PsiphonBootstrap.additionalParameters,
+      'DataRootDirectory': dataRoot,
+      'LocalSocksProxyPort': PsiphonPlatform.socksPort,
+      'LocalHttpProxyPort': PsiphonPlatform.httpPort,
+      'EmitDiagnosticNotices': true,
+      'EmitBytesTransferred': true,
+      'EgressRegion': region,
+      if (upstream.isNotEmpty) 'UpstreamProxyURL': upstream,
+      if (protocols.isNotEmpty) 'LimitTunnelProtocols': protocols,
+    };
+
+class WindowsPsiphonBackend implements PsiphonBackend {
+  Process? _proc;
+  IOSink? _logSink;
+  TunBridge? _bridge;
+
+  bool _listening = false;
+  bool _connected = false;
+  bool _vpnMode = true;
+  int _sinceMs = 0;
+  int _up = 0;
+  int _down = 0;
+  String _region = '';
+  String _clientAddress = '';
+  List<String> _regions = [];
+
+  static String get _coreExe {
+    final dir = File(Platform.resolvedExecutable).parent.path;
+    final sep = Platform.pathSeparator;
+    return '$dir${sep}psiphon${sep}psiphon-core.exe';
+  }
+
+  @override
+  Future<Directory> workDir() async =>
+      Directory('${CoreLocator.dataDir(const [])}/psiphon');
+
+  @override
+  Future<void> setOn({
+    required bool vpnMode,
+    required String region,
+    required String upstream,
+    required List<String> protocols,
+    required String dns,
+  }) async {
+    if (_proc != null) await stop();
+    if (!File(_coreExe).existsSync()) {
+      throw StateError('psiphon-core-missing: $_coreExe');
+    }
+    final dir = await workDir();
+    await dir.create(recursive: true);
+    final dataRoot = Directory('${dir.path}/data');
+    await dataRoot.create(recursive: true);
+
+    // The embedded server list ships as a Flutter asset (the same
+    // file Android's core reads); the ConsoleClient wants a path.
+    final serversFile = File('${dir.path}/embedded_servers.txt');
+    final asset = await rootBundle.load('assets/psiphon/embedded_servers.txt');
+    if (!await serversFile.exists() ||
+        await serversFile.length() != asset.lengthInBytes) {
+      await serversFile.writeAsBytes(asset.buffer.asUint8List(), flush: true);
+    }
+
+    final configFile = File('${dir.path}/psiphon.config');
+    await configFile.writeAsString(
+      jsonEncode(buildPsiphonConfig(
+        dataRoot: dataRoot.path,
+        region: region,
+        upstream: upstream,
+        protocols: protocols,
+      )),
+      flush: true,
+    );
+
+    final sink = File('${dir.path}/psiphon.log')
+        .openWrite(mode: FileMode.append);
+    _logSink = sink;
+    sink.writeln(
+      '--- psiphon-core start ${DateTime.now().toIso8601String()} ---',
+    );
+
+    _resetRun(vpnMode);
+    final proc = await Process.start(
+      _coreExe,
+      ['-config', configFile.path, '-serverList', serversFile.path],
+      workingDirectory: dir.path,
+    );
+    _proc = proc;
+    proc.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(_onLine, onError: (_) {});
+    proc.stderr
+        .transform(utf8.decoder)
+        .listen((s) => sink.write(s), onError: (_) {});
+    unawaited(proc.exitCode.then((_) {
+      if (identical(_proc, proc)) {
+        _proc = null;
+        _listening = false;
+        _connected = false;
+        unawaited(_closeLog());
+      }
+    }));
+
+    // The tunnel (and, in VPN mode, the TUN) is only real once the
+    // proxies listen; the smoke-proven core binds them in ~a second.
+    for (var i = 0; i < 60 && !_listening; i++) {
+      if (_proc == null) throw StateError('psiphon-core-exited');
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (!_listening) {
+      await stop();
+      throw StateError('psiphon-core-no-listen');
+    }
+    if (vpnMode) {
+      try {
+        _bridge = await TunBridge.start(
+          socksPort: PsiphonPlatform.socksPort,
+          skipProgram: 'psiphon-core.exe',
+          log: sink,
+        );
+      } catch (_) {
+        await stop();
+        rethrow;
+      }
+      final bridge = _bridge!;
+      unawaited(bridge.down.then((_) {
+        // The TUN ended under a live core: tear the run down so the
+        // state goes stopped instead of leaking traffic direct.
+        if (identical(_bridge, bridge) && _proc != null) {
+          unawaited(stop());
+        }
+      }));
+    }
+  }
+
+  void _resetRun(bool vpnMode) {
+    _listening = false;
+    _connected = false;
+    _vpnMode = vpnMode;
+    _sinceMs = 0;
+    _up = 0;
+    _down = 0;
+    _region = '';
+    _clientAddress = '';
+    _regions = [];
+  }
+
+  /// One stdout line from the core: a JSON notice, tee'd to the log
+  /// (the controller's log viewer reads psiphon.log, as on Android).
+  void _onLine(String line) {
+    _logSink?.writeln(line);
+    Map<String, dynamic> notice;
+    try {
+      notice = jsonDecode(line) as Map<String, dynamic>;
+    } catch (_) {
+      return;
+    }
+    final data = (notice['data'] as Map?)?.cast<String, dynamic>() ?? {};
+    switch (notice['noticeType']) {
+      case 'ListeningSocksProxyPort':
+        _listening = true;
+      case 'Tunnels':
+        final count = (data['count'] as num?)?.toInt() ?? 0;
+        _connected = count >= 1;
+        if (_connected && _sinceMs == 0) {
+          _sinceMs = DateTime.now().millisecondsSinceEpoch;
+        }
+        if (!_connected) _sinceMs = 0;
+      case 'AvailableEgressRegions':
+        _regions =
+            ((data['regions'] as List?) ?? []).map((e) => e.toString()).toList();
+      case 'ClientRegion':
+        _region = data['region'] as String? ?? '';
+      case 'ClientAddress':
+        _clientAddress = data['address'] as String? ?? '';
+      case 'BytesTransferred':
+        _up += (data['sent'] as num?)?.toInt() ?? 0;
+        _down += (data['received'] as num?)?.toInt() ?? 0;
+    }
+  }
+
+  @override
+  Future<void> stop() async {
+    final bridge = _bridge;
+    _bridge = null;
+    if (bridge != null) await bridge.stop();
+    final proc = _proc;
+    _proc = null;
+    if (proc != null) {
+      proc.kill();
+      try {
+        await proc.exitCode.timeout(const Duration(seconds: 3));
+      } catch (_) {
+        // Already gone, or not waiting longer.
+      }
+    }
+    _listening = false;
+    _connected = false;
+    await _closeLog();
+  }
+
+  Future<void> _closeLog() async {
+    final sink = _logSink;
+    _logSink = null;
+    try {
+      await sink?.flush();
+      await sink?.close();
+    } catch (_) {
+      // The log is best-effort.
+    }
+  }
+
+  @override
+  Future<PsiphonState> state() async {
+    if (_proc == null || !_listening) return PsiphonState.stopped;
+    return PsiphonState(
+      running: true,
+      connected: _connected,
+      vpnMode: _vpnMode,
+      sinceMs: _sinceMs,
+      upBytes: _up,
+      downBytes: _down,
+      region: _region,
+      clientAddress: _clientAddress,
+      regions: _regions,
+    );
+  }
+
+  @override
+  Future<Map<String, String>?> exitInfo() async {
+    if (!_connected) return null;
+    // The Xray backend's route: a plain GET through the tunnel's own
+    // SOCKS proxy (HttpClient speaks SOCKS via findProxy).
+    try {
+      final text = await _httpGetText(
+        'https://www.cloudflare.com/cdn-cgi/trace',
+      );
+      if (text != null) {
+        var ip = '';
+        var loc = '';
+        for (final line in text.split('\n')) {
+          if (line.startsWith('ip=')) ip = line.substring(3).trim();
+          if (line.startsWith('loc=')) loc = line.substring(4).trim();
+        }
+        if (ip.isNotEmpty) return {'ip': ip, 'countryCode': loc};
+      }
+    } catch (_) {
+      // Fall through to ip-api.
+    }
+    try {
+      final text = await _httpGetText(
+        'http://ip-api.com/json/?fields=status,query,country,countryCode',
+      );
+      if (text != null) {
+        final doc = jsonDecode(text) as Map<String, dynamic>;
+        final ip = doc['query'] as String? ?? '';
+        if (ip.isNotEmpty) {
+          return {
+            'ip': ip,
+            'countryCode': doc['countryCode'] as String? ?? '',
+            'country': doc['country'] as String? ?? '',
+          };
+        }
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
+    return null;
+  }
+
+  Future<String?> _httpGetText(String url) async {
+    const timeout = Duration(seconds: 6);
+    final client = HttpClient()
+      ..connectionTimeout = timeout
+      ..findProxy = (_) => 'SOCKS 127.0.0.1:${PsiphonPlatform.socksPort}';
+    try {
+      final request = await client.getUrl(Uri.parse(url)).timeout(timeout);
+      final response = await request.close().timeout(timeout);
+      if (response.statusCode != 200) return null;
+      return await response.transform(utf8.decoder).join().timeout(timeout);
+    } finally {
+      client.close(force: true);
+    }
+  }
+}

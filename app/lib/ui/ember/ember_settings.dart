@@ -598,6 +598,20 @@ class _XraySection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
+          // Desktop only: the Windows backend's mode choice. Android
+          // always captures through its VpnService and never shows
+          // this; off = proxy mode (local SOCKS/HTTP only).
+          if (Features.desktopShell) ...[
+            _ToggleCard(
+              title: 'System-wide capture (TUN)',
+              subtitle: 'Off = proxy mode: local SOCKS/HTTP only',
+              value: s.tunCapture,
+              onChanged: (v) async {
+                s.tunCapture = v;
+                await xray.save();
+              },
+            ),
+          ],
           _ToggleCard(
             title: l.enableUdp,
             value: s.enableUdp,

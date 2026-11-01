@@ -40,6 +40,9 @@ class XrayState {
 /// One platform's Xray engine. [setOn]'s [dns]/[ipv6] are the Android
 /// TUN builder's inputs; a backend without a TUN layer accepts and
 /// documents them as unused (the config JSON already carries DNS).
+/// [setOn]'s [tunCapture] is the desktop mode choice (system-wide
+/// TUN vs local proxies only); Android's VpnService always captures
+/// in VPN mode, so its backend accepts and ignores it.
 abstract class XrayBackend {
   Future<void> setOn({
     required String config,
@@ -47,6 +50,7 @@ abstract class XrayBackend {
     required int socksPort,
     required String dns,
     required bool ipv6,
+    bool tunCapture = false,
   });
 
   Future<void> stop();
@@ -86,6 +90,7 @@ class AndroidXrayBackend implements XrayBackend {
     required int socksPort,
     required String dns,
     required bool ipv6,
+    bool tunCapture = false,
   }) =>
       _channel.invokeMethod('xraySetOn', {
         'on': true,
@@ -181,6 +186,7 @@ class XrayPlatform {
     required int socksPort,
     required String dns,
     required bool ipv6,
+    bool tunCapture = false,
   }) =>
       backend.setOn(
         config: config,
@@ -188,6 +194,7 @@ class XrayPlatform {
         socksPort: socksPort,
         dns: dns,
         ipv6: ipv6,
+        tunCapture: tunCapture,
       );
 
   static Future<void> stop() => backend.stop();

@@ -10,7 +10,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../core/android_core.dart';
 import '../xray/exit_info.dart';
 import 'psiphon_platform.dart';
 
@@ -115,16 +114,10 @@ class PsiphonController extends ChangeNotifier {
 
   // ---- persistence ----------------------------------------------------
 
-  Future<File> _stateFile() async {
-    final coreDir = await AndroidCore.dataDir();
-    final filesDir = File(coreDir).parent;
-    return File('${filesDir.path}/psiphon/state.json');
-  }
+  Future<File> _stateFile() async =>
+      File('${(await PsiphonPlatform.workDir()).path}/state.json');
 
-  Future<Directory> workDir() async {
-    final coreDir = await AndroidCore.dataDir();
-    return Directory('${File(coreDir).parent.path}/psiphon');
-  }
+  Future<Directory> workDir() => PsiphonPlatform.workDir();
 
   Future<void> load() async {
     try {
