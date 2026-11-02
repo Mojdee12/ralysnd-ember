@@ -436,8 +436,9 @@ class MapPowerToggle extends StatelessWidget {
   );
 }
 
-/// One divider-separated segment of the bottom bar: a 10 px caps
-/// grey label over a 16 px white tabular value.
+/// One divider-separated segment of the bottom bar: a caps
+/// grey micro-label (8.5–9.5 px, w700, wide tracking) over a
+/// white w600 tabular value.
 class MapBarSegment extends StatelessWidget {
   const MapBarSegment({super.key, required this.label, required this.value});
 
@@ -453,9 +454,9 @@ class MapBarSegment extends StatelessWidget {
         label.toUpperCase(),
         style: const TextStyle(
           fontSize: 9.5,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 1.5,
-          color: Color(0xFF7186A0),
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.1,
+          color: Color(0xFF5A6F87),
         ),
       ),
       const SizedBox(height: 3),
@@ -463,7 +464,8 @@ class MapBarSegment extends StatelessWidget {
         value,
         style: const TextStyle(
           fontSize: 15.5,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.2,
           color: MapUi.text,
           fontFeatures: [FontFeature.tabularFigures()],
         ),
@@ -499,7 +501,7 @@ class MapBottomBar extends StatelessWidget {
   final bool busy;
   final VoidCallback? onToggle;
   final String stateWord;
-  final List<({String label, String value})> segments;
+  final List<({String label, String value, int flex})> segments;
 
   /// "LATENCY 86ms • VLESS" — or just the engine tag when no
   /// latency is truly known.
@@ -508,11 +510,16 @@ class MapBottomBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(38),
+      borderRadius: BorderRadius.circular(45),
+      // The rim light of the samples: a cool glass gradient —
+      // pale specular at the top edge, deep slate through the
+      // body, and only a whisper of warm ember at the bottom
+      // (an earlier build let the ember stop wash the bar's
+      // whole lower half brown through the translucent glass).
       gradient: const LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [Color(0x5580A7D8), Color(0x1F4B6B94), Color(0x59E65A1E)],
+        colors: [Color(0x5580A7D8), Color(0x1A35506E), Color(0x2EE65A1E)],
         stops: [0, 0.45, 1],
       ),
       boxShadow: [
@@ -522,7 +529,7 @@ class MapBottomBar extends StatelessWidget {
           offset: const Offset(0, 14),
         ),
         BoxShadow(
-          color: Ember.orange.withValues(alpha: 0.13),
+          color: Ember.orange.withValues(alpha: 0.10),
           blurRadius: 26,
           spreadRadius: 1,
         ),
@@ -530,39 +537,43 @@ class MapBottomBar extends StatelessWidget {
     ),
     padding: const EdgeInsets.all(1),
     child: MapGlass(
-      radius: 37,
+      radius: 44,
       borderColor: Colors.transparent,
       child: SizedBox(
-        height: 74,
+        height: 88,
         child: Stack(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 20, 0),
-              child: Row(
-                children: [
-                  _PowerCapsule(
-                    on: on,
-                    busy: busy,
-                    stateWord: stateWord,
-                    onTap: onToggle,
-                  ),
-                  for (final s in segments) ...[
-                    Container(
-                      width: 1,
-                      height: 34,
-                      margin: const EdgeInsets.symmetric(horizontal: 13),
-                      color: Colors.white.withValues(alpha: 0.07),
+            Positioned.fill(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 20, 0),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _PowerCapsule(
+                      on: on,
+                      busy: busy,
+                      stateWord: stateWord,
+                      onTap: onToggle,
                     ),
-                    Expanded(
-                      child: MapBarSegment(label: s.label, value: s.value),
-                    ),
+                    for (final s in segments) ...[
+                      Container(
+                        width: 1,
+                        height: 34,
+                        margin: const EdgeInsets.symmetric(horizontal: 13),
+                        color: Colors.white.withValues(alpha: 0.07),
+                      ),
+                      Expanded(
+                        flex: s.flex,
+                        child: MapBarSegment(label: s.label, value: s.value),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
             Positioned(
-              right: 26,
-              bottom: 6,
+              right: 28,
+              bottom: 10,
               child: Text(
                 microLine,
                 style: TextStyle(
@@ -580,10 +591,13 @@ class MapBottomBar extends StatelessWidget {
   );
 }
 
-/// The bar's power capsule: a 40 px gradient pill (the samples'
-/// connect control) housing a 32 px radial thumb with the power
-/// glyph and the state word in white beside it. OFF is the same
-/// capsule gone quiet: dark glass, grey thumb, dim word.
+/// The bar's power capsule: the samples' connect control — a
+/// recessed dark TRACK (deep base, hairline ember rim, capsule-
+/// shaped ambient glow) holding a raised gradient pill whose
+/// left end carries an embossed radial thumb disc with the
+/// power glyph; the state word sits in white beside the thumb.
+/// OFF is the same capsule gone quiet: dark track, flat inner
+/// pill, grey thumb, dim word.
 class _PowerCapsule extends StatelessWidget {
   const _PowerCapsule({
     required this.on,
@@ -602,76 +616,98 @@ class _PowerCapsule extends StatelessWidget {
     color: Colors.transparent,
     child: InkWell(
       onTap: busy ? null : onTap,
-      borderRadius: BorderRadius.circular(20),
+      borderRadius: BorderRadius.circular(23),
       child: Container(
-        height: 40,
-        padding: const EdgeInsets.fromLTRB(6, 0, 14, 0),
+        height: 46,
+        padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          gradient: on
-              ? const LinearGradient(
-                  colors: [Color(0xFFFF8533), Color(0xFFE24A0D)],
-                )
-              : null,
-          color: on ? null : Colors.white.withValues(alpha: 0.05),
-          border: on
-              ? null
-              : Border.all(color: Colors.white.withValues(alpha: 0.10)),
+          borderRadius: BorderRadius.circular(23),
+          color: on ? const Color(0xFF1A110B) : const Color(0xFF101A29),
+          border: Border.all(
+            color: on
+                ? Ember.orange.withValues(alpha: 0.4)
+                : Colors.white.withValues(alpha: 0.10),
+          ),
           boxShadow: on
               ? [
-                  BoxShadow(
-                    color: Ember.orange.withValues(alpha: 0.35),
-                    blurRadius: 14,
-                    offset: const Offset(0, 3),
+                  const BoxShadow(
+                    color: Color(0x55E65A1E),
+                    blurRadius: 18,
+                    offset: Offset(0, 3),
                   ),
                 ]
               : const [],
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: on
-                    ? const RadialGradient(
-                        center: Alignment(-0.3, -0.4),
-                        colors: [Color(0xFFFFA85C), Color(0xFFE04B0A)],
+        child: Container(
+          padding: const EdgeInsets.only(right: 15),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(19),
+            gradient: on
+                ? const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xFFFF8533), Color(0xFFE24A0D)],
+                  )
+                : null,
+            color: on ? null : Colors.white.withValues(alpha: 0.04),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: on
+                      ? const RadialGradient(
+                          center: Alignment(-0.3, -0.4),
+                          colors: [Color(0xFFFFA85C), Color(0xFFE04B0A)],
+                        )
+                      : null,
+                  color: on ? null : const Color(0xFF22314A),
+                  border: Border.all(
+                    color: on
+                        ? Colors.white.withValues(alpha: 0.22)
+                        : Colors.white.withValues(alpha: 0.10),
+                  ),
+                  boxShadow: on
+                      ? [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.30),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ]
+                      : const [],
+                ),
+                child: busy
+                    ? const Padding(
+                        padding: EdgeInsets.all(9),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
                       )
-                    : null,
-                color: on ? null : const Color(0xFF22314A),
-                border: on
-                    ? null
-                    : Border.all(color: Colors.white.withValues(alpha: 0.10)),
-              ),
-              child: busy
-                  ? const Padding(
-                      padding: EdgeInsets.all(8),
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
+                    : Icon(
+                        Icons.power_settings_new_rounded,
+                        size: 17,
+                        color: on
+                            ? Colors.white
+                            : Ember.orange.withValues(alpha: 0.8),
                       ),
-                    )
-                  : Icon(
-                      Icons.power_settings_new_rounded,
-                      size: 16,
-                      color: on
-                          ? Colors.white
-                          : Ember.orange.withValues(alpha: 0.8),
-                    ),
-            ),
-            const SizedBox(width: 9),
-            Text(
-              stateWord,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: on ? Colors.white : MapUi.dim,
               ),
-            ),
-          ],
+              const SizedBox(width: 9),
+              Text(
+                stateWord,
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: on ? Colors.white : MapUi.dim,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     ),

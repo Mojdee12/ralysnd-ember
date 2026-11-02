@@ -328,6 +328,7 @@ class _EmberShellState extends State<EmberShell>
       ip: '85.214.132.10',
       countryCode: 'DE',
       countryEn: 'Germany',
+      city: 'Frankfurt',
     );
     _psiphon.state = PsiphonState(
       running: true,
@@ -697,6 +698,24 @@ class _EmberShellState extends State<EmberShell>
                   ),
                 ),
               ),
+              // The baked backdrop (fidelity round 3): the dot
+              // field rendered OFFLINE at 3600x1800 with the
+              // samples' full detail stack (tool/bake_backdrop.py)
+              // from the same raster and the same equirect cover
+              // projection the live painter uses — BoxFit.cover
+              // IS that transform — so the actors above stay
+              // aligned at any window size. The live painter
+              // beneath is the fallback until the asset's first
+              // frame decodes.
+              const Positioned.fill(
+                child: RepaintBoundary(
+                  child: Image(
+                    image: AssetImage('assets/backdrop/map_backdrop.png'),
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                  ),
+                ),
+              ),
               // A gentle vignette over the dot field, so the
               // scene's weight sits at the center like the
               // samples (the actors paint above it, undimmed).
@@ -892,7 +911,7 @@ class _EmberShellState extends State<EmberShell>
     bool busy,
     String stateWord,
     Color stateColor,
-    List<({String label, String value})> segments,
+    List<({String label, String value, int flex})> segments,
     String microLine,
     VoidCallback onToggle,
   })
@@ -913,7 +932,9 @@ class _EmberShellState extends State<EmberShell>
             ? null
             : profileCountryCode(selected);
         final location = exit != null
-            ? exit.displayName
+            ? (exit.city.isNotEmpty
+                  ? '${exit.displayName} • ${exit.city}'
+                  : exit.displayName)
             : (profileCode != null
                   ? (xray_exit.englishCountryNames[profileCode] ?? profileCode)
                   : '—');
@@ -928,11 +949,19 @@ class _EmberShellState extends State<EmberShell>
           stateWord: running ? 'Connected' : 'Not connected',
           stateColor: running ? MapUi.text : MapUi.dim,
           segments: [
-            (label: 'ACTIVE CONFIG', value: selected?.name ?? '—'),
-            (label: 'LOCATION', value: location),
-            (label: 'EXIT IP', value: exit?.ip ?? '—'),
-            (label: 'UP', value: running ? fmtRate(xray.upRate) : '—'),
-            (label: 'DOWN', value: running ? fmtRate(xray.downRate) : '—'),
+            (label: 'ACTIVE CONFIG', value: selected?.name ?? '—', flex: 5),
+            (label: 'LOCATION', value: location, flex: 5),
+            (label: 'EXIT IP', value: exit?.ip ?? '—', flex: 4),
+            (
+              label: 'UP',
+              value: running ? fmtRate(xray.upRate) : '—',
+              flex: 3,
+            ),
+            (
+              label: 'DOWN',
+              value: running ? fmtRate(xray.downRate) : '—',
+              flex: 3,
+            ),
           ],
           microLine:
               '$latency${selected?.protocol.label.toUpperCase() ?? 'V2RAY'}',
@@ -971,14 +1000,20 @@ class _EmberShellState extends State<EmberShell>
               value: regionCode.isEmpty
                   ? l.psiphonRegionAuto
                   : regionName(regionCode),
+              flex: 1,
             ),
-            (label: 'EXIT IP', value: egressIp),
-            (label: 'UP', value: state.running ? fmtRate(psiphon.upRate) : '—'),
+            (label: 'EXIT IP', value: egressIp, flex: 1),
+            (
+              label: 'UP',
+              value: state.running ? fmtRate(psiphon.upRate) : '—',
+              flex: 1,
+            ),
             (
               label: 'DOWN',
               value: state.running ? fmtRate(psiphon.downRate) : '—',
+              flex: 1,
             ),
-            (label: 'SESSION', value: session),
+            (label: 'SESSION', value: session, flex: 1),
           ],
           microLine: 'PSIPHON',
           onToggle: () => unawaited(_togglePsiphon(l)),
@@ -1012,13 +1047,14 @@ class _EmberShellState extends State<EmberShell>
               : 'Not connected',
           stateColor: running ? MapUi.text : MapUi.dim,
           segments: [
-            (label: 'LOCATION', value: location),
-            (label: 'EXIT IP', value: exit?.ipv4 ?? '—'),
+            (label: 'LOCATION', value: location, flex: 1),
+            (label: 'EXIT IP', value: exit?.ipv4 ?? '—', flex: 1),
             (
               label: 'QUOTA USED',
               value: usage == null || usage.unlimited
                   ? '—'
                   : fmtBytes(usage.usedBytes),
+              flex: 1,
             ),
             (
               label: 'QUOTA LEFT',
@@ -1027,6 +1063,7 @@ class _EmberShellState extends State<EmberShell>
                   : usage.unlimited
                   ? 'Unlimited'
                   : fmtBytes(usage.remainingBytes),
+              flex: 1,
             ),
           ],
           microLine:
@@ -1069,15 +1106,24 @@ class _EmberShellState extends State<EmberShell>
         final selected = (exitCode != null && exitCode.isNotEmpty)
             ? exitCode
             : profileCode;
+        final exitCity = xray.exitInfo?.city ?? '';
+        final countryName = selected == null
+            ? ''
+            : (xray_exit.englishCountryNames[selected] ?? selected);
         return (
           pins: pins,
           selected: selected,
           connected: xray.state.running && selected != null,
           homeLabel: homeLabel,
+          // The pin badge carries the full "COUNTRY • CITY"
+          // when the exit lookup named a city (the Mozilla
+          // badge's format); the bare country otherwise.
           selectedLabel: selected == null
               ? ''
-              : (xray_exit.englishCountryNames[selected] ?? selected)
-                    .toUpperCase(),
+              : (exitCode != null && exitCode.isNotEmpty && exitCity.isNotEmpty
+                    ? '$countryName • $exitCity'
+                    : countryName
+                  ).toUpperCase(),
         );
       case 2:
         final state = _psiphon.state;

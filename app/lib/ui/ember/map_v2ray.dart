@@ -5,8 +5,8 @@
 /// (orange protocol tag, name, address line, the ping at the
 /// right in the frozen colors; the selected card wears the
 /// orange glow border). Connecting lives in the shell's bottom
-/// bar; the panel's footer carries the session clock and the
-/// backend's own note/error words. All list behavior is the
+/// bar; the panel's footer carries the backend's own
+/// note/error words. All list behavior is the
 /// accepted one: tap selects, the popup menu keeps every row
 /// action, test-all auto-sorts (persisted) fastest-first.
 
@@ -181,9 +181,10 @@ class _MapV2rayPageState extends State<MapV2rayPage> {
   }
 }
 
-/// The panel's footer line: the session clock while running (a
-/// ticking island of its own), the backend's note, or the last
-/// error in red — the words the old status bar carried.
+/// The panel's footer line: the last error in red, the
+/// backend's note, or the config count while idle — the words
+/// the old status bar carried. (No session clock: the approved
+/// samples' panel face carries none.)
 class _PanelFooter extends StatelessWidget {
   const _PanelFooter({required this.xray});
 
@@ -200,28 +201,20 @@ class _PanelFooter extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       );
     }
+    if (state.note.isNotEmpty) {
+      return Text(
+        state.note,
+        style: const TextStyle(fontSize: 12, color: MapUi.faint),
+        overflow: TextOverflow.ellipsis,
+      );
+    }
     if (!state.running) {
       return Text(
         '${latDigits(xray.profiles.length)} configs',
         style: const TextStyle(fontSize: 12, color: MapUi.faint),
       );
     }
-    return StreamBuilder<void>(
-      stream: Stream.periodic(const Duration(seconds: 1)),
-      builder: (context, _) {
-        final elapsed = state.sinceMs > 0
-            ? DateTime.now().difference(
-                DateTime.fromMillisecondsSinceEpoch(state.sinceMs),
-              )
-            : Duration.zero;
-        return Text(
-          'Session ${fmtDuration(elapsed)}'
-          '${state.note.isNotEmpty ? ' • ${state.note}' : ''}',
-          style: const TextStyle(fontSize: 12, color: MapUi.faint),
-          overflow: TextOverflow.ellipsis,
-        );
-      },
-    );
+    return const SizedBox.shrink();
   }
 }
 
@@ -265,19 +258,29 @@ class _MapConfigRow extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
           decoration: BoxDecoration(
-            gradient: selected ? MapUi.selectedGradient : null,
+            // The selected row, softened toward the samples
+            // (fidelity round 3): a gentle warm wash falling
+            // down the card, the #FF9445 hairline, and a low
+            // ember bloom instead of the hard wireframe glow.
+            gradient: selected
+                ? const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0x33FF8533), Color(0x14FF8533)],
+                  )
+                : null,
             color: selected ? null : Colors.white.withValues(alpha: 0.055),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: selected ? const Color(0xFFFF8533) : MapUi.lineStrong,
+              color: selected ? const Color(0xFFFF9445) : MapUi.lineStrong,
               width: selected ? 1.2 : 1,
             ),
             boxShadow: selected
                 ? [
                     const BoxShadow(
-                      color: Color(0x33FF8533),
-                      blurRadius: 8,
-                      offset: Offset(0, 2),
+                      color: Color(0x33E65A1E),
+                      blurRadius: 12,
+                      spreadRadius: -1,
                     ),
                   ]
                 : const [],
@@ -332,7 +335,12 @@ class _MapConfigRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              _RowPing(xray: xray, profile: profile, unit: l.msUnit),
+              _RowPing(
+                xray: xray,
+                profile: profile,
+                unit: l.msUnit,
+                inActiveRow: selected,
+              ),
               PopupMenuButton<String>(
                 icon: const Icon(
                   Icons.more_vert_rounded,
@@ -420,17 +428,21 @@ class _MapConfigRow extends StatelessWidget {
 
 /// The row's ping: a spinner while testing, the measured value
 /// in the frozen colors, "Failed" in red, an em dash before the
-/// first test.
+/// first test. In the ACTIVE row only, the green softens to the
+/// samples' mint (#3CD070 family) — same hue, same ≤150 rule
+/// (fidelity round 3, per the brief's arbitration).
 class _RowPing extends StatelessWidget {
   const _RowPing({
     required this.xray,
     required this.profile,
     required this.unit,
+    this.inActiveRow = false,
   });
 
   final XrayController xray;
   final Profile profile;
   final String unit;
+  final bool inActiveRow;
 
   @override
   Widget build(BuildContext context) {
@@ -447,7 +459,9 @@ class _RowPing extends StatelessWidget {
         style: TextStyle(
           fontSize: 15,
           fontWeight: FontWeight.w700,
-          color: mapPingColor(profile.delayMs),
+          color: inActiveRow && profile.delayMs <= 150
+              ? const Color(0xFF3CD070)
+              : mapPingColor(profile.delayMs),
         ),
       );
     }

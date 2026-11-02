@@ -794,7 +794,7 @@ class WindowsXrayBackend implements XrayBackend {
     try {
       final text = await _httpGetText(
         httpPort,
-        'http://ip-api.com/json/?fields=status,query,country,countryCode',
+        'http://ip-api.com/json/?fields=status,query,country,countryCode,city',
       );
       if (text != null) {
         final doc = jsonDecode(text) as Map<String, dynamic>;
@@ -804,6 +804,7 @@ class WindowsXrayBackend implements XrayBackend {
             'ip': ip,
             'countryCode': doc['countryCode'] as String? ?? '',
             'country': doc['country'] as String? ?? '',
+            'city': doc['city'] as String? ?? '',
           };
         }
       }

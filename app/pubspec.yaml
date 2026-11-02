@@ -46,6 +46,10 @@ flutter:
     # The Psiphon core's embedded server entries (from the official
     # app's published resources; see PsiphonConstants.kt).
     - assets/psiphon/
+    # The baked Map Control backdrop (tool/bake_backdrop.py renders
+    # world_map_data.dart's raster at 3600x1800 with the samples'
+    # detail stack; the live pins/arc keep the painter projection).
+    - assets/backdrop/
 
   fonts:
     # Vazirmatn (SIL Open Font License 1.1, assets/fonts/OFL.txt) for Persian.

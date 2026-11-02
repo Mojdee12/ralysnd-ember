@@ -298,28 +298,24 @@ class WorldMapPainter extends CustomPainter {
       if (darkMap) {
         canvas.drawCircle(
           home,
-          12 * px,
-          Paint()..color = Ember.orange.withValues(alpha: 0.12),
+          18 * px,
+          Paint()..color = Ember.orange.withValues(alpha: 0.10),
         );
-        // The samples' concentric rings around the home node,
-        // refined to screen size (~24 px and ~14 px across).
-        canvas.drawCircle(
-          home,
-          12 * px,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = px
-            ..color = Ember.orange.withValues(alpha: 0.30),
-        );
-        canvas.drawCircle(
-          home,
-          7 * px,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.3 * px
-            ..color = Ember.orange.withValues(alpha: 0.95),
-        );
+        // The samples' radar ripples around the home node:
+        // three soft concentric strokes (r 8 / 16 / 26 screen
+        // px) fading outward — no hard bullseye ring.
+        for (final (r, a) in [(8.0, 0.7), (16.0, 0.35), (26.0, 0.15)]) {
+          canvas.drawCircle(
+            home,
+            r * px,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = px
+              ..color = const Color(0xFFFF8C3B).withValues(alpha: a),
+          );
+        }
         canvas.drawCircle(home, 2.6 * px, Paint()..color = Ember.amber);
+        canvas.drawCircle(home, 1.2 * px, Paint()..color = Colors.white);
       } else {
         canvas.drawCircle(
           home,
@@ -360,20 +356,32 @@ class WorldMapPainter extends CustomPainter {
     // The selected pin, pulsing while connected.
     if (sel != null) {
       if (connected && darkMap) {
-        // The destination's solar bloom: a radial corona,
-        // bright at the core and gone by ~36 screen px.
+        // The destination's solar bloom, in the samples' two
+        // stages: a wide radial flare (ember, gone by ~38 screen
+        // px) under a tight bright corona (~14 px) — a single
+        // soft disc read as a small dot-in-ring, so the corona
+        // carries its own near-opaque heart.
         canvas.drawCircle(
           sel,
-          36 * px,
+          38 * px,
           Paint()
             ..shader = RadialGradient(
               colors: [
-                const Color(0xFFFFA54A).withValues(alpha: 0.55),
-                const Color(0xFFE65A1E).withValues(alpha: 0.16),
-                const Color(0xFFE65A1E).withValues(alpha: 0),
+                const Color(0xFFFF7A1A).withValues(alpha: 0.45),
+                const Color(0xFFFF5500).withValues(alpha: 0),
               ],
-              stops: const [0, 0.45, 1],
-            ).createShader(Rect.fromCircle(center: sel, radius: 36 * px)),
+            ).createShader(Rect.fromCircle(center: sel, radius: 38 * px)),
+        );
+        canvas.drawCircle(
+          sel,
+          14 * px,
+          Paint()
+            ..shader = RadialGradient(
+              colors: [
+                const Color(0xFFFFA347).withValues(alpha: 0.85),
+                const Color(0xFFFFA347).withValues(alpha: 0.2),
+              ],
+            ).createShader(Rect.fromCircle(center: sel, radius: 14 * px)),
         );
       }
       if (connected) {
@@ -399,7 +407,7 @@ class WorldMapPainter extends CustomPainter {
         // A white-hot core with a thin ember rim.
         canvas.drawCircle(
           sel,
-          4.2 * px,
+          4.5 * px,
           Paint()..color = Colors.white.withValues(alpha: connected ? 1 : 0.75),
         );
         canvas.drawCircle(

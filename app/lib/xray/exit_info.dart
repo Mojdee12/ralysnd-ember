@@ -7,16 +7,24 @@ class ExitInfo {
   final String ip;
   final String countryCode;
   final String countryEn;
+
+  /// The exit city, when the lookup reported one (the ip-api path
+  /// asks for it since 2.1.0 so the desktop map can badge the exit
+  /// pin "COUNTRY • CITY" like the Mozilla home does). Empty when
+  /// unknown — the Cloudflare trace path has no city.
+  final String city;
   const ExitInfo({
     required this.ip,
     required this.countryCode,
     required this.countryEn,
+    this.city = '',
   });
 
   factory ExitInfo.fromMap(Map<String, String> m) => ExitInfo(
         ip: m['ip'] ?? '',
         countryCode: (m['countryCode'] ?? '').toUpperCase(),
         countryEn: m['country'] ?? '',
+        city: m['city'] ?? '',
       );
 
   /// The regional-indicator flag emoji for the country code, or a
