@@ -2,17 +2,18 @@
 /// navigation, the engines behind one mode switch, and the
 /// arbitration that keeps exactly one tunnel up.
 ///
-/// On Windows (desktop: true) the same pages and arbitration sit in
-/// the Fluent desktop shell instead: a left rail switches the engine
-/// (the locked Windows mockups), over the dotted world map behind
-/// frosted glass (PLAN.md §1).
+/// On Windows (desktop: true) the same pages and arbitration sit
+/// in the Map Control shell instead (2.1.0): the dotted world map
+/// IS the window, the engines switch from the glass chips at the
+/// top right, and one wide glass control bar floats at the
+/// bottom (see _buildDesktop).
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../../app_info.dart';
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
 import '../../core/core_controller.dart';
@@ -27,13 +28,17 @@ import '../../xray/exit_info.dart' as xray_exit;
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../../xray/xray_platform.dart';
-import 'desktop_widgets.dart';
+import '../widgets.dart' hide regionName;
 import 'ember_accounts.dart';
+import 'ember_format.dart';
 import 'ember_home.dart';
 import 'ember_servers.dart';
 import 'ember_settings.dart';
 import 'ember_theme.dart';
 import 'lantern_pages.dart';
+import 'map_mozilla.dart';
+import 'map_widgets.dart';
+import 'profile_country.dart';
 import 'psiphon_pages.dart';
 import 'warp_pages.dart';
 import 'world_map.dart';
@@ -61,13 +66,46 @@ class EmberShell extends StatefulWidget {
   State<EmberShell> createState() => _EmberShellState();
 }
 
-class _EmberShellState extends State<EmberShell> {
+class _EmberShellState extends State<EmberShell>
+    with SingleTickerProviderStateMixin {
   int _tab = 0;
   late final XrayController _xray = XrayController();
   late final PsiphonController _psiphon = PsiphonController();
   late final LanternController _lantern = LanternController();
   late final WarpController _warp = WarpController();
   bool _defaultsApplied = false;
+
+  /// The exit pin's pulse on the desktop map (1.6 s cycle); runs
+  /// only while an engine is connected with a known exit.
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  );
+
+  /// The Mozilla locations' country codes, for the map pins
+  /// behind the desktop Servers panel (loaded on entry).
+  Set<String> _serverPins = const {};
+  bool _pinsLoading = false;
+
+  Future<void> _loadServerPins() async {
+    if (_pinsLoading) return;
+    _pinsLoading = true;
+    try {
+      final list = await core.call((api) => api.locations());
+      if (mounted) {
+        setState(
+          () => _serverPins = {
+            for (final loc in list.locations)
+              if (loc.code.isNotEmpty) loc.code,
+          },
+        );
+      }
+    } catch (_) {
+      // No pins: the map keeps just the home marker and the exit.
+    } finally {
+      _pinsLoading = false;
+    }
+  }
 
   CoreController get core => widget.core;
 
@@ -239,28 +277,28 @@ class _EmberShellState extends State<EmberShell> {
     if (_xray.profiles.isEmpty) {
       _xray.profiles.addAll([
         Profile(
-          id: 'shot-de',
-          name: 'Frankfurt — VLESS',
-          protocol: Protocol.vless,
-          address: 'de1.demo.net',
-          port: 443,
-          uuidOrPassword: '00000000-0000-4000-8000-000000000001',
-          network: 'tcp',
-          security: 'reality',
-        )
+            id: 'shot-de',
+            name: 'Frankfurt — VLESS',
+            protocol: Protocol.vless,
+            address: 'de1.demo.net',
+            port: 443,
+            uuidOrPassword: '00000000-0000-4000-8000-000000000001',
+            network: 'tcp',
+            security: 'reality',
+          )
           ..delayMs = 86
           ..totalUpBytes = 12992256
           ..totalDownBytes = 155189248,
         Profile(
-          id: 'shot-nl',
-          name: 'Amsterdam — VMess',
-          protocol: Protocol.vmess,
-          address: 'nl1.demo.net',
-          port: 443,
-          uuidOrPassword: '00000000-0000-4000-8000-000000000002',
-          network: 'ws',
-          security: 'tls',
-        )
+            id: 'shot-nl',
+            name: 'Amsterdam — VMess',
+            protocol: Protocol.vmess,
+            address: 'nl1.demo.net',
+            port: 443,
+            uuidOrPassword: '00000000-0000-4000-8000-000000000002',
+            network: 'ws',
+            security: 'tls',
+          )
           ..delayMs = 142
           ..totalUpBytes = 3145728
           ..totalDownBytes = 41943040,
@@ -306,6 +344,7 @@ class _EmberShellState extends State<EmberShell> {
 
   @override
   void dispose() {
+    _pulse.dispose();
     for (final t in _shotTimers) {
       t.cancel();
     }
@@ -341,9 +380,11 @@ class _EmberShellState extends State<EmberShell> {
           if (dns is Map<String, Object?>) {
             final servers = dns['servers'];
             final list = servers is List ? servers : const [];
-            final encrypted = list.isNotEmpty &&
+            final encrypted =
+                list.isNotEmpty &&
                 list.every(
-                  (s) => s.toString().startsWith('https://') ||
+                  (s) =>
+                      s.toString().startsWith('https://') ||
                       s.toString().startsWith('tls://'),
                 );
             if (!encrypted) {
@@ -423,8 +464,7 @@ class _EmberShellState extends State<EmberShell> {
   /// the value (AppSettings.desktopTransportPinned). Desktop only —
   /// the Android defaults path never calls this.
   Future<void> _applyDesktopTransportDefault() async {
-    if (widget.settings.desktopTransportPinned ||
-        _desktopTransportApplied) {
+    if (widget.settings.desktopTransportPinned || _desktopTransportApplied) {
       return;
     }
     _desktopTransportApplied = true;
@@ -516,7 +556,10 @@ class _EmberShellState extends State<EmberShell> {
         warp: _warp,
         mode: mode,
         onModeChanged: (m) => setState(() => mode = m),
-        onOpenServers: () => setState(() => _tab = 1),
+        onOpenServers: () => setState(() {
+          _tab = 1;
+          if (widget.desktop) unawaited(_loadServerPins());
+        }),
         onOpenAccounts: () => setState(() => _tab = 2),
         stopOtherEngine: stopXray,
         hideModeSwitch: widget.desktop,
@@ -595,408 +638,549 @@ class _EmberShellState extends State<EmberShell> {
     );
   }
 
-  /// The Windows Fluent shell: the locked mockups' left rail (one
-  /// entry per offered engine, then Servers and Settings) beside the
-  /// same pages the phone shell shows, over the dotted world map
-  /// blurred once behind the glass cards.
+  /// The Map Control desktop shell (2.1.0, the approved dark
+  /// samples): the dotted world map IS the window — deep navy
+  /// backdrop, the home marker and (while connected) the glowing
+  /// exit pin with its arc — and everything else floats over it:
+  /// the brand panel top-left, the engine chips top-right (they
+  /// are the navigation), the pages' own panels, and the wide
+  /// glass control bar at the bottom, which always describes the
+  /// live tunnel (or the current page's engine when none is up).
   Widget _buildDesktop(AppLocalizations l, List<Widget> pages) {
-    String engineLabel(int m) => switch (m) {
-          0 => l.modeMozilla,
-          1 => l.modeV2ray,
-          2 => l.modePsiphon,
-          3 => l.modeLantern,
-          _ => l.modeWarp,
-        };
+    // The Servers tab only exists as its own view in Mozilla
+    // mode (the locations panel); in the other modes the tab
+    // lands back on the engine home (V2Ray's configs panel and
+    // Psiphon's region chips ARE their servers views).
+    final shownTab = (_tab == 1 && mode != 0) ? 0 : _tab;
     return Scaffold(
-      backgroundColor: const Color(0xFFE9EEF4),
-      body: Stack(
-        children: [
-          // The Sample A backdrop: a pale blue-grey base with the
-          // monochrome dotted world map across the whole window;
-          // each glass card blurs it locally (no global blur). The
-          // whole backdrop sits in a RepaintBoundary: it is fully
-          // static, so its layer is painted once and composited
-          // under everything, never repainted by page rebuilds or
-          // value ticks.
-          const Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Color(0xFFDCE5EF), Color(0xFFF0F3F7)],
-                ),
-              ),
-            ),
-          ),
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: WorldMapPainter(
-                        pins: const {},
-                        selected: null,
-                        connected: false,
-                        pulse: 0,
-                        homeLabel: '',
-                        faint: true,
-                        backdrop: true,
-                      ),
-                    ),
-                  ),
-                  Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: RadialGradient(
-                          center: const Alignment(0, -1.15),
-                          radius: 1.15,
-                          colors: [
-                            // Kept very faint: this glow sits behind the
-                            // first cards, whose backdrop blur would wash
-                            // their glass warm if it were any stronger.
-                            Ember.orange.withValues(alpha: 0.05),
-                            Colors.transparent,
-                          ],
-                          stops: const [0, 0.55],
-                        ),
-                      ),
-                    ),
-                  ),
-                  // The map calms toward the bottom edge, so the
-                  // status bar stays readable over it.
-                  const Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            Colors.transparent,
-                            Color(0x59FFFFFF),
-                          ],
-                          stops: [0, 0.74, 1],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Row(
-              children: [
-                ListenableBuilder(
-                  listenable: core,
-                  builder: (context, _) {
-                    final account = core.status?.activeAccount;
-                    return _DesktopRail(
-                      engines: [
-                        for (final m in Features.engineModes)
-                          (mode: m, label: engineLabel(m)),
-                      ],
-                      tab: _tab,
-                      mode: mode,
-                      onEngine: (m) => setState(() {
-                        mode = m;
-                        _tab = 0;
-                      }),
-                      onServers: () => setState(() => _tab = 1),
-                      onAccounts: () => setState(() => _tab = 2),
-                      onSettings: () => setState(() => _tab = 3),
-                      serversLabel: l.navServers,
-                      settingsLabel: l.navSettings,
-                      accountEmail: account?.email ?? '',
-                      accountName: account?.name ?? '',
-                    );
-                  },
-                ),
-                Expanded(
-                  child: Column(
-                    children: [
-                      if (widget.banner != null) widget.banner!,
-                      Expanded(
-                        // The desktop pages use the full window
-                        // width (mockup E) — no phone-width cap.
-                        child: IndexedStack(index: _tab, children: pages),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-    );
-  }
-}
-
-/// The Fluent rail's engine glyphs, echoing the mockups (globe,
-/// linked nodes, umbrella).
-IconData _engineIcon(int mode) => switch (mode) {
-      0 => Icons.verified_user_rounded,
-      1 => Icons.hub_rounded,
-      2 => Icons.public_rounded,
-      3 => Icons.highlight_rounded,
-      _ => Icons.bolt_rounded,
-    };
-
-/// The desktop shell's left rail, as mockup E draws it (~250 px):
-/// the big flame brand block at the top, one entry per offered
-/// engine, a divider, Servers and Settings, and the account chip
-/// (initials avatar + the signed-in email, or "No account") pinned
-/// at the bottom — a tap on it opens the Accounts page.
-class _DesktopRail extends StatelessWidget {
-  const _DesktopRail({
-    required this.engines,
-    required this.tab,
-    required this.mode,
-    required this.onEngine,
-    required this.onServers,
-    required this.onAccounts,
-    required this.onSettings,
-    required this.serversLabel,
-    required this.settingsLabel,
-    required this.accountEmail,
-    required this.accountName,
-  });
-
-  final List<({int mode, String label})> engines;
-  final int tab;
-  final int mode;
-  final ValueChanged<int> onEngine;
-  final VoidCallback onServers;
-  final VoidCallback onAccounts;
-  final VoidCallback onSettings;
-  final String serversLabel;
-  final String settingsLabel;
-  final String accountEmail;
-  final String accountName;
-
-  @override
-  Widget build(BuildContext context) {
-    final who = accountEmail.isNotEmpty ? accountEmail : accountName;
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          width: 260,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.55),
-            border: const Border(right: BorderSide(color: Desk.line)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+      backgroundColor: MapUi.baseTop,
+      body: ListenableBuilder(
+        listenable: Listenable.merge([core, _xray, _psiphon]),
+        builder: (context, _) {
+          final bar = _barModel(l);
+          final actors = _actors(context, l, bar.engine);
+          // The pulse runs only while there is a lit exit pin.
+          if (actors.connected && actors.selected != null) {
+            if (!_pulse.isAnimating) _pulse.repeat();
+          } else if (_pulse.isAnimating) {
+            _pulse.stop();
+          }
+          return Stack(
             children: [
-              // The brand block, as the samples draw it: the
-              // shield-and-flame mark at the left, the name large
-              // beside it, "V P N" letter-spaced beneath the name.
-              Padding(
-                padding: const EdgeInsets.fromLTRB(22, 26, 18, 26),
-                child: Row(
+              // The backdrop: the navy gradient + the static
+              // dotted map with its faint grid, painted once
+              // behind its own RepaintBoundary.
+              const Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [MapUi.baseTop, MapUi.baseBottom],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: WorldMapPainter(
+                      pins: const {},
+                      selected: null,
+                      connected: false,
+                      pulse: 0,
+                      homeLabel: '',
+                      faint: true,
+                      darkMap: true,
+                      grid: true,
+                    ),
+                  ),
+                ),
+              ),
+              // A gentle vignette over the dot field, so the
+              // scene's weight sits at the center like the
+              // samples (the actors paint above it, undimmed).
+              const Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: Alignment(0, -0.08),
+                      radius: 1.25,
+                      colors: [Colors.transparent, Color(0x5904090E)],
+                      stops: [0.55, 1],
+                    ),
+                  ),
+                ),
+              ),
+              // The map actors: pins, the arc, the home marker —
+              // only ever from derivable data (see _actors).
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: WorldMapPainter(
+                      pins: actors.pins,
+                      selected: actors.selected,
+                      connected: actors.connected,
+                      pulse: 0,
+                      homeLabel: actors.homeLabel,
+                      darkMap: true,
+                      selectedLabel: actors.selectedLabel,
+                      drawPulse: false,
+                      dots: false,
+                    ),
+                  ),
+                ),
+              ),
+              if (actors.connected && actors.selected != null)
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: PulseRingPainter(
+                      selected: actors.selected,
+                      anim: _pulse,
+                      screenSpace: true,
+                      repaint: _pulse,
+                    ),
+                  ),
+                ),
+              // The pages float over the map.
+              Positioned.fill(
+                child: IndexedStack(
+                  index: shownTab,
                   children: [
-                    const EmberShieldMark(size: 46),
-                    const SizedBox(width: 11),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Ralysnd Ember',
-                            style: TextStyle(
-                              fontSize: 18.5,
-                              fontWeight: FontWeight.w800,
-                              color: Desk.ink,
-                              height: 1.1,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            'V P N',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 2.5,
-                              color: Desk.faint,
-                            ),
-                          ),
-                        ],
+                    pages[0],
+                    if (mode == 0)
+                      MapServersPanel(
+                        core: core,
+                        onClose: () => setState(() => _tab = 0),
+                      )
+                    else
+                      pages[1],
+                    _accountsPanel(pages[2]),
+                    pages[3],
+                  ],
+                ),
+              ),
+              if (widget.banner != null)
+                Positioned(
+                  top: 16,
+                  left: 300,
+                  right: 300,
+                  child: widget.banner!,
+                ),
+              // The brand panel.
+              Positioned(
+                top: 20,
+                left: 24,
+                child: MapBrandPanel(
+                  versionLine: 'v$appVersion • BUILD $appBuildNumber',
+                ),
+              ),
+              // The engine chips (the navigation) + Settings.
+              Positioned(
+                top: 20,
+                right: 24,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    for (final m in Features.engineModes) ...[
+                      MapEngineChip(
+                        name: _engineLabel(l, m),
+                        active: bar.connectedEngine == m,
+                        highlight:
+                            bar.connectedEngine == m ||
+                            (bar.connectedEngine == null &&
+                                mode == m &&
+                                _tab != 3),
+                        onTap: () => setState(() {
+                          mode = m;
+                          _tab = 0;
+                        }),
                       ),
+                      const SizedBox(height: 8),
+                    ],
+                    // The Settings chip sits slightly apart
+                    // from the engine stack, as in the samples.
+                    const SizedBox(height: 6),
+                    MapSettingsChip(
+                      label: l.navSettings,
+                      active: _tab == 3,
+                      onTap: () => setState(() => _tab = 3),
                     ),
                   ],
                 ),
               ),
-              for (final e in engines)
-                _RailItem(
-                  icon: _engineIcon(e.mode),
-                  label: e.label,
-                  selected: tab == 0 && mode == e.mode,
-                  onTap: () => onEngine(e.mode),
-                ),
-              const SizedBox(height: 10),
-              _RailItem(
-                icon: Icons.layers_rounded,
-                label: serversLabel,
-                selected: tab == 1,
-                onTap: onServers,
-              ),
-              _RailItem(
-                icon: Icons.settings_rounded,
-                label: settingsLabel,
-                selected: tab == 3,
-                onTap: onSettings,
-              ),
-              const Spacer(),
-              // The account chip pinned at the foot: an avatar
-              // circle with an orange ring, the email, a chevron.
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 8, 14, 18),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: onAccounts,
-                    borderRadius: BorderRadius.circular(16),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      decoration: BoxDecoration(
-                        gradient: tab == 2 ? Desk.peachGradient : null,
-                        color: tab == 2
-                            ? null
-                            : Colors.white.withValues(alpha: 0.65),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: tab == 2 ? Ember.orange : Desk.line,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                              border:
-                                  Border.all(color: Ember.orange, width: 2),
-                            ),
-                            alignment: Alignment.center,
-                            child: Text(
-                              _initials(who),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                                color: Desk.ink,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              who.isEmpty ? 'No account' : who,
-                              style: const TextStyle(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w600,
-                                color: Desk.ink,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const Icon(
-                            Icons.keyboard_arrow_down_rounded,
-                            size: 19,
-                            color: Desk.faint,
-                          ),
-                        ],
-                      ),
+              // The bottom control bar.
+              Positioned(
+                bottom: 22,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: FractionallySizedBox(
+                    widthFactor: 0.90,
+                    child: MapBottomBar(
+                      on: bar.on,
+                      busy: bar.busy,
+                      onToggle: bar.onToggle,
+                      stateWord: bar.stateWord,
+                      segments: bar.segments,
+                      microLine: bar.microLine,
                     ),
                   ),
                 ),
               ),
             ],
-          ),
-        ),
+          );
+        },
       ),
     );
   }
 
-  /// The avatar's initials: the first letters of the first two
-  /// words of the name/email, or "?" with no account.
-  static String _initials(String who) {
-    final parts =
-        who.split(RegExp(r'[\s@._-]+')).where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return '?';
-    if (parts.length == 1) return parts.first[0].toUpperCase();
-    return (parts[0][0] + parts[1][0]).toUpperCase();
-  }
-}
+  String _engineLabel(AppLocalizations l, int m) => switch (m) {
+    0 => l.modeMozilla,
+    1 => l.modeV2ray,
+    2 => l.modePsiphon,
+    3 => l.modeLantern,
+    _ => l.modeWarp,
+  };
 
-/// One rail entry: the samples' tall row (~64 px) — icon and
-/// label at generous spacing; selected rows wear the peach tint
-/// with a solid orange bar at the left edge and ink text, the
-/// rest stay dim on the glass.
-class _RailItem extends StatelessWidget {
-  const _RailItem({
-    required this.icon,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            height: 60,
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            decoration: BoxDecoration(
-              gradient: selected ? Desk.peachGradient : null,
-              borderRadius: BorderRadius.circular(12),
-              border: Border(
-                left: BorderSide(
-                  color: selected ? Ember.orange : Colors.transparent,
-                  width: 4,
-                ),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  icon,
-                  size: 23,
-                  color: selected ? Desk.ink : Desk.dim,
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
-                      color: selected ? Desk.ink : Desk.dim,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+  /// The Accounts page inside a floating glass panel.
+  Widget _accountsPanel(Widget page) => Padding(
+    padding: const EdgeInsets.fromLTRB(24, 96, 24, 118),
+    child: Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: MapGlass(padding: const EdgeInsets.all(6), child: page),
       ),
-    );
+    ),
+  );
+
+  /// Whether engine [m]'s tunnel is up (its own truth — the
+  /// chips light per engine, whatever page is showing).
+  bool _engineConnected(int m) => switch (m) {
+    0 =>
+      core.status?.state.phase == Phase.running ||
+          core.status?.state.phase == Phase.starting,
+    1 => _xray.state.running,
+    2 => _psiphon.state.connected,
+    _ => false,
+  };
+
+  /// The engine whose tunnel is actually up, if any. The
+  /// current page's engine wins when its own tunnel is up —
+  /// the same precedence the bottom bar uses — so the chips
+  /// and the bar always agree about which engine is THE
+  /// connected one.
+  int? get _connectedEngine {
+    if (_engineConnected(mode)) return mode;
+    if (core.status?.state.phase == Phase.running ||
+        core.status?.state.phase == Phase.starting) {
+      return 0;
+    }
+    if (_xray.state.running) return 1;
+    if (_psiphon.state.running) return 2;
+    return null;
+  }
+
+  /// Everything the bottom bar shows, for the bar's engine (the
+  /// connected one, else the current page's): state, toggle,
+  /// segments, and the honesty-ruled micro-line. Only values the
+  /// app truly knows ever appear; the rest read "—".
+  ({
+    int engine,
+    int? connectedEngine,
+    bool on,
+    bool busy,
+    String stateWord,
+    Color stateColor,
+    List<({String label, String value})> segments,
+    String microLine,
+    VoidCallback onToggle,
+  })
+  _barModel(AppLocalizations l) {
+    final connected = _connectedEngine;
+    // The current page's engine wins when its own tunnel is up
+    // (the normal case — arbitration keeps exactly one tunnel);
+    // otherwise the bar describes whichever engine is connected,
+    // and only then the page's engine.
+    final engine = _engineConnected(mode) ? mode : (connected ?? mode);
+    switch (engine) {
+      case 1:
+        final xray = _xray;
+        final running = xray.state.running;
+        final selected = xray.selected;
+        final exit = xray.exitInfo;
+        final profileCode = selected == null
+            ? null
+            : profileCountryCode(selected);
+        final location = exit != null
+            ? exit.displayName
+            : (profileCode != null
+                  ? (xray_exit.englishCountryNames[profileCode] ?? profileCode)
+                  : '—');
+        final latency = selected != null && selected.delayMs >= 0
+            ? 'LATENCY ${latDigits(selected.delayMs)}ms • '
+            : '';
+        return (
+          engine: 1,
+          connectedEngine: connected,
+          on: running,
+          busy: xray.connecting,
+          stateWord: running ? 'Connected' : 'Not connected',
+          stateColor: running ? MapUi.text : MapUi.dim,
+          segments: [
+            (label: 'ACTIVE CONFIG', value: selected?.name ?? '—'),
+            (label: 'LOCATION', value: location),
+            (label: 'EXIT IP', value: exit?.ip ?? '—'),
+            (label: 'UP', value: running ? fmtRate(xray.upRate) : '—'),
+            (label: 'DOWN', value: running ? fmtRate(xray.downRate) : '—'),
+          ],
+          microLine:
+              '$latency${selected?.protocol.label.toUpperCase() ?? 'V2RAY'}',
+          onToggle: () => unawaited(_toggleXray(l)),
+        );
+      case 2:
+        final psiphon = _psiphon;
+        final state = psiphon.state;
+        final on = state.connected;
+        final exit = psiphon.exitInfo;
+        final regionCode = on && state.region.isNotEmpty
+            ? state.region
+            : psiphon.settings.region;
+        final egressIp = exit?.ip.isNotEmpty == true
+            ? exit!.ip
+            : (state.clientAddress.isNotEmpty ? state.clientAddress : '—');
+        final session = on && state.sinceMs > 0
+            ? fmtDuration(
+                DateTime.now().difference(
+                  DateTime.fromMillisecondsSinceEpoch(state.sinceMs),
+                ),
+              )
+            : '—';
+        return (
+          engine: 2,
+          connectedEngine: connected,
+          on: on,
+          busy: psiphon.connecting || (state.running && !on),
+          stateWord: on
+              ? 'Connected via Psiphon'
+              : (state.running ? 'Connecting…' : 'Not connected'),
+          stateColor: on ? MapUi.text : MapUi.dim,
+          segments: [
+            (
+              label: 'EXIT REGION',
+              value: regionCode.isEmpty
+                  ? l.psiphonRegionAuto
+                  : regionName(regionCode),
+            ),
+            (label: 'EXIT IP', value: egressIp),
+            (label: 'UP', value: state.running ? fmtRate(psiphon.upRate) : '—'),
+            (
+              label: 'DOWN',
+              value: state.running ? fmtRate(psiphon.downRate) : '—',
+            ),
+            (label: 'SESSION', value: session),
+          ],
+          microLine: 'PSIPHON',
+          onToggle: () => unawaited(_togglePsiphon(l)),
+        );
+      default:
+        final status = core.status;
+        final phase = status?.state.phase;
+        final running = phase == Phase.running;
+        final exit = status?.exit;
+        final proxy = status?.proxy;
+        final usage = status?.activeAccount?.usage;
+        final location = exit != null
+            ? (exit.city.isNotEmpty
+                  ? '${exit.city} • ${exit.countryName}'
+                  : exit.countryName)
+            : proxy != null
+            ? (proxy.cityName.isNotEmpty
+                  ? '${proxy.cityName} • ${proxy.countryName}'
+                  : proxy.countryName)
+            : '—';
+        final testMs = status?.lastTest?.totalMs ?? 0;
+        return (
+          engine: 0,
+          connectedEngine: connected,
+          on: running,
+          busy: phase == Phase.starting,
+          stateWord: running
+              ? 'Connected'
+              : phase == Phase.starting
+              ? 'Connecting…'
+              : 'Not connected',
+          stateColor: running ? MapUi.text : MapUi.dim,
+          segments: [
+            (label: 'LOCATION', value: location),
+            (label: 'EXIT IP', value: exit?.ipv4 ?? '—'),
+            (
+              label: 'QUOTA USED',
+              value: usage == null || usage.unlimited
+                  ? '—'
+                  : fmtBytes(usage.usedBytes),
+            ),
+            (
+              label: 'QUOTA LEFT',
+              value: usage == null
+                  ? '—'
+                  : usage.unlimited
+                  ? 'Unlimited'
+                  : fmtBytes(usage.remainingBytes),
+            ),
+          ],
+          microLine:
+              '${running && testMs > 0 ? 'LATENCY ${latDigits(testMs)}ms • ' : ''}MOZILLA',
+          onToggle: () => unawaited(_toggleMozilla()),
+        );
+    }
+  }
+
+  /// The map's actors for the bar's engine: the pins, the lit
+  /// exit, and its label — strictly from derivable data (a
+  /// profile's claimed country, a through-tunnel exit lookup, the
+  /// core's selection, the locations list). An engine whose exit
+  /// country is unknown gets no pin and no arc.
+  ({
+    Set<String> pins,
+    String? selected,
+    bool connected,
+    String homeLabel,
+    String selectedLabel,
+  })
+  _actors(BuildContext context, AppLocalizations l, int engine) {
+    final homeLabel =
+        ('${l.mapHome} • ${localizedCountryName(context, 'IR', 'Iran')}')
+            .toUpperCase();
+    switch (engine) {
+      case 1:
+        final xray = _xray;
+        final pins = <String>{
+          for (final profile in xray.profiles)
+            if (profileCountryCode(profile) != null)
+              profileCountryCode(profile)!,
+        };
+        final exitCode = xray.state.running ? xray.exitInfo?.countryCode : null;
+        if (exitCode != null && exitCode.isNotEmpty) pins.add(exitCode);
+        final selectedProfile = xray.selected;
+        final profileCode = selectedProfile == null
+            ? null
+            : profileCountryCode(selectedProfile);
+        final selected = (exitCode != null && exitCode.isNotEmpty)
+            ? exitCode
+            : profileCode;
+        return (
+          pins: pins,
+          selected: selected,
+          connected: xray.state.running && selected != null,
+          homeLabel: homeLabel,
+          selectedLabel: selected == null
+              ? ''
+              : (xray_exit.englishCountryNames[selected] ?? selected)
+                    .toUpperCase(),
+        );
+      case 2:
+        final state = _psiphon.state;
+        final code = state.connected
+            ? (_psiphon.exitInfo?.countryCode ??
+                  (state.region.isNotEmpty ? state.region : null))
+            : null;
+        return (
+          pins: const {},
+          selected: code,
+          connected: state.connected && code != null,
+          homeLabel: homeLabel,
+          selectedLabel: code == null
+              ? ''
+              : (xray_exit.englishCountryNames[code] ?? code).toUpperCase(),
+        );
+      default:
+        final status = core.status;
+        final running = status?.state.phase == Phase.running;
+        final code = running
+            ? (status?.exit?.countryCode ??
+                  status?.proxy?.countryCode ??
+                  ((status?.selection ?? '').isNotEmpty &&
+                          status?.selection != 'fastest'
+                      ? status?.selection
+                      : null))
+            : null;
+        final exit = status?.exit;
+        return (
+          pins: _tab == 1 ? _serverPins : const {},
+          selected: code,
+          connected: running && code != null,
+          homeLabel: homeLabel,
+          selectedLabel: code == null
+              ? ''
+              : (exit != null && exit.city.isNotEmpty
+                        ? '${exit.countryName} • ${exit.city}'
+                        : (xray_exit.englishCountryNames[code] ??
+                              status?.proxy?.countryName ??
+                              code))
+                    .toUpperCase(),
+        );
+    }
+  }
+
+  /// The Mozilla bar toggle: off when running; when off, the
+  /// other engines stop first (the shell's arbitration), then
+  /// the core starts.
+  Future<void> _toggleMozilla() async {
+    final phase = core.status?.state.phase;
+    if (phase == Phase.running) {
+      await runShowingErrors(context, () => core.setOn(false));
+    } else if (phase == Phase.off || phase == Phase.waiting || phase == null) {
+      await runShowingErrors(context, () async {
+        await stopXray();
+        await core.setOn(true);
+      });
+    }
+  }
+
+  /// The V2Ray bar toggle, with the desktop page's error words.
+  Future<void> _toggleXray(AppLocalizations l) async {
+    try {
+      if (_xray.state.running) {
+        await _xray.disconnect();
+      } else {
+        await _xray.connect();
+      }
+    } on StateError catch (e) {
+      if (!mounted) return;
+      final message = switch (e.message) {
+        'no-profile' => l.noProfileSelected,
+        'unsupported' => l.unsupportedProtocol,
+        _ => l.startFailed,
+      };
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  /// The Psiphon bar toggle.
+  Future<void> _togglePsiphon(AppLocalizations l) async {
+    try {
+      if (_psiphon.state.running) {
+        await _psiphon.disconnect();
+      } else {
+        await _psiphon.connect();
+      }
+    } on StateError {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.startFailed)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
   }
 }

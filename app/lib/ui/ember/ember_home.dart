@@ -18,10 +18,10 @@ import '../../warp/warp_controller.dart';
 import '../../xray/exit_info.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
-import 'desktop_mozilla.dart';
-import 'desktop_psiphon.dart';
-import 'desktop_v2ray.dart';
 import 'ember_format.dart';
+import 'map_mozilla.dart';
+import 'map_psiphon.dart';
+import 'map_v2ray.dart';
 import 'ember_theme.dart';
 import 'profile_country.dart';
 import 'warp_pages.dart' show warpModeLabel;
@@ -61,28 +61,26 @@ class EmberHome extends StatelessWidget {
   /// switch (or tagline) at the top of the home page there.
   final bool hideModeSwitch;
 
-  /// The Windows desktop shell: the home is the Fluent mockups'
-  /// dashboard (desktop_mozilla.dart / desktop_v2ray.dart /
-  /// desktop_psiphon.dart), not the phone page at all. Android
-  /// never sets this.
+  /// The Windows desktop shell: the home is the Map Control
+  /// overlay of the active engine (map_mozilla.dart /
+  /// map_v2ray.dart / map_psiphon.dart) floating over the shell's
+  /// world map, not the phone page at all. Android never sets
+  /// this.
   final bool desktop;
 
   @override
   Widget build(BuildContext context) {
-    // The desktop dashboards are their own pages (mockup E and its
-    // siblings); the phone layout below is untouched for Android.
+    // The desktop overlays are their own pages; the phone layout
+    // below is untouched for Android.
     if (desktop) {
       return switch (mode) {
-        1 => V2rayDesktopPage(xray: xray),
-        2 => PsiphonDesktopHome(psiphon: psiphon),
-        _ => MozillaDesktopHome(
-            core: core,
-            xray: xray,
-            onOpenServers: onOpenServers,
-            onOpenAccounts: onOpenAccounts,
-            onOpenV2ray: () => onModeChanged(1),
-            stopOtherEngine: stopOtherEngine,
-          ),
+        1 => MapV2rayPage(xray: xray),
+        2 => MapPsiphonPage(psiphon: psiphon),
+        _ => MapMozillaPage(
+          core: core,
+          onOpenServers: onOpenServers,
+          onOpenAccounts: onOpenAccounts,
+        ),
       };
     }
     final l = AppLocalizations.of(context);
@@ -90,12 +88,12 @@ class EmberHome extends StatelessWidget {
     // the switch holds Mozilla / V2Ray / Psiphon only.
     final modes = Features.engineModes;
     String labelOf(int m) => switch (m) {
-          0 => l.modeMozilla,
-          1 => l.modeV2ray,
-          2 => l.modePsiphon,
-          3 => l.modeLantern,
-          _ => l.modeWarp,
-        };
+      0 => l.modeMozilla,
+      1 => l.modeV2ray,
+      2 => l.modePsiphon,
+      3 => l.modeLantern,
+      _ => l.modeWarp,
+    };
     return ListenableBuilder(
       listenable: Listenable.merge([core, xray, psiphon, lantern, warp]),
       builder: (context, _) => ListView(
@@ -169,9 +167,8 @@ class _MozillaHomeState extends State<_MozillaHome> {
       await widget.core.setOn(on);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -226,10 +223,7 @@ class _MozillaHomeState extends State<_MozillaHome> {
           Text(l.secureConnection, style: Ember.dimStyle),
         if (on && traffic != null) ...[
           const SizedBox(height: 8),
-          _RatesRow(
-            upRate: traffic.upRate,
-            downRate: traffic.downRate,
-          ),
+          _RatesRow(upRate: traffic.upRate, downRate: traffic.downRate),
         ],
         const SizedBox(height: 20),
         // The active account and its allowance (mockup 1).
@@ -265,9 +259,11 @@ class _MozillaHomeState extends State<_MozillaHome> {
                         const SizedBox(width: 11),
                         Expanded(
                           child: Text(
-                            maskEmail(account.email.isEmpty
-                                ? account.name
-                                : account.email),
+                            maskEmail(
+                              account.email.isEmpty
+                                  ? account.name
+                                  : account.email,
+                            ),
                             style: Ember.heading,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -298,8 +294,10 @@ class _MozillaHomeState extends State<_MozillaHome> {
                       const SizedBox(height: 9),
                       UsageBar(
                         fraction: usage.limitBytes > 0
-                            ? (usage.usedBytes / usage.limitBytes)
-                                .clamp(0.0, 1.0)
+                            ? (usage.usedBytes / usage.limitBytes).clamp(
+                                0.0,
+                                1.0,
+                              )
                             : 0,
                       ),
                       const SizedBox(height: 7),
@@ -307,9 +305,11 @@ class _MozillaHomeState extends State<_MozillaHome> {
                         alignment: AlignmentDirectional.centerEnd,
                         child: Text(
                           l.usedPercent(
-                            latDigits(usage.limitBytes > 0
-                                ? (usage.usedBytes * 100 ~/ usage.limitBytes)
-                                : 0),
+                            latDigits(
+                              usage.limitBytes > 0
+                                  ? (usage.usedBytes * 100 ~/ usage.limitBytes)
+                                  : 0,
+                            ),
                           ),
                           style: Ember.caption,
                         ),
@@ -398,14 +398,12 @@ class _V2rayHomeState extends State<_V2rayHome> {
         'unsupported' => l.unsupportedProtocol,
         _ => l.startFailed,
       };
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -430,7 +428,8 @@ class _V2rayHomeState extends State<_V2rayHome> {
     final selectedCode = p == null ? null : profileCountryCode(p);
     final exitCode = on ? xray.exitInfo?.countryCode : null;
     if (exitCode != null && exitCode.isNotEmpty) pinCodes.add(exitCode);
-    final activeCode = selectedCode ??
+    final activeCode =
+        selectedCode ??
         (exitCode != null && exitCode.isNotEmpty ? exitCode : null);
 
     return Column(
@@ -526,13 +525,13 @@ class _V2rayHomeState extends State<_V2rayHome> {
                       label: p.delayMs >= 0
                           ? '${l.pingLabel}: ${latDigits(p.delayMs)}ms'
                           : p.delayFailed
-                              ? '${l.pingLabel}: Failed'
-                              : l.pingLabel,
+                          ? '${l.pingLabel}: Failed'
+                          : l.pingLabel,
                       dot: p.delayMs >= 0
                           ? pingColor(p.delayMs)
                           : p.delayFailed
-                              ? Ember.red
-                              : null,
+                          ? Ember.red
+                          : null,
                     ),
                     if (!p.protocol.supportedByCore)
                       EmberChip(label: l.unsupportedProtocol, dot: Ember.red),
@@ -782,38 +781,35 @@ class _SessionLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => StreamBuilder<void>(
-        stream: Stream.periodic(const Duration(seconds: 1)),
-        builder: (context, _) {
-          final d = DateTime.now().difference(startedAt);
-          // Duration, separator and caption are SEPARATE widgets with
-          // real gaps — never one mixed-direction string, whose bidi
-          // reordering glued the timer onto the status word (2006).
-          // The duration is pinned LTR so it reads 00:34 in both
-          // layout directions.
-          return Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Directionality(
-                textDirection: TextDirection.ltr,
-                child: Text(fmtDuration(d), style: Ember.dimStyle),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '•',
-                style: Ember.dimStyle.copyWith(color: Ember.faint),
-              ),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  caption,
-                  style: Ember.dimStyle,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          );
-        },
+    stream: Stream.periodic(const Duration(seconds: 1)),
+    builder: (context, _) {
+      final d = DateTime.now().difference(startedAt);
+      // Duration, separator and caption are SEPARATE widgets with
+      // real gaps — never one mixed-direction string, whose bidi
+      // reordering glued the timer onto the status word (2006).
+      // The duration is pinned LTR so it reads 00:34 in both
+      // layout directions.
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: Text(fmtDuration(d), style: Ember.dimStyle),
+          ),
+          const SizedBox(width: 6),
+          Text('•', style: Ember.dimStyle.copyWith(color: Ember.faint)),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              caption,
+              style: Ember.dimStyle,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
       );
+    },
+  );
 }
 
 class _RatesRow extends StatelessWidget {
@@ -823,17 +819,17 @@ class _RatesRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.arrow_upward_rounded, size: 14, color: Ember.orange),
-          const SizedBox(width: 3),
-          Text(fmtRate(upRate), style: Ember.caption.copyWith(color: Ember.dim)),
-          const SizedBox(width: 16),
-          const Icon(Icons.arrow_downward_rounded, size: 14, color: Ember.amber),
-          const SizedBox(width: 3),
-          Text(fmtRate(downRate), style: Ember.caption.copyWith(color: Ember.dim)),
-        ],
-      );
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.arrow_upward_rounded, size: 14, color: Ember.orange),
+      const SizedBox(width: 3),
+      Text(fmtRate(upRate), style: Ember.caption.copyWith(color: Ember.dim)),
+      const SizedBox(width: 16),
+      const Icon(Icons.arrow_downward_rounded, size: 14, color: Ember.amber),
+      const SizedBox(width: 3),
+      Text(fmtRate(downRate), style: Ember.caption.copyWith(color: Ember.dim)),
+    ],
+  );
 }
 
 /// The Psiphon home: the same power ring and status grammar as the
@@ -866,15 +862,13 @@ class _PsiphonHomeState extends State<_PsiphonHome> {
       }
     } on StateError {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l.startFailed)),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.startFailed)));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -918,8 +912,8 @@ class _PsiphonHomeState extends State<_PsiphonHome> {
               on
                   ? l.statusConnected
                   : running
-                      ? l.stateConnecting
-                      : l.statusDisconnected,
+                  ? l.stateConnecting
+                  : l.statusDisconnected,
               style: TextStyle(
                 fontSize: 21,
                 fontWeight: FontWeight.w800,
@@ -971,9 +965,7 @@ class _PsiphonHomeState extends State<_PsiphonHome> {
                       style: Ember.heading,
                     ),
                     Text(
-                      on && actual.isNotEmpty
-                          ? l.psiphonExitRegion
-                          : l.region,
+                      on && actual.isNotEmpty ? l.psiphonExitRegion : l.region,
                       style: Ember.caption,
                     ),
                   ],
@@ -1059,15 +1051,13 @@ class _LanternHomeState extends State<_LanternHome> {
       }
     } on StateError {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l.startFailed)),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.startFailed)));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -1111,8 +1101,8 @@ class _LanternHomeState extends State<_LanternHome> {
               on
                   ? l.statusConnected
                   : running
-                      ? l.stateConnecting
-                      : l.statusDisconnected,
+                  ? l.stateConnecting
+                  : l.statusDisconnected,
               style: TextStyle(
                 fontSize: 21,
                 fontWeight: FontWeight.w800,
@@ -1215,8 +1205,11 @@ class _LanternHomeState extends State<_LanternHome> {
           GlassCard(
             child: Row(
               children: [
-                const Icon(Icons.error_outline_rounded,
-                    size: 16, color: Ember.red),
+                const Icon(
+                  Icons.error_outline_rounded,
+                  size: 16,
+                  color: Ember.red,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -1266,15 +1259,13 @@ class _WarpHomeState extends State<_WarpHome> {
       }
     } on StateError {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l.startFailed)),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.startFailed)));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -1314,8 +1305,8 @@ class _WarpHomeState extends State<_WarpHome> {
               on
                   ? l.statusConnected
                   : active
-                      ? l.stateConnecting
-                      : l.statusDisconnected,
+                  ? l.stateConnecting
+                  : l.statusDisconnected,
               style: TextStyle(
                 fontSize: 21,
                 fontWeight: FontWeight.w800,
@@ -1401,8 +1392,7 @@ class _WarpHomeState extends State<_WarpHome> {
                     EmberChip(label: l.warpModeGool, dot: Ember.green),
                   if (settings.mode == WarpMode.cfon)
                     EmberChip(
-                      label:
-                          '${l.warpModeCfon} · ${settings.country}',
+                      label: '${l.warpModeCfon} · ${settings.country}',
                       dot: Ember.green,
                     ),
                   if (settings.scan)
@@ -1435,8 +1425,11 @@ class _WarpHomeState extends State<_WarpHome> {
           GlassCard(
             child: Row(
               children: [
-                const Icon(Icons.error_outline_rounded,
-                    size: 16, color: Ember.red),
+                const Icon(
+                  Icons.error_outline_rounded,
+                  size: 16,
+                  color: Ember.red,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(

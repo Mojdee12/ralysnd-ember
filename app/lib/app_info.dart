@@ -6,6 +6,11 @@ import 'dart:io';
 /// "0.0.0" is a development build.
 const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.0.0');
 
+/// The build number shown beside the version in the desktop
+/// brand panel: pubspec.yaml's `+NNNN`, kept here as a literal
+/// because the build scripts pass only APP_VERSION through.
+const appBuildNumber = '2026';
+
 /// The GitHub repository, "owner/name", for the source link and the update
 /// check.
 const githubRepo = 'armanlife/firefox-vpn-client';

@@ -40,71 +40,86 @@ abstract final class Ember {
   static const cardRadius = 24.0;
   static const radius = BorderRadius.all(Radius.circular(cardRadius));
 
-  // On the desktop shell the same five styles speak the Sample A
-  // light palette (dark ink on pale glass); the phone styles below
-  // are untouched.
+  // On the desktop shell the same five styles speak the Map
+  // Control palette (2.1.0): pale blue-grey text on the dark navy
+  // map glass; the phone styles below are untouched.
   static TextStyle get title => Features.desktopShell
       ? const TextStyle(
-          fontSize: 21, fontWeight: FontWeight.w800, color: Desk.ink)
+          fontSize: 21,
+          fontWeight: FontWeight.w800,
+          color: MapUi.text,
+        )
       : const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: text);
   static TextStyle get heading => Features.desktopShell
       ? const TextStyle(
-          fontSize: 16, fontWeight: FontWeight.w700, color: Desk.ink)
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: MapUi.text,
+        )
       : const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: text);
   static TextStyle get body => Features.desktopShell
-      ? const TextStyle(fontSize: 14, color: Desk.ink, height: 1.35)
+      ? const TextStyle(fontSize: 14, color: MapUi.body, height: 1.35)
       : const TextStyle(fontSize: 14, color: text, height: 1.35);
   static TextStyle get dimStyle => Features.desktopShell
-      ? const TextStyle(fontSize: 13, color: Desk.dim, height: 1.35)
+      ? const TextStyle(fontSize: 13, color: MapUi.dim, height: 1.35)
       : const TextStyle(fontSize: 13, color: dim, height: 1.35);
   static TextStyle get caption => Features.desktopShell
-      ? const TextStyle(fontSize: 11.5, color: Desk.faint, height: 1.3)
+      ? const TextStyle(fontSize: 11.5, color: MapUi.faint, height: 1.3)
       : const TextStyle(fontSize: 11.5, color: faint, height: 1.3);
 }
 
-/// The Sample A desktop palette (the approved 2.0.7 mockup set):
-/// near-black ink on pale blue-grey glass, one ember orange, the
-/// peach tint of selected rows, and the user's ping colors (green
-/// at or under 150 ms, yellow above). Desktop surfaces only — the
-/// phone palette above never reads these.
-abstract final class Desk {
-  static const ink = Color(0xFF17191D);
-  static const inkSoft = Color(0xFF3A3F47);
-  static const dim = Color(0xFF626A76);
-  static const faint = Color(0xFF98A0AC);
-  static const line = Color(0x1E2A3444);
-  static const green = Color(0xFF1E9E4A);
-  static const yellow = Color(0xFFC99300);
-  static const red = Color(0xFFE5484D);
-  static const orange = Ember.orange;
-  static const cardRadius = 20.0;
-  static const radius = BorderRadius.all(Radius.circular(cardRadius));
+/// The Map Control desktop palette (2.1.0, the approved dark
+/// samples): the whole window is the dotted world map on deep
+/// navy-charcoal, and every surface is dark glass floating over
+/// it — pale blue-grey text, hairline light borders, one ember
+/// orange. Desktop surfaces only — the phone palette above never
+/// reads these.
+abstract final class MapUi {
+  /// The backdrop gradient of the samples (#0C1520 → #101C2C).
+  static const baseTop = Color(0xFF0C1520);
+  static const baseBottom = Color(0xFF101C2C);
 
-  /// The selected-row tint of the samples: a peach wash, stronger
-  /// at the left edge, fading into the glass.
-  static const peachGradient = LinearGradient(
+  /// Panel glass: a navy fill at ~72% over a backdrop blur.
+  static const panelFill = Color(0xB8142236);
+  static const panelFillSoft = Color(0x99122030);
+
+  /// Inset fields (search, text inputs): darker than the panel.
+  static const insetFill = Color(0x990A1220);
+
+  static const line = Color(0x17FFFFFF);
+  static const lineStrong = Color(0x29FFFFFF);
+  static const text = Color(0xFFF2F6FC);
+  static const body = Color(0xFFC9D6E8);
+  static const dim = Color(0xFF8FA3BC);
+  static const faint = Color(0xFF5F728C);
+  static const orange = Ember.orange;
+  static const amber = Ember.amber;
+  static const red = Color(0xFFFF5A5A);
+
+  /// The user's ping hues (frozen rule: green at or under 150 ms,
+  /// yellow above), brightened just enough to stay readable on
+  /// the dark glass — same hues as the accepted 2.0.7 pair.
+  static const pingGreen = Color(0xFF2FBF71);
+  static const pingYellow = Color(0xFFFFC21A);
+
+  static const panelRadius = 20.0;
+  static const panelBorder = BorderRadius.all(Radius.circular(panelRadius));
+
+  /// The selected-row treatment of the dark samples: an orange
+  /// wash, stronger at the left edge, over the glass.
+  static const selectedGradient = LinearGradient(
     begin: Alignment.centerLeft,
     end: Alignment.centerRight,
-    colors: [Color(0x8CFFC38F), Color(0x2EFFDDBE)],
+    colors: [Color(0x47FF7A18), Color(0x1AFF7A18)],
   );
-
-  static TextStyle get title =>
-      const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: ink);
-  static TextStyle get heading =>
-      const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: ink);
-  static TextStyle get body =>
-      const TextStyle(fontSize: 14, color: ink, height: 1.35);
-  static TextStyle get dimStyle =>
-      const TextStyle(fontSize: 13, color: dim, height: 1.35);
-  static TextStyle get caption =>
-      const TextStyle(fontSize: 11.5, color: faint, height: 1.3);
 }
 
-/// The user's ping color rule (2.0.7): a measured delay reads
-/// GREEN at or under 150 ms and YELLOW above it, on every desktop
-/// surface that prints a ping. (Failures keep their red treatment
-/// at the call sites; this is only called for measured values.)
-Color deskPingColor(int ms) => ms <= 150 ? Desk.green : Desk.yellow;
+/// The user's ping color rule (frozen since 2.0.7): a measured
+/// delay reads GREEN at or under 150 ms and YELLOW above it, on
+/// every desktop surface that prints a ping. (Failures keep their
+/// red treatment at the call sites; this is only called for
+/// measured values.)
+Color mapPingColor(int ms) => ms <= 150 ? MapUi.pingGreen : MapUi.pingYellow;
 
 /// The app background: near-black with a faint ember glow at the top.
 class EmberBackground extends StatelessWidget {
@@ -113,27 +128,27 @@ class EmberBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment(0, -1.15),
-            radius: 1.15,
-            colors: [Color(0x2EFF7A18), Ember.bg, Ember.bg],
-            stops: [0, 0.45, 1],
-          ),
-        ),
-        child: child,
-      );
+    decoration: const BoxDecoration(
+      gradient: RadialGradient(
+        center: Alignment(0, -1.15),
+        radius: 1.15,
+        colors: [Color(0x2EFF7A18), Ember.bg, Ember.bg],
+        stops: [0, 0.45, 1],
+      ),
+    ),
+    child: child,
+  );
 }
 
 /// A mockup glass card: soft graphite fill, hairline border, big radius.
 ///
 /// On the desktop shell (Windows) the same widget renders the
-/// Sample A glass instead (the approved 2.0.7 mockup set): a pale
-/// near-white translucent fill (white ~0.80 → 0.68) over a real
-/// backdrop blur — the blue-grey dotted map shows through faintly —
-/// a hairline border, a soft diffuse shadow, and the warm orange
-/// rim line along the top edge (brighter on [glow] cards). Radius
-/// 20, the samples' corner. The phone rendering below is untouched.
+/// Map Control glass instead (2.1.0): a dark navy translucent
+/// fill over a real backdrop blur — the dotted map shows
+/// through — a hairline light border, a soft shadow, and the
+/// warm orange rim line along the top edge (brighter on [glow]
+/// cards). Radius 20, the samples' corner. The phone rendering
+/// below is untouched.
 class GlassCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -165,7 +180,7 @@ class GlassCard extends StatelessWidget {
                   color: Ember.orange.withValues(alpha: 0.22),
                   blurRadius: 24,
                   spreadRadius: 1,
-                )
+                ),
               ]
             : const [],
       ),
@@ -174,15 +189,11 @@ class GlassCard extends StatelessWidget {
     if (onTap == null) return card;
     return Material(
       color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: Ember.radius,
-        child: card,
-      ),
+      child: InkWell(onTap: onTap, borderRadius: Ember.radius, child: card),
     );
   }
 
-  /// The desktop Sample A glass surface (see the class doc).
+  /// The desktop Map Control glass surface (see the class doc).
   Widget _buildDesktopGlass() {
     // A RepaintBoundary around the glass: the card's backdrop blur
     // becomes its own composited layer, so a repaint anywhere else
@@ -190,81 +201,79 @@ class GlassCard extends StatelessWidget {
     // cached blur instead of re-running the filter for this card.
     final surface = RepaintBoundary(
       child: Container(
-      decoration: BoxDecoration(
-        borderRadius: Desk.radius,
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF2A3444).withValues(alpha: 0.13),
-            blurRadius: 26,
-            offset: const Offset(0, 10),
-          ),
-          // NO orange halo shadow, deliberately: the card's
-          // backdrop blur samples everything painted beneath it,
-          // so any filled orange shadow behind the glass bleeds
-          // through the blur and tints the interior. The samples'
-          // warm edge is the bright rim LINE painted on top of the
-          // glass below — stronger on [glow] cards — and that is
-          // the only orange a card carries.
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: Desk.radius,
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-          child: Stack(
-            children: [
-              // The pale near-white fill of the samples, a touch
-              // lighter at the top: white ~0.80 → 0.68 over the
-              // blurred pale backdrop.
-              Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.white.withValues(alpha: 0.80),
-                        Colors.white.withValues(alpha: 0.68),
-                      ],
+        decoration: BoxDecoration(
+          borderRadius: MapUi.panelBorder,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 26,
+              offset: const Offset(0, 10),
+            ),
+            // NO orange halo shadow, deliberately: the card's
+            // backdrop blur samples everything painted beneath it,
+            // so any filled orange shadow behind the glass bleeds
+            // through the blur and tints the interior. The samples'
+            // warm edge is the bright rim LINE painted on top of
+            // the glass below — stronger on [glow] cards — and
+            // that is the only orange a card carries.
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: MapUi.panelBorder,
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Stack(
+              children: [
+                // The dark navy glass fill of the samples, a touch
+                // lighter at the top, over the blurred dotted map.
+                const Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0x381C2C47), Color(0x2B122030)],
+                      ),
                     ),
                   ),
                 ),
-              ),
-              Container(
-                padding: padding,
-                decoration: BoxDecoration(
-                  borderRadius: Desk.radius,
-                  border: Border.all(
-                    color: const Color(0xFF2A3444).withValues(alpha: 0.10),
-                  ),
-                ),
-                child: child,
-              ),
-              // The bright rim line along the top edge, fading at the
-              // corners as in the samples.
-              Positioned(
-                top: 0,
-                left: 26,
-                right: 26,
-                child: Container(
-                  height: 1.6,
+                Container(
+                  padding: padding,
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        Ember.orange.withValues(alpha: 0.05),
-                        Ember.orange.withValues(alpha: glow ? 0.95 : 0.7),
-                        Ember.orange.withValues(alpha: glow ? 0.95 : 0.7),
-                        Ember.orange.withValues(alpha: 0.05),
-                      ],
-                      stops: const [0, 0.25, 0.75, 1],
+                    borderRadius: MapUi.panelBorder,
+                    border: Border.all(
+                      color: glow
+                          ? Ember.orange.withValues(alpha: 0.45)
+                          : MapUi.line,
+                    ),
+                  ),
+                  child: child,
+                ),
+                // The bright rim line along the top edge, fading at
+                // the corners as in the samples.
+                Positioned(
+                  top: 0,
+                  left: 26,
+                  right: 26,
+                  child: Container(
+                    height: 1.6,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Ember.orange.withValues(alpha: 0.05),
+                          Ember.orange.withValues(alpha: glow ? 0.95 : 0.55),
+                          Ember.orange.withValues(alpha: glow ? 0.95 : 0.55),
+                          Ember.orange.withValues(alpha: 0.05),
+                        ],
+                        stops: const [0, 0.25, 0.75, 1],
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
     if (onTap == null) return surface;
@@ -272,7 +281,7 @@ class GlassCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: Desk.radius,
+        borderRadius: MapUi.panelBorder,
         child: surface,
       ),
     );
@@ -293,34 +302,34 @@ class DashedAddButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: Ember.radius,
-          child: CustomPaint(
-            painter: _DashedBorderPainter(),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 18),
-              alignment: Alignment.center,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, color: Ember.orange, size: 20),
-                  const SizedBox(width: 8),
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      color: Ember.orange,
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: Ember.radius,
+      child: CustomPaint(
+        painter: _DashedBorderPainter(),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Ember.orange, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Ember.orange,
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            ),
+            ],
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _DashedBorderPainter extends CustomPainter {
@@ -338,7 +347,10 @@ class _DashedBorderPainter extends CustomPainter {
     for (final metric in path.computeMetrics()) {
       var d = 0.0;
       while (d < metric.length) {
-        canvas.drawPath(metric.extractPath(d, math.min(d + 7, metric.length)), paint);
+        canvas.drawPath(
+          metric.extractPath(d, math.min(d + 7, metric.length)),
+          paint,
+        );
         d += 11;
       }
     }
@@ -493,29 +505,29 @@ class UsageRing extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: size,
-        height: size,
-        child: CustomPaint(
-          painter: _UsageRingPainter(fraction.clamp(0.0, 1.0)),
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  centerText,
-                  style: TextStyle(
-                    fontSize: size * 0.24,
-                    fontWeight: FontWeight.w800,
-                    color: Ember.text,
-                  ),
-                ),
-                if (subText != null)
-                  Text(subText!, style: Ember.caption.copyWith(fontSize: 10)),
-              ],
+    width: size,
+    height: size,
+    child: CustomPaint(
+      painter: _UsageRingPainter(fraction.clamp(0.0, 1.0)),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              centerText,
+              style: TextStyle(
+                fontSize: size * 0.24,
+                fontWeight: FontWeight.w800,
+                color: Ember.text,
+              ),
             ),
-          ),
+            if (subText != null)
+              Text(subText!, style: Ember.caption.copyWith(fontSize: 10)),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _UsageRingPainter extends CustomPainter {
@@ -552,23 +564,23 @@ class UsageBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ClipRRect(
-        borderRadius: BorderRadius.circular(height),
-        child: Container(
-          height: height,
-          color: Features.desktopShell
-              ? const Color(0xFFDFE4EB)
-              : const Color(0xFF2A2B33),
-          child: Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: FractionallySizedBox(
-              widthFactor: fraction.clamp(0.0, 1.0),
-              child: Container(
-                decoration: const BoxDecoration(gradient: Ember.gradient),
-              ),
-            ),
+    borderRadius: BorderRadius.circular(height),
+    child: Container(
+      height: height,
+      color: Features.desktopShell
+          ? Colors.white.withValues(alpha: 0.10)
+          : const Color(0xFF2A2B33),
+      child: Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: FractionallySizedBox(
+          widthFactor: fraction.clamp(0.0, 1.0),
+          child: Container(
+            decoration: const BoxDecoration(gradient: Ember.gradient),
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 /// The mockups' toggle: a gradient pill when on, grey when off.
@@ -579,31 +591,31 @@ class EmberToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-        onTap: onChanged == null ? null : () => onChanged!(!value),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          width: 50,
-          height: 29,
-          padding: const EdgeInsets.all(3),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            gradient: value ? Ember.gradient : null,
-            color: value ? null : const Color(0xFF34353D),
-          ),
-          child: AnimatedAlign(
-            duration: const Duration(milliseconds: 180),
-            alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-            child: Container(
-              width: 23,
-              height: 23,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-              ),
-            ),
+    onTap: onChanged == null ? null : () => onChanged!(!value),
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      width: 50,
+      height: 29,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        gradient: value ? Ember.gradient : null,
+        color: value ? null : const Color(0xFF34353D),
+      ),
+      child: AnimatedAlign(
+        duration: const Duration(milliseconds: 180),
+        alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          width: 23,
+          height: 23,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 /// A small pill chip; [selected] fills it with the gradient.
@@ -622,18 +634,18 @@ class EmberChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Desktop (Sample A region-chip treatment): the selected chip
-    // is a peach tint with an orange border and a check; the rest
-    // are pale glass chips with ink text.
+    // Desktop (Map Control chip treatment): the selected chip is
+    // an orange-tinted dark glass pill with an orange border and
+    // a check; the rest are plain dark glass with pale text.
     if (Features.desktopShell) {
       final chip = Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          gradient: selected ? Desk.peachGradient : null,
-          color: selected ? null : Colors.white.withValues(alpha: 0.55),
+          gradient: selected ? MapUi.selectedGradient : null,
+          color: selected ? null : MapUi.panelFillSoft,
           borderRadius: BorderRadius.circular(999),
           border: Border.all(
-            color: selected ? Ember.orange : Desk.line,
+            color: selected ? Ember.orange : MapUi.line,
             width: selected ? 1.2 : 1,
           ),
         ),
@@ -656,7 +668,7 @@ class EmberChip extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
-                color: selected ? Desk.ink : Desk.dim,
+                color: selected ? MapUi.text : MapUi.dim,
               ),
             ),
           ],
@@ -678,9 +690,7 @@ class EmberChip extends StatelessWidget {
         gradient: selected ? Ember.gradient : null,
         color: selected ? null : Ember.cardSoft,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: selected ? Colors.transparent : Ember.line,
-        ),
+        border: Border.all(color: selected ? Colors.transparent : Ember.line),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -730,42 +740,40 @@ class ModeSwitch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: Ember.field,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Ember.line),
-        ),
-        child: Row(
-          children: [
-            for (var i = 0; i < labels.length; i++)
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => onChanged(i),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    decoration: BoxDecoration(
-                      gradient: index == i ? Ember.gradient : null,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      labels[i],
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        color: index == i
-                            ? const Color(0xFF1A1206)
-                            : Ember.dim,
-                      ),
-                    ),
+    padding: const EdgeInsets.all(4),
+    decoration: BoxDecoration(
+      color: Ember.field,
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: Ember.line),
+    ),
+    child: Row(
+      children: [
+        for (var i = 0; i < labels.length; i++)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => onChanged(i),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  gradient: index == i ? Ember.gradient : null,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  labels[i],
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: index == i ? const Color(0xFF1A1206) : Ember.dim,
                   ),
                 ),
               ),
-          ],
-        ),
-      );
+            ),
+          ),
+      ],
+    ),
+  );
 }
 
 /// A segmented control in the mockups' settings style (VPN | Proxy).
@@ -782,56 +790,52 @@ class EmberSegmented<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: Ember.field,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Ember.line),
-        ),
-        child: Row(
-          children: [
-            for (final (v, label, icon) in options)
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => onChanged(v),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    padding: const EdgeInsets.symmetric(vertical: 11),
-                    decoration: BoxDecoration(
-                      gradient: value == v ? Ember.gradient : null,
-                      borderRadius: BorderRadius.circular(14),
+    padding: const EdgeInsets.all(4),
+    decoration: BoxDecoration(
+      color: Ember.field,
+      borderRadius: BorderRadius.circular(18),
+      border: Border.all(color: Ember.line),
+    ),
+    child: Row(
+      children: [
+        for (final (v, label, icon) in options)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => onChanged(v),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(vertical: 11),
+                decoration: BoxDecoration(
+                  gradient: value == v ? Ember.gradient : null,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (icon != null) ...[
+                      Icon(
+                        icon,
+                        size: 17,
+                        color: value == v ? const Color(0xFF1A1206) : Ember.dim,
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: value == v ? const Color(0xFF1A1206) : Ember.dim,
+                      ),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (icon != null) ...[
-                          Icon(
-                            icon,
-                            size: 17,
-                            color: value == v
-                                ? const Color(0xFF1A1206)
-                                : Ember.dim,
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                        Text(
-                          label,
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: value == v
-                                ? const Color(0xFF1A1206)
-                                : Ember.dim,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  ],
                 ),
               ),
-          ],
-        ),
-      );
+            ),
+          ),
+      ],
+    ),
+  );
 }
 
 /// The floating glass bottom navigation of the mockups.
@@ -848,58 +852,63 @@ class EmberBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.fromLTRB(18, 0, 18, 16),
-        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xF21A1B20),
-          borderRadius: BorderRadius.circular(30),
-          border: Border.all(color: Ember.line),
-          boxShadow: const [
-            BoxShadow(color: Color(0x66000000), blurRadius: 24, offset: Offset(0, 8)),
-          ],
+    margin: const EdgeInsets.fromLTRB(18, 0, 18, 16),
+    padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+    decoration: BoxDecoration(
+      color: const Color(0xF21A1B20),
+      borderRadius: BorderRadius.circular(30),
+      border: Border.all(color: Ember.line),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x66000000),
+          blurRadius: 24,
+          offset: Offset(0, 8),
         ),
-        child: Row(
-          children: [
-            for (var i = 0; i < items.length; i++)
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => onChanged(i),
-                  behavior: HitTestBehavior.opaque,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    padding: const EdgeInsets.symmetric(vertical: 7),
-                    decoration: BoxDecoration(
-                      color: index == i
-                          ? Ember.orange.withValues(alpha: 0.16)
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(20),
+      ],
+    ),
+    child: Row(
+      children: [
+        for (var i = 0; i < items.length; i++)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => onChanged(i),
+              behavior: HitTestBehavior.opaque,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                decoration: BoxDecoration(
+                  color: index == i
+                      ? Ember.orange.withValues(alpha: 0.16)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      items[i].$1,
+                      size: 21,
+                      color: index == i ? Ember.orange : Ember.faint,
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          items[i].$1,
-                          size: 21,
-                          color: index == i ? Ember.orange : Ember.faint,
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          items[i].$2,
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight:
-                                index == i ? FontWeight.w700 : FontWeight.w500,
-                            color: index == i ? Ember.orange : Ember.faint,
-                          ),
-                        ),
-                      ],
+                    const SizedBox(height: 3),
+                    Text(
+                      items[i].$2,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: index == i
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                        color: index == i ? Ember.orange : Ember.faint,
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ),
-          ],
-        ),
-      );
+            ),
+          ),
+      ],
+    ),
+  );
 }
 
 /// A circular country flag from the bundled assets, initials behind it.
@@ -910,34 +919,39 @@ class FlagCircle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: Features.desktopShell
-              ? Colors.white.withValues(alpha: 0.6)
-              : Ember.cardSoft,
-          shape: BoxShape.circle,
-        ),
-        child: ClipOval(
-          child: code.isEmpty
-              ? Icon(Icons.public, size: size * 0.55,
-                  color: Features.desktopShell ? Desk.dim : Ember.dim)
-              : SvgPicture.asset(
-                  'assets/flags/${code.toLowerCase()}.svg',
-                  fit: BoxFit.cover,
-                  placeholderBuilder: (_) => Center(
-                    child: Text(
-                      code.toUpperCase(),
-                      style: TextStyle(fontSize: size * 0.3, color: Ember.dim),
-                    ),
-                  ),
+    width: size,
+    height: size,
+    decoration: BoxDecoration(
+      color: Features.desktopShell ? const Color(0xFF22314A) : Ember.cardSoft,
+      shape: BoxShape.circle,
+    ),
+    child: ClipOval(
+      child: code.isEmpty
+          ? Icon(
+              Icons.public,
+              size: size * 0.55,
+              color: Features.desktopShell ? MapUi.dim : Ember.dim,
+            )
+          : SvgPicture.asset(
+              'assets/flags/${code.toLowerCase()}.svg',
+              fit: BoxFit.cover,
+              placeholderBuilder: (_) => Center(
+                child: Text(
+                  code.toUpperCase(),
+                  style: TextStyle(fontSize: size * 0.3, color: Ember.dim),
                 ),
-        ),
-      );
+              ),
+            ),
+    ),
+  );
 }
 
 /// A country code's name in the app's language, English otherwise.
-String localizedCountryName(BuildContext context, String code, String fallback) {
+String localizedCountryName(
+  BuildContext context,
+  String code,
+  String fallback,
+) {
   final lang = Localizations.localeOf(context).languageCode;
   return localCountryNames[lang]?[code.toUpperCase()] ??
       countryNames[code.toUpperCase()] ??
@@ -959,46 +973,46 @@ class EmberAppBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsetsDirectional.fromSTEB(14, 9, 8, 9),
-        decoration: BoxDecoration(
-          color: Ember.card.withValues(alpha: 0.8),
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: Ember.line),
+    padding: const EdgeInsetsDirectional.fromSTEB(14, 9, 8, 9),
+    decoration: BoxDecoration(
+      color: Ember.card.withValues(alpha: 0.8),
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(color: Ember.line),
+    ),
+    child: Row(
+      children: [
+        Container(
+          width: 34,
+          height: 34,
+          decoration: const BoxDecoration(
+            gradient: Ember.gradient,
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.local_fire_department_rounded,
+            color: Color(0xFF1A1206),
+            size: 20,
+          ),
         ),
-        child: Row(
-          children: [
-            Container(
-              width: 34,
-              height: 34,
-              decoration: const BoxDecoration(
-                gradient: Ember.gradient,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.local_fire_department_rounded,
-                color: Color(0xFF1A1206),
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 10),
-            const Text(
-              'Ralysnd Ember',
-              style: TextStyle(
-                fontSize: 16.5,
-                fontWeight: FontWeight.w800,
-                color: Ember.text,
-              ),
-            ),
-            const Spacer(),
-            if (onMore != null)
-              IconButton(
-                onPressed: onMore,
-                icon: const Icon(Icons.more_horiz_rounded, color: Ember.dim),
-                visualDensity: VisualDensity.compact,
-              ),
-          ],
+        const SizedBox(width: 10),
+        const Text(
+          'Ralysnd Ember',
+          style: TextStyle(
+            fontSize: 16.5,
+            fontWeight: FontWeight.w800,
+            color: Ember.text,
+          ),
         ),
-      );
+        const Spacer(),
+        if (onMore != null)
+          IconButton(
+            onPressed: onMore,
+            icon: const Icon(Icons.more_horiz_rounded, color: Ember.dim),
+            visualDensity: VisualDensity.compact,
+          ),
+      ],
+    ),
+  );
 }
 
 /// A gradient-filled primary button.
@@ -1006,119 +1020,139 @@ class EmberButton extends StatelessWidget {
   final String label;
   final VoidCallback? onTap;
   final IconData? icon;
-  const EmberButton({super.key, required this.label, required this.onTap, this.icon});
+  const EmberButton({
+    super.key,
+    required this.label,
+    required this.onTap,
+    this.icon,
+  });
 
   @override
   Widget build(BuildContext context) => Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+        decoration: BoxDecoration(
+          gradient: onTap == null ? null : Ember.gradient,
+          color: onTap == null ? Ember.cardSoft : null,
           borderRadius: BorderRadius.circular(18),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
-            decoration: BoxDecoration(
-              gradient: onTap == null ? null : Ember.gradient,
-              color: onTap == null ? Ember.cardSoft : null,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (icon != null) ...[
-                  Icon(icon, size: 19, color: const Color(0xFF1A1206)),
-                  const SizedBox(width: 8),
-                ],
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF1A1206),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
-      );
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 19, color: const Color(0xFF1A1206)),
+              const SizedBox(width: 8),
+            ],
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF1A1206),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
-/// An input field in the Ember field style (the Sample A pale
-/// glass field on the desktop shell).
-InputDecoration emberField(BuildContext context, String hint, {Widget? prefix}) =>
-    Features.desktopShell
-        ? InputDecoration(
-            hintText: hint,
-            hintStyle: const TextStyle(color: Desk.faint, fontSize: 13.5),
-            prefixIcon: prefix,
-            filled: true,
-            fillColor: Colors.white.withValues(alpha: 0.55),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Desk.line),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Desk.line),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Ember.orange, width: 1.4),
-            ),
-          )
-        : InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: Ember.faint, fontSize: 13.5),
-      prefixIcon: prefix,
-      filled: true,
-      fillColor: Ember.field,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: Ember.line),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: Ember.line),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: Ember.orange, width: 1.4),
-      ),
-    );
+/// An input field in the Ember field style (the dark inset
+/// field of the Map Control panels on the desktop shell).
+InputDecoration emberField(
+  BuildContext context,
+  String hint, {
+  Widget? prefix,
+}) => Features.desktopShell
+    ? InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: MapUi.faint, fontSize: 13.5),
+        prefixIcon: prefix,
+        filled: true,
+        fillColor: MapUi.insetFill,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 13,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: MapUi.line),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: MapUi.line),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Ember.orange, width: 1.4),
+        ),
+      )
+    : InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Ember.faint, fontSize: 13.5),
+        prefixIcon: prefix,
+        filled: true,
+        fillColor: Ember.field,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 13,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: Ember.line),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: Ember.line),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: Ember.orange, width: 1.4),
+        ),
+      );
 
 /// An empty-state block: icon, a line of text, optional action.
 class EmberEmpty extends StatelessWidget {
   final IconData icon;
   final String text;
   final Widget? action;
-  const EmberEmpty({super.key, required this.icon, required this.text, this.action});
+  const EmberEmpty({
+    super.key,
+    required this.icon,
+    required this.text,
+    this.action,
+  });
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 34, horizontal: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: Features.desktopShell
-                    ? Colors.white.withValues(alpha: 0.6)
-                    : Ember.cardSoft,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon,
-                  color: Features.desktopShell ? Desk.faint : Ember.faint,
-                  size: 30),
-            ),
-            const SizedBox(height: 14),
-            Text(text, style: Ember.dimStyle, textAlign: TextAlign.center),
-            if (action != null) ...[const SizedBox(height: 16), action!],
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 34, horizontal: 20),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+            color: Features.desktopShell
+                ? Colors.white.withValues(alpha: 0.06)
+                : Ember.cardSoft,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            icon,
+            color: Features.desktopShell ? MapUi.faint : Ember.faint,
+            size: 30,
+          ),
         ),
-      );
+        const SizedBox(height: 14),
+        Text(text, style: Ember.dimStyle, textAlign: TextAlign.center),
+        if (action != null) ...[const SizedBox(height: 16), action!],
+      ],
+    ),
+  );
 }

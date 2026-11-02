@@ -12,7 +12,6 @@ import 'package:flutter/services.dart';
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
 import '../../core/core_controller.dart';
-import '../../core/models.dart';
 import '../../features.dart';
 import '../../l10n/app_localizations.dart';
 import '../../lantern/lantern_controller.dart';
@@ -22,9 +21,9 @@ import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../bypass_apps_page.dart';
 import '../settings_page.dart';
-import 'desktop_settings.dart';
-import 'desktop_widgets.dart';
 import 'ember_info.dart';
+import 'map_settings.dart';
+import 'map_widgets.dart';
 import 'ember_theme.dart';
 import 'lantern_pages.dart';
 import 'psiphon_pages.dart';
@@ -64,83 +63,79 @@ class EmberSettings extends StatelessWidget {
     final engineSection = v2ray
         ? _XraySection(xray: xray)
         : psiphonMode
-            ? _PsiphonSection(psiphon: psiphon)
-            : lanternMode
-                ? _LanternSection(lantern: lantern)
-                : warpMode
-                    ? _WarpSection(warp: warp)
-                    : _MozillaSection(core: core);
+        ? _PsiphonSection(psiphon: psiphon)
+        : lanternMode
+        ? _LanternSection(lantern: lantern)
+        : warpMode
+        ? _WarpSection(warp: warp)
+        : _MozillaSection(core: core);
     final generalCard = GlassCard(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Column(
-            children: [
-              // Per-app routing is an Android concept (its page is
-              // served entirely by the Android channel); Windows has
-              // no equivalent, so the row is not offered there.
-              if (!Features.desktopShell) ...[
-                _Row(
-                  icon: Icons.route_rounded,
-                  label: l.perAppProxy,
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const BypassAppsPage()),
-                  ),
-                ),
-                const Divider(color: Ember.line, height: 1),
-              ],
-              _Row(
-                icon: Icons.tune_rounded,
-                label: l.allSettings,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => Scaffold(
-                      appBar: AppBar(),
-                      body: SettingsPage(core: core, settings: settings),
-                    ),
-                  ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Column(
+        children: [
+          // Per-app routing is an Android concept (its page is
+          // served entirely by the Android channel); Windows has
+          // no equivalent, so the row is not offered there.
+          if (!Features.desktopShell) ...[
+            _Row(
+              icon: Icons.route_rounded,
+              label: l.perAppProxy,
+              onTap: () => Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const BypassAppsPage())),
+            ),
+            const Divider(color: Ember.line, height: 1),
+          ],
+          _Row(
+            icon: Icons.tune_rounded,
+            label: l.allSettings,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => Scaffold(
+                  appBar: AppBar(),
+                  body: SettingsPage(core: core, settings: settings),
                 ),
               ),
-              const Divider(color: Ember.line, height: 1),
-              _Row(
-                icon: Icons.language_rounded,
-                label: l.languageRow,
-                value: settings.language == 'fa' ? 'فارسی' : settings.language,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => Scaffold(
-                      appBar: AppBar(),
-                      body: SettingsPage(
-                        core: core,
-                        settings: settings,
-                        opening: SettingsSection.general,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const Divider(color: Ember.line, height: 1),
-              _Row(
-                icon: Icons.info_outline_rounded,
-                label: l.infoRow,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const EmberInfoPage()),
-                ),
-              ),
-            ],
+            ),
           ),
-        );
+          const Divider(color: Ember.line, height: 1),
+          _Row(
+            icon: Icons.language_rounded,
+            label: l.languageRow,
+            value: settings.language == 'fa' ? 'فارسی' : settings.language,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => Scaffold(
+                  appBar: AppBar(),
+                  body: SettingsPage(
+                    core: core,
+                    settings: settings,
+                    opening: SettingsSection.general,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const Divider(color: Ember.line, height: 1),
+          _Row(
+            icon: Icons.info_outline_rounded,
+            label: l.infoRow,
+            onTap: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const EmberInfoPage())),
+          ),
+        ],
+      ),
+    );
     if (desktop) {
-      // The desktop settings page (2.0.3, desktop_settings.dart):
-      // the Settings mockup's two-column glass cards — General,
-      // DNS, Connection (the capture-mode switcher), Routing,
-      // About, More — with the engine section appended full-width
-      // and the status bar at the bottom.
-      return DesktopSettingsPage(
+      // The desktop settings page (2.1.0, map_settings.dart):
+      // the Map Control sample's floating glass panels —
+      // Connection, General, About, DNS, Routing, More — with
+      // the engine section appended full-width underneath.
+      return MapSettingsPage(
         core: core,
         settings: settings,
         engineSection: engineSection,
-        protectionOn: core.status?.state.phase == Phase.running ||
-            xray.state.running ||
-            psiphon.state.connected,
+        xray: xray,
       );
     }
     return ListView(
@@ -168,12 +163,7 @@ class EmberSettings extends StatelessWidget {
 }
 
 class _Row extends StatelessWidget {
-  const _Row({
-    required this.icon,
-    required this.label,
-    this.value,
-    this.onTap,
-  });
+  const _Row({required this.icon, required this.label, this.value, this.onTap});
   final IconData icon;
   final String label;
   final String? value;
@@ -181,23 +171,23 @@ class _Row extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 13),
-          child: Row(
-            children: [
-              Icon(icon, size: 20, color: Ember.orange),
-              const SizedBox(width: 11),
-              Expanded(child: Text(label, style: Ember.body)),
-              if (value != null) ...[
-                Text(value!, style: Ember.dimStyle),
-                const SizedBox(width: 6),
-              ],
-              const Icon(Icons.chevron_left_rounded, color: Ember.faint, size: 20),
-            ],
-          ),
-        ),
-      );
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 13),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: Ember.orange),
+          const SizedBox(width: 11),
+          Expanded(child: Text(label, style: Ember.body)),
+          if (value != null) ...[
+            Text(value!, style: Ember.dimStyle),
+            const SizedBox(width: 6),
+          ],
+          const Icon(Icons.chevron_left_rounded, color: Ember.faint, size: 20),
+        ],
+      ),
+    ),
+  );
 }
 
 /// The Psiphon engine's section: a summary card into the engine's
@@ -348,9 +338,7 @@ class _WarpSection extends StatelessWidget {
                   icon: Icons.receipt_long_rounded,
                   label: l.warpLogs,
                   onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => WarpLogsPage(warp: warp),
-                    ),
+                    MaterialPageRoute(builder: (_) => WarpLogsPage(warp: warp)),
                   ),
                 ),
               ],
@@ -376,31 +364,30 @@ class _ToggleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: GlassCard(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: Ember.body),
-                    if (subtitle != null)
-                      Text(subtitle!, style: Ember.caption),
-                  ],
-                ),
-              ),
-              // Desktop gets the mockups' wide pill switch (pale
-              // knob left when ON); the phone keeps EmberToggle.
-              if (Features.desktopShell)
-                DesktopSwitch(value: value, onChanged: onChanged)
-              else
-                EmberToggle(value: value, onChanged: onChanged),
-            ],
+    padding: const EdgeInsets.only(bottom: 10),
+    child: GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Ember.body),
+                if (subtitle != null) Text(subtitle!, style: Ember.caption),
+              ],
+            ),
           ),
-        ),
-      );
+          // Desktop gets the Map Control knob-less pill; the
+          // phone keeps EmberToggle.
+          if (Features.desktopShell)
+            MapToggle(value: value, onChanged: onChanged)
+          else
+            EmberToggle(value: value, onChanged: onChanged),
+        ],
+      ),
+    ),
+  );
 }
 
 class _SectionTitle extends StatelessWidget {
@@ -409,9 +396,9 @@ class _SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Text(text, style: Ember.heading),
-      );
+    padding: const EdgeInsets.only(bottom: 10),
+    child: Text(text, style: Ember.heading),
+  );
 }
 
 // ---------------------------------------------------------------- Mozilla
@@ -456,9 +443,11 @@ class _MozillaSectionState extends State<_MozillaSection> {
       if (mounted) {
         setState(() {
           _routing = routing is Map ? routing['enabled'] == true : false;
-          _doh = list.isNotEmpty &&
+          _doh =
+              list.isNotEmpty &&
               list.every(
-                (s) => s.toString().startsWith('https://') ||
+                (s) =>
+                    s.toString().startsWith('https://') ||
                     s.toString().startsWith('tls://'),
               );
         });
@@ -501,21 +490,21 @@ class _MozillaSectionState extends State<_MozillaSection> {
         // the core directly and work on every platform.
         if (!Features.desktopShell) ...[
           GlassCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(l.connectionMode, style: Ember.body),
-              const SizedBox(height: 11),
-              EmberSegmented<String>(
-                value: mode,
-                options: [
-                  ('vpn', l.modeVpn, Icons.shield_rounded),
-                  ('proxy', l.modeProxy, Icons.hub_rounded),
-                ],
-                onChanged: (v) => unawaited(AndroidCore.setMode(v)),
-              ),
-            ],
-          ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l.connectionMode, style: Ember.body),
+                const SizedBox(height: 11),
+                EmberSegmented<String>(
+                  value: mode,
+                  options: [
+                    ('vpn', l.modeVpn, Icons.shield_rounded),
+                    ('proxy', l.modeProxy, Icons.hub_rounded),
+                  ],
+                  onChanged: (v) => unawaited(AndroidCore.setMode(v)),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 10),
         ],
@@ -526,11 +515,11 @@ class _MozillaSectionState extends State<_MozillaSection> {
           onChanged: _busy || _routing == null
               ? null
               : (v) => _edit((config) {
-                    final routing = config['routing'];
-                    if (routing is Map<String, Object?>) {
-                      routing['enabled'] = v;
-                    }
-                  }),
+                  final routing = config['routing'];
+                  if (routing is Map<String, Object?>) {
+                    routing['enabled'] = v;
+                  }
+                }),
         ),
         _ToggleCard(
           title: l.doh,
@@ -539,17 +528,17 @@ class _MozillaSectionState extends State<_MozillaSection> {
           onChanged: _busy || _doh == null
               ? null
               : (v) => _edit((config) {
-                    final dns = config['dns'];
-                    if (dns is Map<String, Object?>) {
-                      dns['servers'] = v
-                          ? [
-                              'https://1.1.1.1/dns-query',
-                              'https://8.8.8.8/dns-query',
-                              'https://9.9.9.9/dns-query',
-                            ]
-                          : ['1.1.1.1', '8.8.8.8'];
-                    }
-                  }),
+                  final dns = config['dns'];
+                  if (dns is Map<String, Object?>) {
+                    dns['servers'] = v
+                        ? [
+                            'https://1.1.1.1/dns-query',
+                            'https://8.8.8.8/dns-query',
+                            'https://9.9.9.9/dns-query',
+                          ]
+                        : ['1.1.1.1', '8.8.8.8'];
+                  }
+                }),
         ),
       ],
     );
@@ -849,7 +838,11 @@ class _XraySection extends StatelessWidget {
           child: SelectableText(
             backup,
             textDirection: TextDirection.ltr,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 10.5, color: Ember.dim),
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 10.5,
+              color: Ember.dim,
+            ),
           ),
         ),
         actions: [
@@ -858,11 +851,17 @@ class _XraySection extends StatelessWidget {
               await Clipboard.setData(ClipboardData(text: backup));
               if (dialogContext.mounted) Navigator.of(dialogContext).pop();
             },
-            child: Text(l.copyLink, style: const TextStyle(color: Ember.orange)),
+            child: Text(
+              l.copyLink,
+              style: const TextStyle(color: Ember.orange),
+            ),
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(l.closeAction, style: const TextStyle(color: Ember.dim)),
+            child: Text(
+              l.closeAction,
+              style: const TextStyle(color: Ember.dim),
+            ),
           ),
         ],
       ),
@@ -883,25 +882,35 @@ class _XraySection extends StatelessWidget {
           minLines: 5,
           maxLines: 9,
           textDirection: TextDirection.ltr,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Ember.text),
+          style: const TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 11,
+            color: Ember.text,
+          ),
           decoration: emberField(context, '{…}'),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(l.closeAction, style: const TextStyle(color: Ember.dim)),
+            child: Text(
+              l.closeAction,
+              style: const TextStyle(color: Ember.dim),
+            ),
           ),
           TextButton(
             onPressed: () async {
               final ok = await xray.importBackup(controller.text);
               if (dialogContext.mounted) Navigator.of(dialogContext).pop();
               if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(ok ? l.restoreOk : l.restoreFailed),
-                ));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(ok ? l.restoreOk : l.restoreFailed)),
+                );
               }
             },
-            child: Text(l.restoreData, style: const TextStyle(color: Ember.orange)),
+            child: Text(
+              l.restoreData,
+              style: const TextStyle(color: Ember.orange),
+            ),
           ),
         ],
       ),
@@ -924,56 +933,62 @@ class _TextRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: () async {
-          final l = AppLocalizations.of(context);
-          final controller = TextEditingController(text: initial);
-          final value = await showDialog<String>(
-            context: context,
-            builder: (dialogContext) => AlertDialog(
-              backgroundColor: Ember.surface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(24),
-              ),
-              title: Text(label, style: Ember.heading),
-              content: TextField(
-                controller: controller,
-                autofocus: true,
-                textDirection: TextDirection.ltr,
-                keyboardType: numeric ? TextInputType.number : TextInputType.url,
-                style: Ember.body,
-                decoration: emberField(context, initial),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: Text(l.closeAction, style: const TextStyle(color: Ember.dim)),
-                ),
-                TextButton(
-                  onPressed: () =>
-                      Navigator.of(dialogContext).pop(controller.text.trim()),
-                  child: Text(l.saveAction, style: const TextStyle(color: Ember.orange)),
-                ),
-              ],
-            ),
-          );
-          if (value != null) await onSubmit(value);
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 13),
-          child: Row(
-            children: [
-              Expanded(child: Text(label, style: Ember.body)),
-              Text(
-                initial.length > 26 ? '${initial.substring(0, 26)}…' : initial,
-                style: Ember.dimStyle.copyWith(fontSize: 12),
-                textDirection: TextDirection.ltr,
-              ),
-              const SizedBox(width: 6),
-              const Icon(Icons.chevron_left_rounded, color: Ember.faint, size: 20),
-            ],
+    onTap: () async {
+      final l = AppLocalizations.of(context);
+      final controller = TextEditingController(text: initial);
+      final value = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: Ember.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
           ),
+          title: Text(label, style: Ember.heading),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            textDirection: TextDirection.ltr,
+            keyboardType: numeric ? TextInputType.number : TextInputType.url,
+            style: Ember.body,
+            decoration: emberField(context, initial),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(
+                l.closeAction,
+                style: const TextStyle(color: Ember.dim),
+              ),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(controller.text.trim()),
+              child: Text(
+                l.saveAction,
+                style: const TextStyle(color: Ember.orange),
+              ),
+            ),
+          ],
         ),
       );
+      if (value != null) await onSubmit(value);
+    },
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 13),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: Ember.body)),
+          Text(
+            initial.length > 26 ? '${initial.substring(0, 26)}…' : initial,
+            style: Ember.dimStyle.copyWith(fontSize: 12),
+            textDirection: TextDirection.ltr,
+          ),
+          const SizedBox(width: 6),
+          const Icon(Icons.chevron_left_rounded, color: Ember.faint, size: 20),
+        ],
+      ),
+    ),
+  );
 }
 
 /// One editable list row (comma/newline-separated values).
@@ -989,59 +1004,64 @@ class _ListRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: () async {
-          final l = AppLocalizations.of(context);
-          final controller = TextEditingController(text: values.join('\n'));
-          final text = await showDialog<String>(
-            context: context,
-            builder: (dialogContext) => AlertDialog(
-              backgroundColor: Ember.surface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(24),
-              ),
-              title: Text(label, style: Ember.heading),
-              content: TextField(
-                controller: controller,
-                autofocus: true,
-                minLines: 4,
-                maxLines: 8,
-                textDirection: TextDirection.ltr,
-                style: Ember.body,
-                decoration: emberField(context, 'example.com'),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: Text(l.closeAction, style: const TextStyle(color: Ember.dim)),
-                ),
-                TextButton(
-                  onPressed: () =>
-                      Navigator.of(dialogContext).pop(controller.text),
-                  child: Text(l.saveAction, style: const TextStyle(color: Ember.orange)),
-                ),
-              ],
-            ),
-          );
-          if (text != null) {
-            await onChanged(
-              text
-                  .split(RegExp(r'[\n,]'))
-                  .map((e) => e.trim())
-                  .where((e) => e.isNotEmpty)
-                  .toList(),
-            );
-          }
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 13),
-          child: Row(
-            children: [
-              Expanded(child: Text(label, style: Ember.body)),
-              Text('${values.length}', style: Ember.dimStyle),
-              const SizedBox(width: 6),
-              const Icon(Icons.chevron_left_rounded, color: Ember.faint, size: 20),
-            ],
+    onTap: () async {
+      final l = AppLocalizations.of(context);
+      final controller = TextEditingController(text: values.join('\n'));
+      final text = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: Ember.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
           ),
+          title: Text(label, style: Ember.heading),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 4,
+            maxLines: 8,
+            textDirection: TextDirection.ltr,
+            style: Ember.body,
+            decoration: emberField(context, 'example.com'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(
+                l.closeAction,
+                style: const TextStyle(color: Ember.dim),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: Text(
+                l.saveAction,
+                style: const TextStyle(color: Ember.orange),
+              ),
+            ),
+          ],
         ),
       );
+      if (text != null) {
+        await onChanged(
+          text
+              .split(RegExp(r'[\n,]'))
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+        );
+      }
+    },
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 13),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: Ember.body)),
+          Text('${values.length}', style: Ember.dimStyle),
+          const SizedBox(width: 6),
+          const Icon(Icons.chevron_left_rounded, color: Ember.faint, size: 20),
+        ],
+      ),
+    ),
+  );
 }

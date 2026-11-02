@@ -14,8 +14,6 @@ import '../../features.dart';
 import '../../l10n/app_localizations.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
-import 'desktop_v2ray.dart';
-import 'desktop_widgets.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'profile_editor.dart';
@@ -37,24 +35,22 @@ class EmberServers extends StatelessWidget {
   final bool v2ray;
   final VoidCallback onOpenAccounts;
 
-  /// The Windows desktop shell: the V2Ray list is the clean-grid
-  /// desktop page (the same one the V2Ray engine home shows).
+  /// Kept for the shell's call shape; the desktop shell renders
+  /// its own Servers panel (map_mozilla.dart) and never lands
+  /// here, so the flag no longer changes anything.
   final bool desktop;
 
   @override
   Widget build(BuildContext context) => v2ray
-      ? (desktop
-          ? V2rayDesktopPage(xray: xray)
-          : _V2rayServers(xray: xray, onOpenAccounts: onOpenAccounts))
-      : _MozillaServers(core: core, desktop: desktop);
+      ? _V2rayServers(xray: xray, onOpenAccounts: onOpenAccounts)
+      : _MozillaServers(core: core);
 }
 
 // ---------------------------------------------------------------- Mozilla
 
 class _MozillaServers extends StatefulWidget {
-  const _MozillaServers({required this.core, this.desktop = false});
+  const _MozillaServers({required this.core});
   final CoreController core;
-  final bool desktop;
 
   @override
   State<_MozillaServers> createState() => _MozillaServersState();
@@ -100,13 +96,8 @@ class _MozillaServersState extends State<_MozillaServers> {
       final list = await widget.core.call(
         (api) => api.pingLocations([for (final l in _locations) l.code]),
       );
-      // The desktop Servers page auto-sorts fastest-first after a
-      // ping run (display only; the core's order is untouched, and
-      // the connected row keeps its highlight wherever it lands).
       if (mounted) {
-        setState(() => _locations = widget.desktop
-            ? sortedLocationsByPing(list.locations)
-            : list.locations);
+        setState(() => _locations = list.locations);
       }
     } catch (e) {
       // The old numbers stay, but the failure is said out loud now.
@@ -135,17 +126,13 @@ class _MozillaServersState extends State<_MozillaServers> {
       final q = _query.toLowerCase();
       return loc.name.toLowerCase().contains(q) ||
           loc.city.toLowerCase().contains(q) ||
-          localizedCountryName(context, loc.code, loc.name)
-              .toLowerCase()
-              .contains(q);
+          localizedCountryName(
+            context,
+            loc.code,
+            loc.name,
+          ).toLowerCase().contains(q);
     }).toList();
 
-    if (widget.desktop) {
-      return ListenableBuilder(
-        listenable: widget.core,
-        builder: (context, _) => _buildDesktop(l, selection, shown),
-      );
-    }
     return ListenableBuilder(
       listenable: widget.core,
       builder: (context, _) => ListView(
@@ -184,15 +171,17 @@ class _MozillaServersState extends State<_MozillaServers> {
             decoration: emberField(
               context,
               l.searchCountry,
-              prefix: const Icon(Icons.search_rounded, color: Ember.faint, size: 20),
+              prefix: const Icon(
+                Icons.search_rounded,
+                color: Ember.faint,
+                size: 20,
+              ),
             ),
           ),
           const SizedBox(height: 16),
           Text(l.chooseServer, style: Ember.heading),
           Text(l.chooseServerSub, style: Ember.caption),
-          // Desktop: a wider gap, so the smart-pick card's rim glow
-          // can never crowd the subtitle above it.
-          SizedBox(height: widget.desktop ? 20 : 12),
+          const SizedBox(height: 12),
           // The smart pick (mockup 3).
           GlassCard(
             glow: selection == 'fastest',
@@ -222,7 +211,10 @@ class _MozillaServersState extends State<_MozillaServers> {
                     ],
                   ),
                 ),
-                EmberChip(label: l.optimalChip, selected: selection == 'fastest'),
+                EmberChip(
+                  label: l.optimalChip,
+                  selected: selection == 'fastest',
+                ),
               ],
             ),
           ),
@@ -240,7 +232,9 @@ class _MozillaServersState extends State<_MozillaServers> {
           if (_loading)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 40),
-              child: Center(child: CircularProgressIndicator(color: Ember.orange)),
+              child: Center(
+                child: CircularProgressIndicator(color: Ember.orange),
+              ),
             )
           else if (shown.isEmpty)
             EmberEmpty(icon: Icons.public_off_rounded, text: l.noServersFound)
@@ -248,7 +242,8 @@ class _MozillaServersState extends State<_MozillaServers> {
             for (final loc in shown) ...[
               _LocationRow(
                 location: loc,
-                selected: selection == loc.code ||
+                selected:
+                    selection == loc.code ||
                     (selection.isEmpty && loc.recommended),
                 onTap: () => _pick(loc.code),
               ),
@@ -258,133 +253,6 @@ class _MozillaServersState extends State<_MozillaServers> {
       ),
     );
   }
-  /// The desktop Servers page (Sample A): the smart-pick card,
-  /// then ONE big glass card — "Mozilla Locations", the orange
-  /// outline Test-all button, the search field, and the location
-  /// rows inside it. After a ping run the rows stand fastest-first
-  /// (see _pingAll); the connected row keeps its peach tint and
-  /// orange check wherever it lands, and ping numbers follow the
-  /// user's color rule (green ≤ 150 ms, yellow above).
-  Widget _buildDesktop(
-    AppLocalizations l,
-    String selection,
-    List<Location> shown,
-  ) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(26, 22, 26, 18),
-      children: [
-        // The smart pick, in the same glass.
-        GlassCard(
-          glow: selection == 'fastest',
-          onTap: () => _pick('fastest'),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: const BoxDecoration(
-                  gradient: Ember.gradient,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.bolt_rounded,
-                  color: Color(0xFF1A1206),
-                  size: 24,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(l.smartPick, style: Desk.heading),
-                    Text(l.smartPickSub, style: Desk.caption),
-                  ],
-                ),
-              ),
-              EmberChip(
-                label: l.optimalChip,
-                selected: selection == 'fastest',
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        GlassCard(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Mozilla Locations',
-                      style: TextStyle(
-                        fontSize: 25,
-                        fontWeight: FontWeight.w800,
-                        color: Desk.ink,
-                      ),
-                    ),
-                  ),
-                  DesktopActionButton(
-                    icon: Icons.refresh_rounded,
-                    label: l.pingAll,
-                    primary: true,
-                    busy: _pinging,
-                    onTap: _pinging ? null : () => unawaited(_pingAll()),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                onChanged: (v) => setState(() => _query = v),
-                style: Desk.body,
-                decoration: emberField(
-                  context,
-                  l.searchCountry,
-                  prefix: const Icon(Icons.search_rounded,
-                      color: Desk.faint, size: 20),
-                ),
-              ),
-              if (_pingError.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    _pingError,
-                    style: Desk.caption.copyWith(color: Desk.red),
-                  ),
-                ),
-              const SizedBox(height: 8),
-              if (_loading)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 40),
-                  child: Center(
-                    child: CircularProgressIndicator(color: Ember.orange),
-                  ),
-                )
-              else if (shown.isEmpty)
-                EmberEmpty(
-                  icon: Icons.public_off_rounded,
-                  text: l.noServersFound,
-                )
-              else
-                for (var i = 0; i < shown.length; i++) ...[
-                  if (i > 0) const Divider(color: Desk.line, height: 1),
-                  _DesktopLocationRow(
-                    location: shown[i],
-                    selected: selection == shown[i].code ||
-                        (selection.isEmpty && shown[i].recommended),
-                    onTap: () => _pick(shown[i].code),
-                  ),
-                ],
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
 }
 
 class _LocationRow extends StatelessWidget {
@@ -423,7 +291,11 @@ class _LocationRow extends StatelessWidget {
             ),
           ),
           if (ms > 0) ...[
-            Icon(Icons.signal_cellular_alt_rounded, size: 16, color: pingColor(ms)),
+            Icon(
+              Icons.signal_cellular_alt_rounded,
+              size: 16,
+              color: pingColor(ms),
+            ),
             const SizedBox(width: 5),
             Text(
               '${latDigits(ms)} ${l.msUnit}',
@@ -455,104 +327,13 @@ class _LocationRow extends StatelessWidget {
                 gradient: Ember.gradient,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.check_rounded, color: Color(0xFF1A1206), size: 17),
+              child: const Icon(
+                Icons.check_rounded,
+                color: Color(0xFF1A1206),
+                size: 17,
+              ),
             ),
         ],
-      ),
-    );
-  }
-}
-
-/// One location row inside the desktop Servers card: a round
-/// flag, the bold "City • Country" line, and the color-coded
-/// ping at the right; the connected row is peach-tinted with an
-/// orange check circle.
-class _DesktopLocationRow extends StatelessWidget {
-  const _DesktopLocationRow({
-    required this.location,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final Location location;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    final ms = location.pingMs;
-    final country =
-        localizedCountryName(context, location.code, location.name);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-          decoration: BoxDecoration(
-            gradient: selected ? Desk.peachGradient : null,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              FlagCircle(code: location.code, size: 40),
-              const SizedBox(width: 13),
-              Expanded(
-                child: Text(
-                  location.city.isEmpty
-                      ? country
-                      : '${location.city} • $country',
-                  style: const TextStyle(
-                    fontSize: 15.5,
-                    fontWeight: FontWeight.w700,
-                    color: Desk.ink,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (ms > 0)
-                Text(
-                  '${latDigits(ms)} ${l.msUnit}',
-                  style: TextStyle(
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w700,
-                    color: deskPingColor(ms),
-                  ),
-                )
-              else if (location.pingError.isNotEmpty)
-                Flexible(
-                  child: Text(
-                    location.pingError,
-                    overflow: TextOverflow.ellipsis,
-                    style: Desk.caption.copyWith(color: Desk.red),
-                  ),
-                )
-              else
-                const Text(
-                  '—',
-                  style: TextStyle(fontSize: 14, color: Desk.faint),
-                ),
-              if (selected) ...[
-                const SizedBox(width: 10),
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: const BoxDecoration(
-                    gradient: Ember.gradient,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.check_rounded,
-                    color: Colors.white,
-                    size: 15,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -586,12 +367,12 @@ class _V2rayServersState extends State<_V2rayServers> {
   }
 
   List<Profile> _shown(Iterable<Profile> all) => all.where((p) {
-        if (_filter != null && p.protocol != _filter) return false;
-        if (_query.isEmpty) return true;
-        final q = _query.toLowerCase();
-        return p.name.toLowerCase().contains(q) ||
-            p.address.toLowerCase().contains(q);
-      }).toList();
+    if (_filter != null && p.protocol != _filter) return false;
+    if (_query.isEmpty) return true;
+    final q = _query.toLowerCase();
+    return p.name.toLowerCase().contains(q) ||
+        p.address.toLowerCase().contains(q);
+  }).toList();
 
   @override
   Widget build(BuildContext context) {
@@ -678,7 +459,11 @@ class _V2rayServersState extends State<_V2rayServers> {
               decoration: emberField(
                 context,
                 l.searchConfig,
-                prefix: const Icon(Icons.search_rounded, color: Ember.faint, size: 20),
+                prefix: const Icon(
+                  Icons.search_rounded,
+                  color: Ember.faint,
+                  size: 20,
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -717,11 +502,7 @@ class _V2rayServersState extends State<_V2rayServers> {
               )
             else ...[
               if (loose.isNotEmpty)
-                _Group(
-                  xray: xray,
-                  title: l.looseGroup,
-                  profiles: loose,
-                ),
+                _Group(xray: xray, title: l.looseGroup, profiles: loose),
               for (final sub in xray.subscriptions) ...[
                 if (_shown(xray.profilesOf(sub)).isNotEmpty)
                   _Group(
@@ -771,37 +552,38 @@ class _Group extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: Ember.heading.copyWith(fontSize: 14.5),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Text(
-                latDigits(profiles.length),
-                style: Ember.caption,
-              ),
-              if (onRefresh != null)
-                IconButton(
-                  onPressed: onRefresh,
-                  icon: const Icon(Icons.refresh_rounded, color: Ember.dim, size: 19),
-                  visualDensity: VisualDensity.compact,
-                ),
-            ],
+          Expanded(
+            child: Text(
+              title,
+              style: Ember.heading.copyWith(fontSize: 14.5),
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
-          const SizedBox(height: 8),
-          for (final p in profiles) ...[
-            _ProfileRow(xray: xray, profile: p),
-            const SizedBox(height: 9),
-          ],
-          const SizedBox(height: 6),
+          Text(latDigits(profiles.length), style: Ember.caption),
+          if (onRefresh != null)
+            IconButton(
+              onPressed: onRefresh,
+              icon: const Icon(
+                Icons.refresh_rounded,
+                color: Ember.dim,
+                size: 19,
+              ),
+              visualDensity: VisualDensity.compact,
+            ),
         ],
-      );
+      ),
+      const SizedBox(height: 8),
+      for (final p in profiles) ...[
+        _ProfileRow(xray: xray, profile: p),
+        const SizedBox(height: 9),
+      ],
+      const SizedBox(height: 6),
+    ],
+  );
 }
 
 class _ProfileRow extends StatelessWidget {
@@ -868,7 +650,9 @@ class _ProfileRow extends StatelessWidget {
                   width: 18,
                   height: 18,
                   child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Ember.orange),
+                    strokeWidth: 2,
+                    color: Ember.orange,
+                  ),
                 ),
               ),
             )
@@ -876,7 +660,10 @@ class _ProfileRow extends StatelessWidget {
             const SizedBox(
               width: 18,
               height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Ember.orange),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Ember.orange,
+              ),
             )
           else if (profile.delayMs >= 0 && Features.desktopShell)
             _PingPill(ms: profile.delayMs, unit: l.msUnit)
@@ -914,7 +701,11 @@ class _ProfileRow extends StatelessWidget {
           else if (!profile.protocol.supportedByCore)
             const Icon(Icons.block_rounded, size: 17, color: Ember.red),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert_rounded, color: Ember.faint, size: 20),
+            icon: const Icon(
+              Icons.more_vert_rounded,
+              color: Ember.faint,
+              size: 20,
+            ),
             color: Ember.card,
             onSelected: (v) => unawaited(_act(context, v)),
             itemBuilder: (_) => [
@@ -927,7 +718,10 @@ class _ProfileRow extends StatelessWidget {
               PopupMenuItem(value: 'copy', child: Text(l.copyLink)),
               PopupMenuItem(
                 value: 'delete',
-                child: Text(l.deleteProfile, style: const TextStyle(color: Ember.red)),
+                child: Text(
+                  l.deleteProfile,
+                  style: const TextStyle(color: Ember.red),
+                ),
               ),
             ],
           ),
@@ -939,7 +733,11 @@ class _ProfileRow extends StatelessWidget {
                 gradient: Ember.gradient,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.check_rounded, color: Color(0xFF1A1206), size: 17),
+              child: const Icon(
+                Icons.check_rounded,
+                color: Color(0xFF1A1206),
+                size: 17,
+              ),
             ),
         ],
       ),
@@ -952,16 +750,26 @@ class _ProfileRow extends StatelessWidget {
       case 'delay':
         final ms = await xray.testDelay(profile);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(ms >= 0 ? '${l.delayTest}: ${latDigits(ms)} ${l.msUnit}' : l.testFailed),
-          ));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                ms >= 0
+                    ? '${l.delayTest}: ${latDigits(ms)} ${l.msUnit}'
+                    : l.testFailed,
+              ),
+            ),
+          );
         }
       case 'speed':
         final bps = await xray.testSpeed(profile);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(bps >= 0 ? '${l.speedTest}: ${fmtRate(bps)}' : l.testFailed),
-          ));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                bps >= 0 ? '${l.speedTest}: ${fmtRate(bps)}' : l.testFailed,
+              ),
+            ),
+          );
         }
       case 'edit':
         await openProfileEditor(context, xray, existing: profile);
@@ -974,9 +782,8 @@ class _ProfileRow extends StatelessWidget {
       case 'copy':
         await Clipboard.setData(ClipboardData(text: profileLinkOf(profile)));
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l.linkCopied)),
-          );
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(l.linkCopied)));
         }
       case 'delete':
         await xray.deleteProfile(profile);
@@ -1020,28 +827,32 @@ class _PingPill extends StatelessWidget {
 }
 
 class _RoundAction extends StatelessWidget {
-  const _RoundAction({required this.icon, required this.tooltip, required this.onTap});
+  const _RoundAction({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
   final IconData icon;
   final String tooltip;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) => Tooltip(
-        message: tooltip,
-        child: Material(
-          color: Ember.card,
-          shape: const CircleBorder(side: BorderSide(color: Ember.line)),
-          child: InkWell(
-            onTap: onTap,
-            customBorder: const CircleBorder(),
-            child: SizedBox(
-              width: 40,
-              height: 40,
-              child: Icon(icon, color: Ember.orange, size: 20),
-            ),
-          ),
+    message: tooltip,
+    child: Material(
+      color: Ember.card,
+      shape: const CircleBorder(side: BorderSide(color: Ember.line)),
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Icon(icon, color: Ember.orange, size: 20),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 /// host••• masking for config rows, as the mockup shows: the address is
