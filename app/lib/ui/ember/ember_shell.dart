@@ -1000,20 +1000,20 @@ class _EmberShellState extends State<EmberShell>
               value: regionCode.isEmpty
                   ? l.psiphonRegionAuto
                   : regionName(regionCode),
-              flex: 1,
+              flex: 5,
             ),
-            (label: 'EXIT IP', value: egressIp, flex: 1),
+            (label: 'EXIT IP', value: egressIp, flex: 4),
             (
               label: 'UP',
               value: state.running ? fmtRate(psiphon.upRate) : '—',
-              flex: 1,
+              flex: 3,
             ),
             (
               label: 'DOWN',
               value: state.running ? fmtRate(psiphon.downRate) : '—',
-              flex: 1,
+              flex: 3,
             ),
-            (label: 'SESSION', value: session, flex: 1),
+            (label: 'SESSION', value: session, flex: 3),
           ],
           microLine: 'PSIPHON',
           onToggle: () => unawaited(_togglePsiphon(l)),
