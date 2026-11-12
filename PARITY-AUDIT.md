@@ -68,16 +68,23 @@ cannot be completed ships disabled-with-explanation).
 ## Aether build (x86_64-pc-windows-gnu, from this Linux VM)
 
 Attempted with rustup target x86_64-pc-windows-gnu + mingw-w64 13.2
-+ NASM. BoringSSL (boring-sys 5.3) is the hard dependency: its
-Windows-asm path assumes an MSVC preprocessing pipeline, and
-boring-sys only defines OPENSSL_NO_ASM automatically when the *host*
-is Windows. A CMake toolchain file forcing OPENSSL_NO_ASM for the
-cross build was the next step (build in progress at audit time —
-final outcome recorded in PARITY-LOG.md and the delivery report).
-On a Windows host (the CI route) boring-sys takes the NO_ASM path
-itself, which is why the fetch script's build is expected to
-complete there; the script checks for cargo+mingw and warns instead
-of failing the whole sidecar fetch when they're absent.
++ NASM, three times: (1) no NASM → cmake died at
+enable_language(ASM_NASM); (2) NASM present → BoringSSL's
+generated Windows NASM sources fail in their MSVC-oriented asm
+pipeline ("unable to open include file `thread'"); (3) a CMake
+toolchain file forcing OPENSSL_NO_ASM → the same NASM objects were
+still generated (boring-sys only takes its own NO_ASM path when
+the HOST is Windows). On the Windows CI runners the build also
+does not complete yet (cc-rs cannot find the prefixed mingw
+archiver in the runner's layout; the fetch script now searches
+for a full prefixed tool set and passes full paths — and warns
+rather than failing when the build won't go). Net state, stated
+plainly: **the EmberWarp/MASQUE Dart backends are complete and
+the engines report unavailable honestly until an aether.exe is
+produced on a machine whose Rust+mingw layout matches the
+crate's expectations (a Windows dev box with rustup + mingw-w64
++ NASM is the known-good shape); the CI package ships without
+it.**
 
 ## Sidecars after the port (tools/sidecars → app folder)
 
@@ -114,7 +121,22 @@ runs 43154951181/43155682428).
   service/TUN plumbing, QS tile, Android method channels (the
   facades keep them for the shared tree's Android build).
 - The desktop screenshot harness (EMBER_SHOT_*) — untouched.
-- .github/workflows/windows.yml — untouched (no workflow scope);
-  it is workflow_dispatch, so CI runs when the owner triggers it
-  from the Actions tab (or pushes via the web UI). The branch is
-  pushed and ready.
+- .github/workflows/windows.yml — untouched; it is
+  workflow_dispatch and was triggered via the API for every CI
+  run below.
+
+## CI outcome (ember-windows workflow, branch parity-220)
+
+Four runs: the first three failed inside the NEW sidecar sections
+(aether `throw` → made a warning; swupdate splash page → MSI
+re-pinned to build.openvpn.net; MSVC STL1011 on the inappwebview
+plugin → CMake silence-define) — each fixed in the tree the same
+day. **Run 43159480548 SUCCEEDED end to end**: Fetch sidecars ✓,
+Build ✓, artifact `ember-windows` (121 MB) = the 2.2.0 installer
+(47,456,641 B) + portable zip (74,691,165 B), verified to contain
+the patched xray.exe, psiphon-core.exe, warp-plus.exe and
+openvpn.exe sidecars. The one gap in the package: **no aether.exe**
+— the GitHub runner's mingw/cc-rs layout still does not complete
+the Rust build (the fetch section warns; EmberWarp/MASQUE report
+unavailable in-app). Copies of both deliverables are in
+~/workspace/ember-app/pkg-win-2038/.

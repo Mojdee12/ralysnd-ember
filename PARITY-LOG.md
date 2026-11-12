@@ -118,3 +118,58 @@ state) → Windows 2.2.0+2038.
 - The Windows Xray sidecar through 2.1.0 was the STOCK XTLS build —
   the parity port replaces it with the same patched fork Android
   runs, so finalmask/dialMode/+one mean the same on both platforms.
+
+## CI (GitHub Actions, ember-windows workflow, branch parity-220)
+
+- Run 43154951181 — Fetch sidecars FAILED at the new aether
+  section: cargo exists on windows-latest, but cc-rs could not
+  find `x86_64-w64-mingw32-ar`; the section's `throw` killed the
+  step. Fix (180bedf): a failed/absent aether toolchain is a loud
+  warning, never a pipeline kill; the mingw bin folder is located
+  and prepended to PATH.
+- Run 43155682428 — aether warned correctly; the OpenVPN download
+  then failed: swupdate.openvpn.net serves a splash page to
+  datacenter IPs (this VM and CI alike). Fix (4776ec4): the MSI
+  now comes from build.openvpn.net (OpenVPN 2.6.23-I002),
+  hash-pinned (31809e97…) AND Authenticode-verified.
+- Run 43156736178 — Fetch sidecars PASSED in full (patched xray
+  built, warp-plus built, psiphon built + init smoke passed,
+  openvpn extracted; aether warned — its ring build script still
+  fails on the runner's mingw layout). Build step FAILED:
+  flutter_inappwebview_windows 6.1.5 uses <experimental/coroutine>,
+  a hard error (STL1011) on the runner's newest MSVC. Fix
+  (2efc2b7): _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+  defined at directory level in app/windows/CMakeLists.txt.
+  (Also hardened in 3440f57: the mingw candidate must contain the
+  full prefixed gcc/g++/ar set, passed to cargo/cc as full paths.)
+- Run 43159480548 — all fixes in; result recorded below when done.
+
+## Local Aether cross-build attempts (Linux VM → windows-gnu)
+
+1. No NASM → BoringSSL cmake died at enable_language(ASM_NASM).
+2. NASM installed → BoringSSL's generated Windows NASM sources
+   fail ("unable to open include file `thread'") — its
+   MSVC-oriented asm pipeline doesn't survive the mingw cross.
+3. OPENSSL_NO_ASM forced via a CMake toolchain file → the same
+   NASM objects were still generated/built (boring-sys only takes
+   the NO_ASM path itself when the HOST is Windows).
+   Conclusion: aether.exe is a Windows-host build (the CI route);
+   from Linux it stays unbuilt, and both the script and the app
+   say so out loud rather than shipping a stub.
+- Run 43159480548 — **SUCCESS**: Fetch sidecars ✓, Build ✓,
+  artifact uploaded. Artifact `ember-windows` (121,208,632 B):
+  Ralysnd-Ember-2.2.0-Windows-Setup-x64.exe (47,456,641 B) and
+  Ralysnd-Ember-2.2.0-Windows-x64.zip (74,691,165 B), copied to
+  ~/workspace/ember-app/pkg-win-2038/. Verified inside the zip:
+  ralysnd-ember.exe, core/firefox-vpn-core.exe + ember-tun-bridge,
+  xray/xray.exe (31,508,992 B — the patched fork build) + wintun +
+  geo data, psiphon/psiphon-core.exe (22,495,232 B),
+  warp/warp-plus.exe (21,625,344 B), openvpn/openvpn.exe
+  (1,063,104 B, extracted from the verified MSI),
+  flutter_inappwebview_windows_plugin.dll + WebView2Loader.dll.
+  NO aether/ folder: the runner's Rust/mingw layout still does
+  not complete the Aether build (cc-rs/ring toolchain mismatch —
+  runs 43154951181/43155682428/43156736178 logs), so this package's
+  EmberWarp and MASQUE engines report unavailable, exactly as the
+  script's warning and the app's own state say. Everything else
+  is present and wired.
