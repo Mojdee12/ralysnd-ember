@@ -20,7 +20,7 @@ cannot be completed ships disabled-with-explanation).
 | **WARP+ (warp-plus)** | ✅ Full parity | New Windows backend drives `warp\warp-plus.exe` with the Android service's argv contract (bind/cache-dir/dns/scan/gool/cfon/endpoint); identity persists in its cache dir; "connected" is claimed only on a warp=on Cloudflare trace through its own SOCKS (hand-written SOCKS5 client). Binary: bepass-org/warp-plus v1.2.6, built from the hash-pinned source archive in the fetch script (cross-build proven: PE32+). |
 | **EmberWarp** | ✅ Backend complete; binary toolchain-gated | Dart backend implements EmberWarpCore's contract exactly (identity/staging/work dirs, reprovision env, SOCKS readiness, refusal-line staging, renew/settle, PID reaper; session SOCKS 20850 via TunBridge/proxy). The binary is the patterniha/Aether Rust core @ d58f9d5 (AGPL-3.0) — the fetch script builds it for x86_64-pc-windows-gnu when Rust+mingw+NASM are present and warns loudly otherwise; without it the engine reports unavailable honestly (the Android backends' own `available` semantics). Cross-build from this Linux VM: see "Aether build" below. |
 | **MASQUE (Aether)** | ✅ Same as EmberWarp | Second slot of the same backend/binary (SOCKS 20810), its own identity dir and env profile (firewall noise defaults, MASQUE_HTTP2/fragmentation). |
-| **OpenVPN** | ✅ Full parity (with a platform caveat) | New Windows backend drives the official `openvpn\openvpn.exe`: session config + `windows-driver wintun`, phase parsing from its log output, AUTH_FAILED surfacing, TCP/UDP-reset server ping, credential vault = DPAPI CurrentUser (PowerShell ProtectedData) with read-back verification — the build-2027 "counts only when it reads back" rule. Caveat, stated in the backend and here: openvpn.exe needs administrator rights (or the OpenVPN Interactive Service installed) to create its adapter and set routes; without elevation the connect fails with that explanation, never silently. Sidecar: official 2.6.12 MSI, Authenticode-verified, openvpn.exe extracted by administrative install. |
+| **OpenVPN** | ✅ Full parity (with a platform caveat) | New Windows backend drives the official `openvpn\openvpn.exe`: session config + `windows-driver wintun`, phase parsing from its log output, AUTH_FAILED surfacing, TCP/UDP-reset server ping, credential vault = DPAPI CurrentUser (PowerShell ProtectedData) with read-back verification — the build-2027 "counts only when it reads back" rule. Caveat, stated in the backend and here: openvpn.exe needs administrator rights (or the OpenVPN Interactive Service installed) to create its adapter and set routes; without elevation the connect fails with that explanation, never silently. Sidecar: official 2.6.23 MSI from build.openvpn.net, hash-pinned + Authenticode-verified, openvpn.exe extracted by administrative install. |
 | **Lantern** | ⛔ Disabled with explanation | The app's Lantern core exists only as an Android library (liblantern.so from the ralysnd tree); there is no Windows build of that core in any upstream this codebase draws from. The 2034 controller + pages are ported, and the Windows backend returns an explicit unavailable state with the reason on every surface (no dead toggle: connect reports the explanation). **Unblock path:** a getlantern/radiance Go sidecar behind the same facade (radiance is Lantern's current open-source core and targets Windows) — a project of its own (auth/API contract work), not a stub to fake tonight. |
 
 ## Diff inventory (summary)
@@ -85,11 +85,12 @@ xray\xray.exe (patched fork, built) + wintun.dll + geo data ·
 psiphon\psiphon-core.exe (pinned build) · warp\warp-plus.exe
 (built from pinned source) · aether\aether.exe (built when the Rust
 toolchain is present) · openvpn\openvpn.exe (official MSI,
-Authenticode-verified extraction). All pins + hashes are in
-scripts/fetch-windows-sidecars.ps1; the OpenVPN MSI is
-signature-verified rather than hash-pinned (its host would not
-serve the file to this VM's network for hashing; the version is
-pinned and the signer must be OpenVPN).
+hash-pinned + Authenticode-verified extraction). All pins +
+hashes are in scripts/fetch-windows-sidecars.ps1. The OpenVPN MSI
+comes from build.openvpn.net (2.6.23-I002, hash-pinned and
+signature-checked): swupdate.openvpn.net serves a splash page to
+datacenter IPs — this VM and the CI runners alike (proven by CI
+runs 43154951181/43155682428).
 
 ## Gates
 

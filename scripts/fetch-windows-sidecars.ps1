@@ -186,13 +186,19 @@ try {
     if ($gccCmd -and (Get-Command x86_64-w64-mingw32-ar -ErrorAction SilentlyContinue)) {
         $mingwBin = Split-Path -Parent $gccCmd.Source
     } else {
+        # A candidate counts only with the FULL prefixed set
+        # (gcc + g++ + ar) — Git's own mingw64 folder has the
+        # unprefixed names only, which is what starved cc-rs of
+        # its archiver on the CI runner.
         foreach ($candidate in @(
+            'C:\msys64\mingw64\bin',
             'C:\mingw64\bin',
-            'C:\Program Files\Git\mingw64\bin',
             'C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin',
-            'C:\tools\mingw64\bin'
+            'C:\tools\mingw64\bin',
+            'C:\Program Files\mingw-w64\mingw64\bin'
         )) {
-            if (Test-Path (Join-Path $candidate 'x86_64-w64-mingw32-gcc.exe')) {
+            if ((Test-Path (Join-Path $candidate 'x86_64-w64-mingw32-gcc.exe')) -and
+                (Test-Path (Join-Path $candidate 'x86_64-w64-mingw32-ar.exe'))) {
                 $mingwBin = $candidate
                 break
             }
@@ -208,10 +214,10 @@ try {
         New-Item -ItemType Directory -Force $aetherDest | Out-Null
         Push-Location $crate
         try {
-            $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = 'x86_64-w64-mingw32-gcc'
-            $env:CC_x86_64_pc_windows_gnu = 'x86_64-w64-mingw32-gcc'
-            $env:CXX_x86_64_pc_windows_gnu = 'x86_64-w64-mingw32-g++'
-            $env:AR_x86_64_pc_windows_gnu = 'x86_64-w64-mingw32-ar'
+            $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = (Join-Path $mingwBin 'x86_64-w64-mingw32-gcc.exe')
+            $env:CC_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-gcc.exe')
+            $env:CXX_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-g++.exe')
+            $env:AR_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-ar.exe')
             & rustup target add x86_64-pc-windows-gnu
             & cargo build --release --locked --target x86_64-pc-windows-gnu --bin aether
             if ($LASTEXITCODE -ne 0) {
