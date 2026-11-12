@@ -63,11 +63,14 @@
 #     toolchain and the mingw-w64 linker are on the machine; the
 #     section warns (and the app reports the engine unavailable)
 #     otherwise. BoringSSL needs NASM on PATH.
-#   OpenVPN 2.6.12-I002 amd64 MSI (the OpenVPN engine's sidecar)
-#     https://swupdate.openvpn.net/community/releases/OpenVPN-2.6.12-I002-amd64.msi
-#     No hash pin: the file is verified by its Authenticode
-#     signature (Valid, signer OpenVPN Inc.) before extraction —
-#     openvpn.exe is pulled out with an administrative install.
+#   OpenVPN 2.6.23-I002 amd64 MSI (the OpenVPN engine's sidecar)
+#     https://build.openvpn.net/downloads/releases/OpenVPN-2.6.23-I002-amd64.msi
+#     SHA-256 31809e97debe44c12be06ed892c2a43e55b67b31cb852827b7ec8f2d6c0b8dc6
+#     (hashed 2026-11-12 from the project's own build host;
+#     swupdate.openvpn.net serves a splash page to datacenter
+#     IPs, CI runners included, so it cannot be the source. The
+#     Authenticode signature is verified as well before
+#     openvpn.exe is pulled out with an administrative install.)
 #   Go 1.26.8 — for the Psiphon build ONLY (see the build site):
 #     https://go.dev/dl/go1.26.8.windows-amd64.zip
 #     SHA-256 b92c3b2adae85a11ba71fe7216daf0d84e82af4c8ab6c5625807f28622043a59
@@ -230,8 +233,11 @@ try {
 
     # openvpn.exe: the official MSI, Authenticode-verified, then
     # an administrative install extracts the program files.
-    $ovpnMsi = Join-Path $tmp 'OpenVPN-2.6.12-I002-amd64.msi'
-    Invoke-WebRequest -Uri 'https://swupdate.openvpn.net/community/releases/OpenVPN-2.6.12-I002-amd64.msi' -OutFile $ovpnMsi
+    $ovpnMsi = Join-Path $tmp 'OpenVPN-2.6.23-I002-amd64.msi'
+    Get-Verified `
+        'https://build.openvpn.net/downloads/releases/OpenVPN-2.6.23-I002-amd64.msi' `
+        '31809e97debe44c12be06ed892c2a43e55b67b31cb852827b7ec8f2d6c0b8dc6' `
+        $ovpnMsi
     $sig = Get-AuthenticodeSignature $ovpnMsi
     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'OpenVPN') {
         throw "OpenVPN MSI signature check failed: $($sig.Status) / $($sig.SignerCertificate.Subject)"
@@ -363,5 +369,5 @@ Write-Host "Sidecars in $warpDest (warp-plus v1.2.6):"
 Get-ChildItem $warpDest | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
 Write-Host "Sidecars in $aetherDest (Aether d58f9d5, if built):"
 Get-ChildItem $aetherDest -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
-Write-Host "Sidecars in $ovpnDest (OpenVPN 2.6.12):"
+Write-Host "Sidecars in $ovpnDest (OpenVPN 2.6.23):"
 Get-ChildItem $ovpnDest | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
