@@ -95,6 +95,14 @@ class _EmberShellState extends State<EmberShell>
     xray: _xray,
     warp: _warp,
   );
+
+  // Pause with auto-resume (build 2033, parity port): the engine
+  // the pause belongs to, when it ends, and its timers. In-memory
+  // only — a process exit ends the pause, exactly as on Android.
+  int? _pausedEngine;
+  DateTime? _resumeAt;
+  Timer? _pauseTimer;
+  Timer? _pauseTicker;
   bool _defaultsApplied = false;
 
   /// The exit pin's pulse on the desktop map (1.6 s cycle); runs
@@ -383,6 +391,8 @@ class _EmberShellState extends State<EmberShell>
     _psiphon.dispose();
     _lantern.dispose();
     _warp.dispose();
+    _pauseTimer?.cancel();
+    _pauseTicker?.cancel();
     _openvpn.dispose();
     _aetherWarp.dispose();
     _aetherMasque.dispose();
@@ -894,6 +904,10 @@ class _EmberShellState extends State<EmberShell>
                                 mode == m &&
                                 _tab != 3),
                         onTap: () => setState(() {
+                          if (_pausedEngine != null && m != _pausedEngine) {
+                            _cancelPause();
+                          }
+                          if (m != 0) _bootstrap.cancel();
                           mode = m;
                           _tab = 0;
                         }),
@@ -911,6 +925,82 @@ class _EmberShellState extends State<EmberShell>
                   ],
                 ),
               ),
+              // The pause strip (build 2033, parity port): while
+              // an engine is up it offers Pause with the four
+              // durations; while paused it counts down with
+              // Resume now / Cancel.
+              if (_pausedEngine != null || bar.on)
+                Positioned(
+                  bottom: 104,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: _pausedEngine != null
+                        ? MapGlass(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 8,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Paused · resumes in $_pauseCountdown',
+                                  style: Ember.body,
+                                ),
+                                const SizedBox(width: 10),
+                                TextButton(
+                                  onPressed: () =>
+                                      _resumePause(bar.onToggle),
+                                  child: const Text('Resume now'),
+                                ),
+                                TextButton(
+                                  onPressed: _cancelPause,
+                                  child: const Text('Cancel'),
+                                ),
+                              ],
+                            ),
+                          )
+                        : PopupMenuButton<Duration>(
+                            tooltip: 'Pause',
+                            onSelected: (d) =>
+                                _pauseConnection(bar.engine, bar.onToggle, d),
+                            itemBuilder: (context) => [
+                              for (final (label, d) in const [
+                                ('Pause for 5 minutes', Duration(minutes: 5)),
+                                (
+                                  'Pause for 15 minutes',
+                                  Duration(minutes: 15),
+                                ),
+                                (
+                                  'Pause for 30 minutes',
+                                  Duration(minutes: 30),
+                                ),
+                                ('Pause for 1 hour', Duration(hours: 1)),
+                              ])
+                                PopupMenuItem(value: d, child: Text(label)),
+                            ],
+                            child: const MapGlass(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 8,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.pause_rounded,
+                                    size: 16,
+                                    color: MapUi.text,
+                                  ),
+                                  SizedBox(width: 6),
+                                  Text('Pause', style: TextStyle(color: MapUi.text)),
+                                ],
+                              ),
+                            ),
+                          ),
+                  ),
+                ),
               // The bottom control bar.
               Positioned(
                 bottom: 22,
@@ -1443,6 +1533,67 @@ class _EmberShellState extends State<EmberShell>
         await core.setOn(true);
       });
     }
+  }
+
+  /// Disconnects [engine] via its bar toggle and schedules the
+  /// reconnect (build 2033 parity): the toggle callback is the
+  /// bar's own, so pause/resume ride the exact connect path.
+  void _pauseConnection(int engine, VoidCallback toggle, Duration d) {
+    setState(() {
+      _pausedEngine = engine;
+      _resumeAt = DateTime.now().add(d);
+    });
+    _pauseTimer?.cancel();
+    _pauseTimer = Timer(d, () {
+      _pauseTicker?.cancel();
+      _pauseTicker = null;
+      final e = _pausedEngine;
+      _pausedEngine = null;
+      _resumeAt = null;
+      if (!mounted || e == null) return;
+      setState(() {});
+      if (_connectedEngine != null) return; // something else is up
+      _barModel(AppLocalizations.of(context)).onToggle();
+    });
+    _pauseTicker?.cancel();
+    _pauseTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+    toggle();
+  }
+
+  void _resumePause(VoidCallback toggle) {
+    final e = _pausedEngine;
+    if (e == null) return;
+    _pauseTimer?.cancel();
+    _pauseTimer = null;
+    _pauseTicker?.cancel();
+    _pauseTicker = null;
+    setState(() {
+      _pausedEngine = null;
+      _resumeAt = null;
+    });
+    if (_connectedEngine != null) return;
+    _barModel(AppLocalizations.of(context)).onToggle();
+  }
+
+  void _cancelPause() {
+    _pauseTimer?.cancel();
+    _pauseTimer = null;
+    _pauseTicker?.cancel();
+    _pauseTicker = null;
+    _pausedEngine = null;
+    _resumeAt = null;
+  }
+
+  String get _pauseCountdown {
+    final at = _resumeAt;
+    if (at == null) return '';
+    final left = at.difference(DateTime.now());
+    if (left.isNegative) return '0:00';
+    final mm = left.inMinutes;
+    final ss = (left.inSeconds % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
   }
 
   /// The Lantern bar toggle (on Windows the engine reports its

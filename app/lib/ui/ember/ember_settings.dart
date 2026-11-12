@@ -17,6 +17,8 @@ import '../../l10n/app_localizations.dart';
 import '../../lantern/lantern_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../warp/warp_controller.dart';
+import '../../xray/config_builder.dart'
+    show primaryResolver, dnsGroupMembers, resolverUnderTransport;
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../bypass_apps_page.dart';
@@ -701,6 +703,55 @@ class _XraySection extends StatelessWidget {
                     await _save(context);
                   },
                 ),
+                // Resolver transport (parity port of builds
+                // 2032/2037): DoH, DoQ, or plain DNS over TCP
+                // port 53 at the provider's pinned IP — the same
+                // choices, in the desktop page's own idiom.
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 7,
+                        runSpacing: 7,
+                        children: [
+                          EmberChip(
+                            label: 'DoH',
+                            selected: s.remoteDnsProto == 'doh',
+                            onTap: () async {
+                              s.remoteDnsProto = 'doh';
+                              await xray.save();
+                            },
+                          ),
+                          EmberChip(
+                            label: 'DoQ (QUIC)',
+                            selected: s.remoteDnsProto == 'doq',
+                            onTap: () async {
+                              s.remoteDnsProto = 'doq';
+                              await xray.save();
+                            },
+                          ),
+                          EmberChip(
+                            label: 'TCP (port 53)',
+                            selected: s.remoteDnsProto == 'tcp',
+                            onTap: () async {
+                              s.remoteDnsProto = 'tcp';
+                              await xray.save();
+                            },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 7),
+                      Text(
+                        'Resolution order: ${primaryResolver(s)}'
+                        '${s.dnsGroup ? ' → group: ${dnsGroupMembers.map((m) => resolverUnderTransport(m, s.remoteDnsProto)).join(' → ')}' : s.dnsFallback ? ' → ${resolverUnderTransport(s.fallbackDns.trim(), s.remoteDnsProto)}' : ''}'
+                        ' • server names resolve through the provider DNS, never the local one',
+                        style: Ember.caption,
+                      ),
+                    ],
+                  ),
+                ),
                 const Divider(color: Ember.line, height: 1),
                 _TextRow(
                   label: l.localDns,
@@ -739,6 +790,46 @@ class _XraySection extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(height: 10),
+          _ToggleCard(
+            title: 'Block ads & trackers',
+            subtitle: 'Resolve through AdGuard’s filtering DNS',
+            value: s.adBlockDoh,
+            onChanged: (v) async {
+              s.adBlockDoh = v;
+              await xray.save();
+            },
+          ),
+          _ToggleCard(
+            title: 'DNS group',
+            subtitle:
+                'Google, Cloudflare and Quad9 asked in turn; the working one sticks',
+            value: s.dnsGroup,
+            onChanged: (v) async {
+              s.dnsGroup = v;
+              await xray.save();
+            },
+          ),
+          _ToggleCard(
+            title: 'DNS fallback',
+            subtitle: 'Used only when the main resolver fails',
+            value: s.dnsFallback,
+            onChanged: (v) async {
+              s.dnsFallback = v;
+              await xray.save();
+            },
+          ),
+          if (s.dnsFallback)
+            GlassCard(
+              child: _TextRow(
+                label: 'Fallback DNS',
+                initial: s.fallbackDns,
+                onSubmit: (v) async {
+                  if (v.isNotEmpty) s.fallbackDns = v;
+                  await xray.save();
+                },
+              ),
+            ),
           const SizedBox(height: 18),
           _SectionTitle(l.customRules),
           GlassCard(
