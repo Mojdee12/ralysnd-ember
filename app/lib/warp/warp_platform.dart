@@ -1,7 +1,11 @@
 /// The Dart side of the WARP+ engine's platform calls (the same
 /// 'app/android' channel MainActivity serves).
 
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'warp_platform_windows.dart';
 
 class WarpState {
   final bool running;
@@ -54,6 +58,10 @@ class WarpState {
 class WarpPlatform {
   static const _channel = MethodChannel('app/android');
 
+  /// The Windows backend (the warp-plus.exe sidecar).
+  static final WindowsWarpBackend _windows = WindowsWarpBackend();
+  static bool get _isWindows => Platform.isWindows;
+
   /// The engine's fixed local SOCKS port (warp-plus's --bind).
   static const socksPort = 8086;
 
@@ -63,8 +71,17 @@ class WarpPlatform {
     required String country,
     required String endpoint,
     required String dns,
-  }) =>
-      _channel.invokeMethod('warpSetOn', {
+  }) {
+    if (_isWindows) {
+      return _windows.setOn(
+        mode: mode,
+        scan: scan,
+        country: country,
+        endpoint: endpoint,
+        dns: dns,
+      );
+    }
+    return _channel.invokeMethod('warpSetOn', {
         'on': true,
         'mode': mode,
         'scan': scan,
@@ -72,10 +89,15 @@ class WarpPlatform {
         'endpoint': endpoint,
         'dns': dns,
       });
+  }
 
-  static Future<void> stop() => _channel.invokeMethod('warpStop');
+  static Future<void> stop() {
+    if (_isWindows) return _windows.stop();
+    return _channel.invokeMethod('warpStop');
+  }
 
   static Future<WarpState> state() async {
+    if (_isWindows) return _windows.state();
     final m = await _channel.invokeMapMethod<String, dynamic>('warpState');
     if (m == null) return WarpState.stopped;
     return WarpState(
@@ -94,6 +116,7 @@ class WarpPlatform {
   /// The exit IP/country of the running WARP tunnel, asked through
   /// its own SOCKS proxy. Best-effort: null on any failure.
   static Future<Map<String, String>?> exitInfo() async {
+    if (_isWindows) return _windows.exitInfo();
     try {
       final m =
           await _channel.invokeMapMethod<String, dynamic>('warpExitInfo');

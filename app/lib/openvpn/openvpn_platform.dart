@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'openvpn_platform_windows.dart';
 
 /// The OpenVPN engine's state, as OpenVpnService and OpenVpnCore
 /// report it on the bridge (build 2025).
@@ -134,6 +138,11 @@ class OvpnPing {
 class OpenVpnPlatform {
   static const _channel = MethodChannel('app/android');
 
+  /// The Windows backend (the openvpn.exe sidecar, driven in
+  /// Dart with the same contract).
+  static final WindowsOpenVpnBackend _windows = WindowsOpenVpnBackend();
+  static bool get _isWindows => Platform.isWindows;
+
   static Future<void> setOn({
     required String profileId,
     required String name,
@@ -142,7 +151,19 @@ class OpenVpnPlatform {
     String user = '',
     String pass = '',
     bool needsCreds = false,
-  }) => _channel.invokeMethod<void>('openVpnSetOn', {
+  }) {
+    if (_isWindows) {
+      return _windows.setOn(
+        profileId: profileId,
+        name: name,
+        config: config,
+        credKey: credKey,
+        user: user,
+        pass: pass,
+        needsCreds: needsCreds,
+      );
+    }
+    return _channel.invokeMethod<void>('openVpnSetOn', {
     'on': true,
     'profileId': profileId,
     'name': name,
@@ -150,22 +171,29 @@ class OpenVpnPlatform {
     'credKey': credKey,
     'user': user,
     'pass': pass,
-    'needsCreds': needsCreds,
-  });
+      'needsCreds': needsCreds,
+    });
+  }
 
-  static Future<void> stop() => _channel.invokeMethod<void>('openVpnStop');
+  static Future<void> stop() {
+    if (_isWindows) return _windows.stop();
+    return _channel.invokeMethod<void>('openVpnStop');
+  }
 
   static Future<OpenVpnState> state() async {
+    if (_isWindows) return _windows.state();
     final m = await _channel.invokeMapMethod<dynamic, dynamic>('openVpnState');
     return m == null ? const OpenVpnState() : OpenVpnState.fromMap(m);
   }
 
   /// "" when the core accepts the profile, else an error code.
-  static Future<String> validate(String config) async =>
-      await _channel.invokeMethod<String>('openVpnValidate', {
-        'config': config,
-      }) ??
-      'CORE_UNAVAILABLE';
+  static Future<String> validate(String config) async {
+    if (_isWindows) return _windows.validate(config);
+    return await _channel.invokeMethod<String>('openVpnValidate', {
+          'config': config,
+        }) ??
+        'CORE_UNAVAILABLE';
+  }
 
   /// Measures the profile's first remote. Pre-tunnel endpoint
   /// responsiveness only — see OpenVpnProbe on the Kotlin side.
@@ -175,6 +203,14 @@ class OpenVpnPlatform {
     required String proto,
     required bool authenticatedControl,
   }) async {
+    if (_isWindows) {
+      return _windows.ping(
+        host: host,
+        port: port,
+        proto: proto,
+        authenticatedControl: authenticatedControl,
+      );
+    }
     final m = await _channel.invokeMapMethod<dynamic, dynamic>('openVpnPing', {
       'host': host,
       'port': port,
@@ -188,6 +224,7 @@ class OpenVpnPlatform {
 
   /// The system file picker for one .ovpn file; null on cancel.
   static Future<Map<String, String>?> pickFile() async {
+    if (_isWindows) return _windows.pickFile();
     final m = await _channel.invokeMapMethod<dynamic, dynamic>(
       'openVpnPickFile',
     );
@@ -207,32 +244,42 @@ class OpenVpnPlatform {
     String key,
     String user,
     String pass,
-  ) async =>
-      await _channel.invokeMethod<bool>('openVpnSaveCredentials', {
-        'key': key,
-        'user': user,
-        'pass': pass,
-      }) ??
-      false;
+  ) async {
+    if (_isWindows) return _windows.saveCredentials(key, user, pass);
+    return await _channel.invokeMethod<bool>('openVpnSaveCredentials', {
+          'key': key,
+          'user': user,
+          'pass': pass,
+        }) ??
+        false;
+  }
 
   /// True only when a stored entry exists AND decrypts on
   /// this device (build 2027 verified semantics).
-  static Future<bool> hasCredentials(String key) async =>
-      await _channel.invokeMethod<bool>('openVpnHasCredentials', {
-        'key': key,
-      }) ??
-      false;
+  static Future<bool> hasCredentials(String key) async {
+    if (_isWindows) return _windows.hasCredentials(key);
+    return await _channel.invokeMethod<bool>('openVpnHasCredentials', {
+          'key': key,
+        }) ??
+        false;
+  }
 
   /// 'none' | 'ok' | 'unreadable' — what the vault can prove
   /// about an entry (build 2027). 'unreadable' = a payload
   /// exists but cannot be decrypted on this device; the UI
   /// must say so instead of claiming a saved account.
-  static Future<String> credentialStatus(String key) async =>
-      await _channel.invokeMethod<String>('openVpnCredentialStatus', {
-        'key': key,
-      }) ??
-      'none';
+  static Future<String> credentialStatus(String key) async {
+    if (_isWindows) return _windows.credentialStatus(key);
+    return await _channel.invokeMethod<String>('openVpnCredentialStatus', {
+          'key': key,
+        }) ??
+        'none';
+  }
 
-  static Future<void> deleteCredentials(String key) =>
-      _channel.invokeMethod<void>('openVpnDeleteCredentials', {'key': key});
+  static Future<void> deleteCredentials(String key) {
+    if (_isWindows) return _windows.deleteCredentials(key);
+    return _channel.invokeMethod<void>('openVpnDeleteCredentials', {
+      'key': key,
+    });
+  }
 }
