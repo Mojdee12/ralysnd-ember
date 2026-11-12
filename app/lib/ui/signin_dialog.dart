@@ -9,6 +9,7 @@ import '../core/core_controller.dart';
 import '../core/models.dart';
 import '../l10n/app_localizations.dart';
 import '../platform.dart';
+import 'browser_signin_page.dart';
 import 'format.dart';
 import 'widgets.dart';
 
@@ -59,6 +60,10 @@ class _SignInDialogState extends State<_SignInDialog> {
   bool _sending = false;
   bool _showPassword = false;
   Timer? _poll;
+
+  /// The browser sign-in session whose WebView has been
+  /// opened (build 2033), so the poll does not stack pages.
+  String _browserOpenedId = '';
 
   CoreApi? get _api => widget.core.api;
 
@@ -124,7 +129,35 @@ class _SignInDialogState extends State<_SignInDialog> {
       }
       return;
     }
+    if (s.step == SignInStep.needBrowser &&
+        s.authUrl.isNotEmpty &&
+        _browserOpenedId != s.id) {
+      _browserOpenedId = s.id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_openBrowser(s));
+      });
+    }
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => _read());
+  }
+
+  /// Opens the WebView on Mozilla's pages and hands the
+  /// intercepted code back to the core (build 2033).
+  Future<void> _openBrowser(SignInState s) async {
+    final result = await openBrowserSignIn(context, s.authUrl);
+    if (!mounted || result == null) return;
+    _send(
+      (api) => api.answerBrowserSignIn(
+        s.id,
+        result.code,
+        result.state,
+        error: result.error,
+      ),
+    );
+  }
+
+  void _startBrowser() {
+    _formProblem = '';
+    _send((api) => api.startBrowserSignIn());
   }
 
   Future<void> _read() async {
@@ -282,6 +315,42 @@ class _SignInDialogState extends State<_SignInDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // The primary route (build 2033): Mozilla's own
+            // pages in a WebView — the sign-in that survives
+            // Mozilla's 2026 bot rules. The password form
+            // below stays as the fallback. (An outlined button,
+            // deliberately: the dialog's filled button is the
+            // password form's, as the widget tests have it.)
+            OutlinedButton.icon(
+              onPressed: _sending ? null : _startBrowser,
+              icon: const Icon(Icons.open_in_browser_rounded, size: 19),
+              label: const Text('Sign in with browser'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                textStyle: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Mozilla’s page asks for everything, including '
+              'any security code — nothing is typed here.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            const Row(
+              children: [
+                Expanded(child: Divider()),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: Text('or with your password'),
+                ),
+                Expanded(child: Divider()),
+              ],
+            ),
+            const SizedBox(height: 16),
             Text(l.signInIntro, style: Theme.of(context).textTheme.bodyMedium),
             const SizedBox(height: 16),
             TextFormField(
@@ -359,6 +428,8 @@ class _SignInDialogState extends State<_SignInDialog> {
   /// The instruction for a step in the app's language; the core's own
   /// message for steps the app does not know.
   String _instruction(AppLocalizations l, SignInState s) => switch (s.step) {
+    SignInStep.needBrowser =>
+      'Finish the sign-in on Mozilla’s page in the browser window.',
     SignInStep.needEmailCode => l.stepEmailCode(s.email),
     SignInStep.needTotp => l.stepTotp,
     SignInStep.needUnblockCode => l.stepUnblockCode(s.email),
@@ -426,6 +497,14 @@ class _SignInDialogState extends State<_SignInDialog> {
           )
         else if (instruction.isNotEmpty)
           Text(instruction, style: theme.textTheme.bodyMedium),
+        if (s.step == SignInStep.needBrowser) ...[
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: () => unawaited(_openBrowser(s)),
+            icon: const Icon(Icons.open_in_browser_rounded, size: 19),
+            label: const Text('Open the sign-in page'),
+          ),
+        ],
         if (s.step == SignInStep.needCaptcha && s.captcha.isNotEmpty) ...[
           const SizedBox(height: 12),
           _Captcha(dataUrl: s.captcha),

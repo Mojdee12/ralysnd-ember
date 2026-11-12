@@ -475,6 +475,11 @@ class CoreStatus {
         null => null,
       },
       autoConnecting = _bool(j['auto_connecting']),
+      passExpiresAt = _int(j['pass_expires_at']),
+      bootstrap = switch (_mapOrNull(j['bootstrap'])) {
+        final m? => BootstrapInfo.fromJson(m),
+        null => null,
+      },
       connectFailure = _str(j['connect_failure']),
       selection = _str(j['selection']),
       selectionName = _str(j['selection_name']),
@@ -565,8 +570,30 @@ class CoreStatus {
   final String selectionName;
   final String dataDir;
 
+  /// When the active account's stored ProxyPass expires (unix
+  /// seconds; 0 when none is stored) — build 2034's prepared pass.
+  final int passExpiresAt;
+
+  /// The core's bootstrap egress state (build 2034).
+  final BootstrapInfo? bootstrap;
+
   int get totalAccounts => accountCounts['total'] ?? 0;
   int get readyAccounts => accountCounts[AccountStatus.ready] ?? 0;
+}
+
+/// The core's bootstrap egress state (build 2034): which egress a
+/// region-blocked pass fetch would use, and the saved Worker
+/// relay's URL (its key is never reported, only that one is set).
+class BootstrapInfo {
+  BootstrapInfo.fromJson(Map<String, Object?> j)
+    : egress = _str(j['egress']),
+      relayUrl = _str(j['relay_url']),
+      relayKeySet = _bool(j['relay_key_set']);
+
+  /// '', 'socks', or 'relay'.
+  final String egress;
+  final String relayUrl;
+  final bool relayKeySet;
 }
 
 /// Sign-in steps (core/internal/service/signin_flow.go).
@@ -577,6 +604,7 @@ abstract final class SignInStep {
   static const needUnblockCode = 'need_unblock_code';
   static const needCaptcha = 'need_captcha';
   static const needEmailLink = 'need_email_link';
+  static const needBrowser = 'need_browser';
   static const done = 'done';
   static const failed = 'failed';
   static const cancelled = 'cancelled';
@@ -607,7 +635,8 @@ class SignInState {
       errorCode = _str(j['error_code']),
       passwordAccepted = _bool(j['password_accepted']),
       captcha = _str(j['captcha']),
-      accountId = _str(j['account_id']);
+      accountId = _str(j['account_id']),
+      authUrl = _str(j['auth_url']);
 
   final String id;
   final String email;
@@ -624,6 +653,10 @@ class SignInState {
   /// A `data:` URL of the CAPTCHA image during [SignInStep.needCaptcha].
   final String captcha;
   final String accountId;
+
+  /// The authorize URL to open in the WebView during
+  /// [SignInStep.needBrowser] (build 2033).
+  final String authUrl;
 
   bool get finished =>
       step == SignInStep.done ||

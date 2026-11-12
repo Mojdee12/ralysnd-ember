@@ -67,6 +67,7 @@ Profile? parseLink(String rawLink) {
     return _wireguard(link);
   }
   if (link.startsWith('tuic://')) return _tuic(link);
+  if (link.startsWith('anytls://')) return _anytls(link);
   if (link.startsWith('socks://') || link.startsWith('socks5://')) {
     return _socks(link);
   }
@@ -228,14 +229,22 @@ _Authority? _authority(String link, String scheme) {
     final close = hostPort.indexOf(']');
     if (close < 0) return null;
     host = hostPort.substring(1, close);
-    port = hostPort.length > close + 1
-        ? int.tryParse(hostPort.substring(close + 2)) ?? 443
-        : 443;
+    // A path may follow the port (host]:8443/?…) — the port
+    // is the digit run up to it (build 2033).
+    final rest = hostPort.length > close + 1
+        ? hostPort.substring(close + 2).split('/').first
+        : '';
+    port = int.tryParse(rest) ?? 443;
   } else {
-    final colon = hostPort.lastIndexOf(':');
+    // Strip any path (host:8443/?…): several link families —
+    // AnyTLS conventionally, TUIC often — carry one, and the
+    // pre-2033 parse read "8443/" as the port and silently
+    // fell back to 443.
+    final authority = hostPort.split('/').first;
+    final colon = authority.lastIndexOf(':');
     if (colon < 0) return null;
-    host = hostPort.substring(0, colon);
-    port = int.tryParse(hostPort.substring(colon + 1)) ?? 443;
+    host = authority.substring(0, colon);
+    port = int.tryParse(authority.substring(colon + 1)) ?? 443;
   }
   return _Authority(
     host,
@@ -279,9 +288,18 @@ void _applyTransport(Profile p, Map<String, String> q) {
   p.security = q['security'] ?? p.security;
   if (p.security == 'none') p.security = '';
   p.sni = q['sni'] ?? q['peer'] ?? p.sni;
+  // The ECH config list (build 2033), under the parameter
+  // name Xray's own link import reads into the TLS settings.
+  p.echConfigList = q['ech'] ?? p.echConfigList;
   p.alpn = (q['alpn'] ?? '').replaceAll(r'\,', ',');
   if (p.alpn.isEmpty) p.alpn = q['alpn'] ?? p.alpn;
   p.fingerprint = q['fp'] ?? p.fingerprint;
+  p.cipherSuites = q['cs'] ?? p.cipherSuites;
+  // Exact-text core fields (build 2030): copied as written —
+  // never trimmed or case-folded (PattNG's EXACT preset rule;
+  // the core reads them verbatim).
+  p.dialMode = q['dialMode'] ?? p.dialMode;
+  p.finalMask = q['fm'] ?? p.finalMask;
   p.publicKey = q['pbk'] ?? p.publicKey;
   p.shortId = q['sid'] ?? p.shortId;
   p.spiderX = q['spx'] ?? p.spiderX;
@@ -355,6 +373,48 @@ Profile? _hysteria2(String link) {
   p.downMbps = int.tryParse(q['down'] ?? '') ?? 0;
   p.allowInsecure = q['insecure'] == '1' || q['insecure'] == 'true';
   p.fingerprint = q['pinSHA256'] ?? '';
+  // ECH for the QUIC handshake (build 2033): the parameter
+  // carries the echConfigList text itself (a base64 list or a
+  // "domain+resolver" query form); stored verbatim and handed
+  // to the core's TLS settings by the builder.
+  p.echConfigList = q['ech'] ?? '';
+  // Congestion control (build 2036): Ember's own parameter —
+  // no standard hy2 link field exists for it — so an export
+  // round-trips the choice; other clients ignore the unknown
+  // parameter. Only the values the core honours are kept.
+  final cc = q['congestion'] ?? '';
+  p.hyCongestion = hyCongestionChoices.contains(cc) ? cc : '';
+  return p;
+}
+
+/// AnyTLS links (build 2033), the sing-box / mihomo shape:
+/// anytls://password@host:port/?security=tls&sni=…&fp=…#name.
+/// Parsed and stored like TUIC — the bundled Xray core has no
+/// AnyTLS outbound (verified in its source), so the profile is
+/// badged unsupported and refuses to connect rather than
+/// pretending. The userinfo is the password; there is no
+/// username in the standard form.
+Profile? _anytls(String link) {
+  final a = _authority(link, 'anytls');
+  if (a == null || a.host.isEmpty) return null;
+  final q = _queryParams(a.query);
+  final p = Profile(
+    id: newProfileId(),
+    protocol: Protocol.anytls,
+    name: a.name,
+    address: a.host,
+    port: a.port,
+    uuidOrPassword: a.userInfo,
+    security: 'tls',
+  );
+  p.sni = q['sni'] ?? q['peer'] ?? '';
+  p.alpn = (q['alpn'] ?? '').replaceAll(r'\,', ',');
+  p.fingerprint = q['fp'] ?? '';
+  p.allowInsecure =
+      q['insecure'] == '1' ||
+      q['insecure'] == 'true' ||
+      q['allowInsecure'] == '1' ||
+      q['allowInsecure'] == 'true';
   return p;
 }
 
@@ -377,6 +437,18 @@ Profile? _wireguard(String link) {
   p.reserved = q['reserved'] ?? '';
   p.mtu = int.tryParse(q['mtu'] ?? '') ?? 1420;
   p.keepAlive = int.tryParse(q['keepalive'] ?? '') ?? 0;
+  // AmneziaWG parameters (build 2033): preserved verbatim so
+  // an export writes them back; the carrier cannot apply
+  // them (the profile is badged as running plain WireGuard).
+  p.awgJc = q['jc'] ?? '';
+  p.awgJmin = q['jmin'] ?? '';
+  p.awgJmax = q['jmax'] ?? '';
+  p.awgS1 = q['s1'] ?? '';
+  p.awgS2 = q['s2'] ?? '';
+  p.awgH1 = q['h1'] ?? '';
+  p.awgH2 = q['h2'] ?? '';
+  p.awgH3 = q['h3'] ?? '';
+  p.awgH4 = q['h4'] ?? '';
   return p;
 }
 
@@ -510,6 +582,9 @@ Profile? _vmess(String link) {
       sni: j['sni'] as String? ?? '',
       alpn: j['alpn'] as String? ?? '',
       fingerprint: j['fp'] as String? ?? '',
+      cipherSuites: j['cs'] as String? ?? '',
+      dialMode: j['dialMode'] as String? ?? '',
+      finalMask: j['fm'] as String? ?? '',
     );
     if (p.network == 'grpc') {
       p.serviceName = p.path;

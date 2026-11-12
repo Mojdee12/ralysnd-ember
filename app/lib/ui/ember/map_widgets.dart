@@ -25,6 +25,7 @@ class MapGlass extends StatelessWidget {
     this.borderColor,
     this.tint,
     this.onTap,
+    this.luminous = false,
   });
 
   final Widget child;
@@ -40,6 +41,13 @@ class MapGlass extends StatelessWidget {
   /// chip's warm tint).
   final Color? tint;
   final VoidCallback? onTap;
+
+  /// The luminous treatment the mobile Map Control panels use
+  /// (build 2032 pages): the border becomes the ember-orange
+  /// rim and the glass carries the rim's glow. Added by the
+  /// 2.2.0 parity port so the ported pages keep their look on
+  /// the desktop glass.
+  final bool luminous;
 
   @override
   Widget build(BuildContext context) {
@@ -60,9 +68,9 @@ class MapGlass extends StatelessWidget {
               blurRadius: 36,
               offset: const Offset(0, 16),
             ),
-            if (rim)
+            if (rim || luminous)
               BoxShadow(
-                color: Ember.orange.withValues(alpha: 0.14),
+                color: Ember.orange.withValues(alpha: luminous ? 0.22 : 0.14),
                 blurRadius: 24,
                 spreadRadius: 1,
               ),
@@ -89,7 +97,13 @@ class MapGlass extends StatelessWidget {
                   padding: padding,
                   decoration: BoxDecoration(
                     borderRadius: br,
-                    border: Border.all(color: borderColor ?? MapUi.line),
+                    border: Border.all(
+                      color:
+                          borderColor ??
+                          (luminous
+                              ? Ember.orange.withValues(alpha: 0.45)
+                              : MapUi.line),
+                    ),
                   ),
                   child: child,
                 ),
@@ -1080,4 +1094,50 @@ class _ShieldFlamePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// A panel's header row: the title at the left, optional actions,
+/// and (with [onClose]) the samples' close ✕ at the right.
+/// (From the mobile Map Control widgets, build 2032 — the ported
+/// engine pages (OpenVPN, WireGuard, Aether) head their panels
+/// with it; styled with the desktop MapUi palette here.)
+class MapPanelHeader extends StatelessWidget {
+  const MapPanelHeader({
+    super.key,
+    required this.title,
+    this.actions = const [],
+    this.onClose,
+  });
+
+  final String title;
+  final List<Widget> actions;
+  final VoidCallback? onClose;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Expanded(
+        child: Text(
+          title,
+          style: const TextStyle(
+            fontSize: 15.5,
+            fontWeight: FontWeight.w700,
+            color: MapUi.text,
+            letterSpacing: 0.3,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      ...actions,
+      if (onClose != null)
+        IconButton(
+          onPressed: onClose,
+          icon: const Icon(Icons.close_rounded, size: 19),
+          color: MapUi.dim,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.only(left: 4),
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        ),
+    ],
+  );
 }

@@ -17,6 +17,11 @@ dependencies:
   # Ember 2: QR display for sharing configs, camera scanning for import.
   qr_flutter: 4.1.0
   mobile_scanner: 7.1.3
+  # Password-protected expiring share links (Android build 2030): AES-256-GCM.
+  pointycastle: 3.9.1
+  # Browser sign-in on Windows (Kumiho contract): WebView2 host —
+  # webview_flutter has no Windows implementation.
+  flutter_inappwebview: 6.1.5
 
 # Packages published less than two weeks ago are held back until they have
 # been out longer.
@@ -46,6 +51,10 @@ flutter:
     # The Psiphon core's embedded server entries (from the official
     # app's published resources; see PsiphonConstants.kt).
     - assets/psiphon/
+    # Open-source license texts (the AGPL-3.0 full text for the
+    # EmberWarp core, Android build 2030; extended for the Windows
+    # engine sidecars).
+    - assets/licenses/
     # The baked Map Control backdrop (tool/bake_backdrop.py renders
     # world_map_data.dart's raster at 3600x1800 with the samples'
     # detail stack; the live pins/arc keep the painter projection).

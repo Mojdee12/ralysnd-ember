@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/android_core.dart';
 import '../xray/exit_info.dart';
 import 'psiphon_platform.dart';
 
@@ -114,10 +115,16 @@ class PsiphonController extends ChangeNotifier {
 
   // ---- persistence ----------------------------------------------------
 
-  Future<File> _stateFile() async =>
-      File('${(await PsiphonPlatform.workDir()).path}/state.json');
+  Future<File> _stateFile() async {
+    final coreDir = await AndroidCore.dataDir();
+    final filesDir = File(coreDir).parent;
+    return File('${filesDir.path}/psiphon/state.json');
+  }
 
-  Future<Directory> workDir() => PsiphonPlatform.workDir();
+  Future<Directory> workDir() async {
+    final coreDir = await AndroidCore.dataDir();
+    return Directory('${File(coreDir).parent.path}/psiphon');
+  }
 
   Future<void> load() async {
     try {
@@ -154,6 +161,29 @@ class PsiphonController extends ChangeNotifier {
     settings = next;
     await _save();
     notifyListeners();
+  }
+
+  /// Picks the exit region (build 2033 — the exit-country
+  /// selection the feature list asked for, completed): the
+  /// choice is stored, and when a tunnel is already running
+  /// it is restarted on the new region so the pick takes
+  /// effect NOW. Before, picking a country while connected
+  /// silently changed nothing until a manual reconnect —
+  /// the picker looked broken exactly when it was used most.
+  /// A failed restart surfaces through [lastError] like any
+  /// connect failure; the stored region stands either way.
+  Future<void> setRegion(String code) async {
+    final next = PsiphonSettings.fromJson(settings.toJson());
+    next.region = code;
+    await updateSettings(next);
+    if (state.running) {
+      await disconnect();
+      try {
+        await connect();
+      } catch (_) {
+        // lastError already carries it; the region stays picked.
+      }
+    }
   }
 
   // ---- state ------------------------------------------------------------
@@ -239,11 +269,7 @@ class PsiphonController extends ChangeNotifier {
         state = await PsiphonPlatform.state();
         if (state.running) break;
       }
-      if (!state.running) {
-        throw StateError(
-          state.lastError.isNotEmpty ? state.lastError : 'start-failed',
-        );
-      }
+      if (!state.running) throw StateError('start-failed');
       _lastSample = state;
       _lastSampleAt = DateTime.now();
       _startPolling();

@@ -71,6 +71,17 @@ class AppSettings extends ChangeNotifier {
   /// have been applied to the core once.
   bool ember2DefaultsApplied = false;
 
+  /// The Mozilla bootstrap egress (build 2034, ported from
+  /// Android): how the core fetches a Guardian pass when the
+  /// region blocks it (HTTP 451). One of [bootstrapChoices]:
+  /// 'off', 'psiphon', 'v2ray', 'warp', 'relay' (the user's
+  /// Cloudflare Worker relay). Persisted here; the core learns
+  /// the concrete egress on each prepare call.
+  String mozillaBootstrap = 'off';
+
+  /// The bootstrap egress choices, in picker order.
+  static const bootstrapChoices = ['off', 'psiphon', 'v2ray', 'warp', 'relay'];
+
   /// The DESKTOP counterpart: the Windows first-run default (Mozilla
   /// capture mode "clear" → "tun" when the TUN service is installed)
   /// has been applied once. Separate from [ember2DefaultsApplied],
@@ -213,6 +224,10 @@ class AppSettings extends ChangeNotifier {
           s.hiddenConnectionColumns = {...v.whereType<String>()};
         }
         if (j['ember_mode'] case final int v) s.emberMode = v;
+        if (j['mozilla_bootstrap'] case final String v
+            when bootstrapChoices.contains(v)) {
+          s.mozillaBootstrap = v;
+        }
         s.ember2DefaultsApplied = j['ember2_defaults'] == true;
         s.desktopDefaultsApplied = j['ember_desktop_defaults'] == true;
         s.desktopTransportPinned = j['ember_desktop_transport'] == true;
@@ -256,12 +271,14 @@ class AppSettings extends ChangeNotifier {
     bool? udpNotice,
     Set<String>? hiddenConnectionColumns,
     int? emberMode,
+    String? mozillaBootstrap,
     bool? ember2DefaultsApplied,
     bool? emberEnDefaultApplied,
     bool? desktopDefaultsApplied,
     bool? desktopTransportPinned,
   }) {
     this.emberMode = emberMode ?? this.emberMode;
+    this.mozillaBootstrap = mozillaBootstrap ?? this.mozillaBootstrap;
     this.emberEnDefaultApplied =
         emberEnDefaultApplied ?? this.emberEnDefaultApplied;
     this.ember2DefaultsApplied =
@@ -313,6 +330,7 @@ class AppSettings extends ChangeNotifier {
           'udp_notice': udpNotice,
           'hidden_connection_columns': hiddenConnectionColumns.toList(),
           'ember_mode': emberMode,
+          'mozilla_bootstrap': mozillaBootstrap,
           'ember2_defaults': ember2DefaultsApplied,
           'ember_desktop_defaults': desktopDefaultsApplied,
           'ember_desktop_transport': desktopTransportPinned,

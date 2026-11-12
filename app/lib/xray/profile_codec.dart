@@ -19,12 +19,19 @@ Map<String, String> _transportParams(Profile p) {
     if (p.sni.isNotEmpty) q['sni'] = p.sni;
     if (p.alpn.isNotEmpty) q['alpn'] = p.alpn;
     if (p.fingerprint.isNotEmpty) q['fp'] = p.fingerprint;
+    if (p.cipherSuites.isNotEmpty) q['cs'] = p.cipherSuites;
+    if (p.echConfigList.isNotEmpty) q['ech'] = p.echConfigList;
     if (p.publicKey.isNotEmpty) q['pbk'] = p.publicKey;
     if (p.shortId.isNotEmpty) q['sid'] = p.shortId;
     if (p.spiderX.isNotEmpty) q['spx'] = p.spiderX;
     if (p.allowInsecure) q['allowInsecure'] = '1';
   }
   if (p.flow.isNotEmpty) q['flow'] = p.flow;
+  // The patched core's exact-text fields (build 2030), under
+  // the same parameter names PattNG uses: dialMode verbatim,
+  // fm = the whole finalmask JSON.
+  if (p.dialMode.isNotEmpty) q['dialMode'] = p.dialMode;
+  if (p.finalMask.isNotEmpty) q['fm'] = p.finalMask;
   return q;
 }
 
@@ -60,6 +67,9 @@ String profileToLink(Profile p) {
         'sni': p.sni,
         'alpn': p.alpn,
         'fp': p.fingerprint,
+        if (p.cipherSuites.isNotEmpty) 'cs': p.cipherSuites,
+        if (p.dialMode.isNotEmpty) 'dialMode': p.dialMode,
+        if (p.finalMask.isNotEmpty) 'fm': p.finalMask,
       };
       return 'vmess://${base64.encode(utf8.encode(jsonEncode(j)))}';
     case Protocol.shadowsocks:
@@ -75,6 +85,11 @@ String profileToLink(Profile p) {
         if (p.obfsPassword.isNotEmpty) q['obfs-password'] = p.obfsPassword;
       }
       if (p.allowInsecure) q['insecure'] = '1';
+      if (p.echConfigList.isNotEmpty) q['ech'] = p.echConfigList;
+      if (hyCongestionChoices.contains(p.hyCongestion) &&
+          p.hyCongestion.isNotEmpty) {
+        q['congestion'] = p.hyCongestion;
+      }
       final qs = _query(q);
       return 'hysteria2://${_enc(p.uuidOrPassword)}@${p.address}:${p.port}${qs.isEmpty ? '' : '?$qs'}#$name';
     case Protocol.wireguard:
@@ -84,8 +99,28 @@ String profileToLink(Profile p) {
       if (p.localAddress.isNotEmpty) q['address'] = p.localAddress;
       if (p.reserved.isNotEmpty) q['reserved'] = p.reserved;
       q['mtu'] = p.mtu.toString();
+      // The stored AmneziaWG parameters (build 2033) ride the
+      // export so a client that can apply them receives them
+      // intact; Ember's own parser reads them back the same way.
+      if (p.awgJc.isNotEmpty) q['jc'] = p.awgJc;
+      if (p.awgJmin.isNotEmpty) q['jmin'] = p.awgJmin;
+      if (p.awgJmax.isNotEmpty) q['jmax'] = p.awgJmax;
+      if (p.awgS1.isNotEmpty) q['s1'] = p.awgS1;
+      if (p.awgS2.isNotEmpty) q['s2'] = p.awgS2;
+      if (p.awgH1.isNotEmpty) q['h1'] = p.awgH1;
+      if (p.awgH2.isNotEmpty) q['h2'] = p.awgH2;
+      if (p.awgH3.isNotEmpty) q['h3'] = p.awgH3;
+      if (p.awgH4.isNotEmpty) q['h4'] = p.awgH4;
       final qs = _query(q);
       return 'wireguard://${_enc(p.secretKey)}@${p.address}:${p.port}?$qs#$name';
+    case Protocol.anytls:
+      final q = <String, String>{'security': 'tls'};
+      if (p.sni.isNotEmpty) q['sni'] = p.sni;
+      if (p.alpn.isNotEmpty) q['alpn'] = p.alpn;
+      if (p.fingerprint.isNotEmpty) q['fp'] = p.fingerprint;
+      if (p.allowInsecure) q['insecure'] = '1';
+      final qs = _query(q);
+      return 'anytls://${_enc(p.uuidOrPassword)}@${p.address}:${p.port}?$qs#$name';
     case Protocol.tuic:
       final q = <String, String>{};
       if (p.congestionControl.isNotEmpty) {

@@ -8,10 +8,8 @@ class ExitInfo {
   final String countryCode;
   final String countryEn;
 
-  /// The exit city, when the lookup reported one (the ip-api path
-  /// asks for it since 2.1.0 so the desktop map can badge the exit
-  /// pin "COUNTRY • CITY" like the Mozilla home does). Empty when
-  /// unknown — the Cloudflare trace path has no city.
+  /// The exit city, when the lookup named one (the Windows
+  /// backend's ip-api fallback does; kept for the desktop pages).
   final String city;
   const ExitInfo({
     required this.ip,
@@ -21,11 +19,11 @@ class ExitInfo {
   });
 
   factory ExitInfo.fromMap(Map<String, String> m) => ExitInfo(
-        ip: m['ip'] ?? '',
-        countryCode: (m['countryCode'] ?? '').toUpperCase(),
-        countryEn: m['country'] ?? '',
-        city: m['city'] ?? '',
-      );
+    ip: m['ip'] ?? '',
+    countryCode: (m['countryCode'] ?? '').toUpperCase(),
+    countryEn: m['country'] ?? '',
+    city: m['city'] ?? '',
+  );
 
   /// The regional-indicator flag emoji for the country code, or a
   /// globe when the code is missing/unknown.
@@ -47,8 +45,15 @@ class ExitInfo {
     return englishCountryNames[countryCode] ?? countryCode;
   }
 
-  /// "185.2.3.4 • 🇩🇪 Germany" — the Home card's exit line.
-  String get line => displayName.isEmpty ? ip : '$ip • $flag $displayName';
+  /// "185.2.3.4 • Germany" — the Home card's exit line.
+  /// Plain text since build 2027 (v7 audit): the regional-
+  /// indicator flag emoji this used to embed renders as a
+  /// missing-glyph box on fonts without flag support (the
+  /// harness font, and several device fonts) — the ▯ the
+  /// audit caught before "Netherlands" on the Psiphon page.
+  /// The drawn FlagCircle stays for the places that show a
+  /// flag as a graphic.
+  String get line => displayName.isEmpty ? ip : '$ip • $displayName';
 }
 
 /// English country names for the codes a VPN exit commonly lands in;

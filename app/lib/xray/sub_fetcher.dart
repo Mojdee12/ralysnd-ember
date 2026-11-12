@@ -23,6 +23,65 @@ class SubResult {
   });
 }
 
+/// A built-in subscription preset (build 2032): a public feed
+/// the user may add with one tap. Presets are VISIBLE and
+/// opt-in — nothing here is fetched until the user adds it,
+/// and it then lives as an ordinary subscription they can
+/// delete. (The pool lesson: a hidden fallback pool silently
+/// swapping a user's servers is never acceptable.)
+class SubPreset {
+  const SubPreset(this.name, this.url, this.note);
+  final String name;
+  final String url;
+  final String note;
+}
+
+/// The v2go feeds (Danialsamadi/v2go, GPL-3.0): public configs
+/// live-tested hourly by the publisher and republished only
+/// while they carry traffic. Third-party servers of unknown
+/// operators — useful for circumvention, never for trust.
+const v2goPresets = <SubPreset>[
+  SubPreset(
+    'v2go — All verified',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/AllConfigsSub.txt',
+    'Every config that passed the publisher\u2019s last hourly live test.',
+  ),
+  SubPreset(
+    'v2go — Cloudflare only',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Protocol/cloudflare.txt',
+    'Only configs whose endpoint is a Cloudflare address.',
+  ),
+  SubPreset(
+    'v2go — VLESS only',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Protocol/vless.txt',
+    'The verified pool, VLESS configs only.',
+  ),
+  SubPreset(
+    'v2go — VMess only',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Protocol/vmess.txt',
+    'The verified pool, VMess configs only.',
+  ),
+  SubPreset(
+    'v2go — Trojan only',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Protocol/trojan.txt',
+    'The verified pool, Trojan configs only.',
+  ),
+  SubPreset(
+    'v2go — Shadowsocks only',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Protocol/ss.txt',
+    'The verified pool, Shadowsocks configs only.',
+  ),
+  SubPreset(
+    'v2go — Hysteria2 only',
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Protocol/hy2.txt',
+    'The verified pool, Hysteria2 configs only.',
+  ),
+];
+
+/// The per-country v2go feed URL for an ISO country code.
+String v2goCountryUrl(String countryCode) =>
+    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Country/${countryCode.toUpperCase()}.txt';
+
 /// Fetches [url] and parses the result; throws on network/parse errors.
 Future<SubResult> fetchSubscription(String url) async {
   final client = HttpClient();

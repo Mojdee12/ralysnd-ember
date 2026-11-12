@@ -98,6 +98,13 @@ class WindowsXrayBackend implements XrayBackend {
   /// One-shot guard for the startup orphan reap ([_ensureCleaned]).
   bool _cleanedUp = false;
 
+  /// The standalone EmberWarp session (build 2030's setOnWarp):
+  /// no xray process — capture (or proxy mode) rides the
+  /// EmberWarp core's own SOCKS, which the controller started.
+  /// 0 = no such session.
+  int _warpSinceMs = 0;
+  String _warpName = '';
+
   /// Consecutive throwaway-instance start failures; two in a row
   /// (or one instant exit) raise the firewall/antivirus guidance.
   int _startFailures = 0;
@@ -199,6 +206,16 @@ class WindowsXrayBackend implements XrayBackend {
     required String dns,
     required bool ipv6,
     bool tunCapture = false,
+    // Chain underlay arguments (build 2032 contract): on Windows
+    // the controller starts the underlay engines itself (the
+    // Psiphon / EmberWarp Dart backends) and the chain wiring is
+    // already inside the config's dialerProxy, so there is
+    // nothing left for the backend to supervise.
+    String underlay = 'none',
+    String underlayRegion = '',
+    String underlayUpstream = '',
+    List<String> underlayProtocols = const [],
+    List<String> warpArgs = const [],
   }) async {
     final dir = await workDir();
     await dir.create(recursive: true);
@@ -397,6 +414,125 @@ class WindowsXrayBackend implements XrayBackend {
     throw StateError('xray-no-listen');
   }
 
+  /// The EmberWarp session SOCKS port (warp_args.dart's
+  /// warpSessionPort, duplicated here to keep this backend free
+  /// of a dependency on the profile layer).
+  static const _warpSessionPort = 20850;
+
+  @override
+  Future<void> setOnWarp({
+    required String name,
+    required String dns,
+    required bool ipv6,
+    bool tunCapture = false,
+    List<String> warpArgs = const [],
+  }) async {
+    await _ensureCleaned();
+    await stop();
+    _lastError = '';
+    _warpName = name;
+    _warpSinceMs = DateTime.now().millisecondsSinceEpoch;
+    _localPort = _warpSessionPort;
+    final dir = await workDir();
+    await dir.create(recursive: true);
+    final sink = File('${dir.path}/xray.log').openWrite(mode: FileMode.append);
+    sink.writeln('--- emberwarp session ${DateTime.now().toIso8601String()} ---');
+    if (!tunCapture) {
+      _portNote = 'Proxy only — system capture off';
+      sink.writeln(
+        '[ember] EmberWarp proxy mode: only apps pointed at '
+        '127.0.0.1:$_warpSessionPort use this tunnel',
+      );
+      await sink.flush();
+      await sink.close();
+      return;
+    }
+    try {
+      _bridge = await TunBridge.start(
+        socksPort: _warpSessionPort,
+        skipProgram: 'aether.exe',
+        log: sink,
+        logDir: dir,
+      );
+    } catch (e) {
+      _lastError = 'system-wide capture (TUN) failed: $e';
+      _warpSinceMs = 0;
+      await sink.flush();
+      await sink.close();
+      throw StateError(_lastError);
+    }
+    final bridge = _bridge!;
+    unawaited(bridge.down.then((_) {
+      if (identical(_bridge, bridge) && _warpSinceMs != 0) {
+        unawaited(stop());
+      }
+    }));
+    await sink.flush();
+    await sink.close();
+  }
+
+  @override
+  Future<bool> rotateConfig(String config) async {
+    final p = _process;
+    if (p == null || _localPort == 0) return false;
+    // Rotation must not move the session's ports: the TUN bridge
+    // points at the bound SOCKS port. A config that would bind a
+    // different one is refused (the controller falls back to a
+    // full reconnect for it).
+    var socks = 0;
+    try {
+      final doc = jsonDecode(config) as Map<String, dynamic>;
+      for (final inbound in (doc['inbounds'] as List? ?? const [])) {
+        if (inbound is Map && inbound['protocol'] == 'socks') {
+          socks = (inbound['port'] as num?)?.toInt() ?? 0;
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+    if (socks != _localPort) return false;
+    final dir = await workDir();
+    final configFile = File('${dir.path}/config.json');
+    await configFile.writeAsString(config, flush: true);
+    _process = null;
+    p.kill();
+    try {
+      await p.exitCode.timeout(const Duration(seconds: 1));
+    } on TimeoutException {
+      p.kill(ProcessSignal.sigkill);
+    }
+    Process np;
+    try {
+      np = await Process.start(
+        _xrayExe,
+        ['run', '-c', configFile.path],
+        workingDirectory: dir.path,
+        environment: _xrayEnv,
+      );
+    } catch (_) {
+      return false;
+    }
+    _process = np;
+    final sink = File(
+      '${dir.path}/xray.log',
+    ).openWrite(mode: FileMode.append);
+    np.stdout.listen(sink.add, onError: (_) {});
+    np.stderr.listen(sink.add, onError: (_) {});
+    unawaited(
+      np.exitCode.then((_) async {
+        if (identical(_process, np)) _process = null;
+        await sink.flush();
+        await sink.close();
+      }),
+    );
+    try {
+      await _waitForSocks(np, _localPort);
+    } catch (_) {
+      return false;
+    }
+    return true;
+  }
+
   @override
   Future<void> stop() async {
     final bridge = _bridge;
@@ -404,6 +540,8 @@ class WindowsXrayBackend implements XrayBackend {
     if (bridge != null) await bridge.stop();
     final p = _process;
     _process = null;
+    _warpSinceMs = 0;
+    _warpName = '';
     _name = '';
     _sinceMs = 0;
     _httpPort = 0;
@@ -420,6 +558,18 @@ class WindowsXrayBackend implements XrayBackend {
 
   @override
   Future<XrayState> state() async {
+    if (_process == null && _warpSinceMs != 0) {
+      return XrayState(
+        running: true,
+        name: _warpName,
+        sinceMs: _warpSinceMs,
+        upBytes: 0,
+        downBytes: 0,
+        lastError: _lastError,
+        localPort: _localPort,
+        note: _portNote,
+      );
+    }
     if (_process == null) return XrayState.stopped;
     final up = await _counter(
       'outbound>>>proxy>>>traffic>>>uplink',
@@ -688,6 +838,140 @@ class WindowsXrayBackend implements XrayBackend {
       return best;
     } finally {
       await _kill(proc);
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>> measureDelayEx(String testConfig) async {
+    final ms = await measureDelay(testConfig);
+    if (ms >= 0) return {'ms': ms, 'error': ''};
+    return {
+      'ms': -1,
+      'error': _lastError.isNotEmpty
+          ? _lastError
+          : 'the test core did not answer through the tunnel',
+    };
+  }
+
+  @override
+  Future<int> tunnelCheck(int socksPort) async {
+    // One real request through the RUNNING session (its HTTP
+    // inbound — see the library doc for why not SOCKS).
+    if (_process == null && _warpSinceMs == 0) return -1;
+    if (_httpPort == 0) return -1;
+    return _timeRequest(_httpPort);
+  }
+
+  @override
+  Future<Map<String, int>?> endurance(String testConfig) async {
+    // The Android tester's qualification (build 2029A): three
+    // probes at t=0, +2.5 s and +5.4 s over ONE keep-alive
+    // connection through a throwaway core — a session that
+    // freezes seconds after the handshake fails here even when
+    // its first probe answered.
+    await _ensureCleaned();
+    final port = await _takeTestPort();
+    final proc = await _startInstance(testConfig, port);
+    if (proc == null) return null;
+    try {
+      final client = _viaProxy(
+        port + 1,
+        const Duration(seconds: 10),
+      );
+      final sw = Stopwatch()..start();
+      Future<int> probe() async {
+        final target = _delayTargets.first;
+        final t0 = sw.elapsedMilliseconds;
+        try {
+          final req = await client
+              .getUrl(Uri.parse(target))
+              .timeout(const Duration(seconds: 10));
+          final resp = await req.close().timeout(
+            const Duration(seconds: 10),
+          );
+          await resp.drain<void>();
+          return sw.elapsedMilliseconds - t0;
+        } catch (_) {
+          return -1;
+        }
+      }
+
+      final p0 = await probe();
+      final wait1 = 2500 - sw.elapsedMilliseconds;
+      if (wait1 > 0) {
+        await Future<void>.delayed(Duration(milliseconds: wait1));
+      }
+      final p1 = await probe();
+      final wait2 = 5400 - sw.elapsedMilliseconds;
+      if (wait2 > 0) {
+        await Future<void>.delayed(Duration(milliseconds: wait2));
+      }
+      final p2 = await probe();
+      client.close(force: true);
+      return {'p0': p0, 'p1': p1, 'p2': p2, 'held': 1};
+    } finally {
+      await _kill(proc);
+    }
+  }
+
+  @override
+  Future<Map<String, String>?> networkFingerprint() async {
+    // The Windows counterpart of the Android reading
+    // ({type, operator}): type from the active network
+    // interfaces (ethernet vs wifi cannot be told apart
+    // reliably from Dart, so both report 'ethernet'/'wifi' by
+    // interface name heuristics — the value only keys the
+    // winning-shape cache), operator = the SSID / interface
+    // description, hashed by the caller before it is stored.
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+      );
+      for (final iface in interfaces) {
+        if (iface.addresses.isEmpty) continue;
+        final name = iface.name.toLowerCase();
+        final wifi =
+            name.contains('wi-fi') ||
+            name.contains('wifi') ||
+            name.contains('wlan') ||
+            name.contains('wireless');
+        return {
+          'type': wifi ? 'wifi' : 'ethernet',
+          'operator': iface.name,
+        };
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
+    return null;
+  }
+
+  @override
+  Future<String?> validateConfig(String config) async {
+    // `xray run -test` against a temp copy: the same patched
+    // core that will run the config judges it.
+    final dir = await workDir();
+    await dir.create(recursive: true);
+    final file = File('${dir.path}/validate.json');
+    try {
+      await file.writeAsString(config, flush: true);
+      final result = await Process.run(_xrayExe, [
+        'run',
+        '-test',
+        '-c',
+        file.path,
+      ], workingDirectory: dir.path, environment: _xrayEnv).timeout(
+        const Duration(seconds: 15),
+      );
+      if (result.exitCode == 0) return null;
+      final out = '${result.stdout}\n${result.stderr}'.trim();
+      return out.isEmpty ? 'the core rejected the config' : out;
+    } catch (_) {
+      return null; // Validation unavailable: never block a connect.
+    } finally {
+      try {
+        await file.delete();
+      } catch (_) {}
     }
   }
 
