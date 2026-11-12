@@ -8,17 +8,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/core_controller.dart';
-import '../../features.dart';
 import '../../core/models.dart';
 import '../../l10n/app_localizations.dart';
+import '../../xray/sub_fetcher.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../signin_dialog.dart';
 import 'ember_format.dart';
 import 'ember_home.dart' show maskEmail;
 import 'ember_theme.dart';
+import 'map_widgets.dart';
 import 'mozilla_bootstrap.dart';
-import 'world_map.dart';
+import 'qr_pages.dart' show showSubscriptionQr;
 
 class EmberAccounts extends StatelessWidget {
   const EmberAccounts({
@@ -26,28 +27,32 @@ class EmberAccounts extends StatelessWidget {
     required this.core,
     required this.xray,
     required this.v2ray,
+    this.onClose,
     this.bootstrap,
   });
 
   final CoreController core;
   final XrayController xray;
   final bool v2ray;
+  final VoidCallback? onClose;
 
-  /// The Mozilla bootstrap card's runtime (build 2034, parity
-  /// port): shown under the Mozilla accounts when provided.
+  /// The Mozilla bootstrap helper (build 2034); the shell owns
+  /// it. Optional so other constructions of this page keep
+  /// working — the card simply does not render without it.
   final MozillaBootstrap? bootstrap;
 
   @override
   Widget build(BuildContext context) => v2ray
-      ? _V2raySubs(xray: xray)
-      : _MozillaAccounts(core: core, bootstrap: bootstrap);
+      ? _V2raySubs(xray: xray, onClose: onClose)
+      : _MozillaAccounts(core: core, onClose: onClose, bootstrap: bootstrap);
 }
 
 // ---------------------------------------------------------------- Mozilla
 
 class _MozillaAccounts extends StatelessWidget {
-  const _MozillaAccounts({required this.core, this.bootstrap});
+  const _MozillaAccounts({required this.core, this.onClose, this.bootstrap});
   final CoreController core;
+  final VoidCallback? onClose;
   final MozillaBootstrap? bootstrap;
 
   @override
@@ -60,14 +65,18 @@ class _MozillaAccounts extends StatelessWidget {
             .where((a) => a.enabled)
             .toList();
         return ListView(
-          padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           children: [
+            MapPanelHeader(title: l.accountsTitle, onClose: onClose),
+            const SizedBox(height: 12),
+            if (bootstrap != null) ...[
+              MozillaBootstrapCard(bootstrap: bootstrap!),
+              const SizedBox(height: 14),
+            ],
             Row(
               children: [
-                Text(l.accountsTitle, style: Ember.title),
+                Text(l.autoRotation, style: Ember.body),
                 const Spacer(),
-                Text(l.autoRotation, style: Ember.dimStyle),
-                const SizedBox(width: 9),
                 _RotationToggle(core: core),
               ],
             ),
@@ -87,10 +96,6 @@ class _MozillaAccounts extends StatelessWidget {
               label: l.addFirefoxAccount,
               onTap: () => showSignInDialog(context, core),
             ),
-            if (bootstrap != null) ...[
-              const SizedBox(height: 16),
-              MozillaBootstrapCard(bootstrap: bootstrap!),
-            ],
           ],
         );
       },
@@ -199,7 +204,7 @@ class _AccountCard extends StatelessWidget {
                 EmberChip(label: l.signInNeeded, dot: Ember.red),
               PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert_rounded, color: Ember.faint, size: 20),
-                color: Features.desktopShell ? Colors.white : Ember.card,
+                color: Ember.card,
                 onSelected: (v) {
                   if (v == 'refresh') unawaited(core.refreshQuota(account));
                   if (v == 'remove') unawaited(core.remove(account));
@@ -237,8 +242,9 @@ class _AccountCard extends StatelessWidget {
 // ------------------------------------------------------------------ V2Ray
 
 class _V2raySubs extends StatelessWidget {
-  const _V2raySubs({required this.xray});
+  const _V2raySubs({required this.xray, this.onClose});
   final XrayController xray;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -246,22 +252,20 @@ class _V2raySubs extends StatelessWidget {
     return ListenableBuilder(
       listenable: xray,
       builder: (context, _) => ListView(
-        padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
         children: [
-          Row(
-            children: [
-              Text(l.subscriptionsTitle, style: Ember.title),
-              const Spacer(),
+          MapPanelHeader(
+            title: l.subscriptionsTitle,
+            onClose: onClose,
+            actions: [
               if (xray.subscriptions.isNotEmpty)
-                IconButton(
-                  onPressed: () => unawaited(xray.updateAllSubscriptions()),
-                  icon: const Icon(Icons.refresh_rounded, color: Ember.dim),
-                  tooltip: l.updateAll,
+                MapGhostButton(
+                  icon: Icons.refresh_rounded,
+                  label: l.updateAll,
+                  onTap: () => unawaited(xray.updateAllSubscriptions()),
                 ),
             ],
           ),
-          const SizedBox(height: 12),
-          const MapMotifStrip(),
           const SizedBox(height: 14),
           if (xray.subscriptions.isEmpty)
             EmberEmpty(
@@ -289,6 +293,82 @@ class _SubCard extends StatelessWidget {
   final XrayController xray;
   final Subscription sub;
 
+  /// "Keep only the fastest" (build 2033): pick how many of
+  /// this subscription's tested configs survive, confirm the
+  /// exact removal count the controller computes, then apply.
+  /// Never-tested configs are kept — the dialog says so.
+  Future<void> _keepFastestFlow(BuildContext context) async {
+    final n = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Ember.surface,
+        title: Text('Keep only the fastest', style: Ember.heading),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final count in [5, 10, 20])
+              ListTile(
+                title: Text('Fastest $count', style: Ember.body),
+                onTap: () => Navigator.of(dialogContext).pop(count),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (n == null || !context.mounted) return;
+    final victims = xray.fastestPruneVictims(sub, n);
+    if (victims.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nothing to remove')),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Ember.surface,
+        title: Text('Keep the fastest $n?', style: Ember.heading),
+        content: Text(
+          'Removes ${victims.length} config${victims.length == 1 ? '' : 's'} '
+          'from ${sub.name}: the slowest tested ones and those '
+          'whose last test failed. Configs that were never '
+          'tested stay.',
+          style: Ember.body,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(
+              'Remove ${victims.length}',
+              style: const TextStyle(color: Ember.red),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final removed = await xray.keepFastestInSubscription(sub, n);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Removed $removed config${removed == 1 ? '' : 's'}',
+          ),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
@@ -311,10 +391,8 @@ class _SubCard extends StatelessWidget {
                 Container(
                   width: 62,
                   height: 62,
-                  decoration: BoxDecoration(
-                    color: Features.desktopShell
-                        ? Colors.white.withValues(alpha: 0.6)
-                        : Ember.cardSoft,
+                  decoration: const BoxDecoration(
+                    color: Ember.cardSoft,
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(
@@ -343,7 +421,7 @@ class _SubCard extends StatelessWidget {
                             color: Ember.faint,
                             size: 20,
                           ),
-                          color: Features.desktopShell ? Colors.white : Ember.card,
+                          color: Ember.card,
                           onSelected: (v) async {
                             if (v == 'update') {
                               try {
@@ -356,10 +434,24 @@ class _SubCard extends StatelessWidget {
                                 }
                               }
                             }
+                            if (v == 'qr') {
+                              await showSubscriptionQr(context, sub);
+                            }
+                            if (v == 'fastest') {
+                              await _keepFastestFlow(context);
+                            }
                             if (v == 'delete') await xray.deleteSubscription(sub);
                           },
                           itemBuilder: (_) => [
                             PopupMenuItem(value: 'update', child: Text(l.updateNow)),
+                            const PopupMenuItem(
+                              value: 'qr',
+                              child: Text('Share as QR code'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'fastest',
+                              child: Text('Keep only the fastest…'),
+                            ),
                             PopupMenuItem(
                               value: 'delete',
                               child: Text(
@@ -438,7 +530,7 @@ Future<void> showAddSubscriptionSheet(
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: Features.desktopShell ? Colors.white : Ember.surface,
+    backgroundColor: Ember.surface,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
     ),
@@ -468,6 +560,38 @@ Future<void> showAddSubscriptionSheet(
               controller: name,
               style: Ember.body,
               decoration: emberField(context, l.subNameHint),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Free verified pools (v2go)',
+              style: Ember.heading,
+            ),
+            const SizedBox(height: 5),
+            Text(
+              'Public configs the v2go project live-tests every '
+              'hour and republishes only while they carry traffic. '
+              'The servers belong to unknown third parties — fine '
+              'for getting online, never for anything private. '
+              'Tap one to fill the form; nothing is added until '
+              'you confirm.',
+              style: Ember.caption,
+            ),
+            const SizedBox(height: 9),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                for (final preset in v2goPresets)
+                  EmberChip(
+                    label: preset.name.replaceFirst('v2go — ', ''),
+                    onTap: busy
+                        ? null
+                        : () => setSheetState(() {
+                            url.text = preset.url;
+                            name.text = preset.name;
+                          }),
+                  ),
+              ],
             ),
             const SizedBox(height: 14),
             EmberButton(

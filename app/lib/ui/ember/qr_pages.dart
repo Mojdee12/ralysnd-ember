@@ -223,3 +223,71 @@ Future<void> showProfileQr(BuildContext context, Profile profile) async {
     ),
   );
 }
+
+/// Shows a whole subscription as ONE QR (build 2034, parity
+/// port): the QR carries the bare subscription URL — scan targets
+/// route a bare URL to "add subscription", so the other device
+/// lands on the same subscription with one scan. The name is NOT
+/// carried (the receiver names it from the provider's
+/// profile-title or the host, like any pasted subscription URL).
+Future<void> showSubscriptionQr(
+  BuildContext context,
+  Subscription sub,
+) async {
+  final l = AppLocalizations.of(context);
+  final link = sub.url;
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: Ember.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      title: Text(
+        sub.name.isEmpty ? 'Subscription' : sub.name,
+        style: Ember.heading,
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: QrImageView(
+              data: link,
+              version: QrVersions.auto,
+              size: 220,
+              backgroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Scan with Ember on another device to add this '
+            'subscription there.',
+            style: Ember.caption,
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: link));
+            if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(l.linkCopied)),
+              );
+            }
+          },
+          child: Text(l.copyLink, style: const TextStyle(color: Ember.orange)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: Text(l.closeAction, style: const TextStyle(color: Ember.dim)),
+        ),
+      ],
+    ),
+  );
+}

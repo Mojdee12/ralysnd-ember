@@ -87,6 +87,47 @@ class _MapV2rayPageState extends State<MapV2rayPage> {
     }
   }
 
+  /// "Keep only working" (build 2034 parity): removes every
+  /// config whose last delay test failed; never-tested configs
+  /// stay. Confirmed first — it deletes.
+  Future<void> _keepOnlyWorking(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Ember.card,
+        title: Text('Keep only working?', style: Ember.heading),
+        content: Text(
+          'Every config whose last delay test failed will be '
+          'removed. Configs that were never tested stay.',
+          style: Ember.body,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove failed'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final removed = await xray.keepOnlyWorking();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            removed > 0
+                ? 'Removed $removed failed config${removed == 1 ? '' : 's'}'
+                : 'Nothing to remove',
+          ),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
@@ -132,6 +173,13 @@ class _MapV2rayPageState extends State<MapV2rayPage> {
                   label: 'Add',
                   onTap: () => unawaited(openProfileEditor(context, xray)),
                 ),
+                if (xray.profiles.any((p) => p.delayFailed))
+                  MapGhostButton(
+                    icon: Icons.cleaning_services_rounded,
+                    label: 'Keep working',
+                    primary: false,
+                    onTap: () => unawaited(_keepOnlyWorking(context)),
+                  ),
                 MapGhostButton(
                   icon: Icons.speed_rounded,
                   label: 'Test All',
@@ -173,8 +221,171 @@ class _MapV2rayPageState extends State<MapV2rayPage> {
                     ),
             ),
             const SizedBox(height: 10),
+            _FallbackGroupCard(xray: xray),
             _PanelFooter(xray: xray),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The selected config's fallback group (build 2035), in the
+/// page's own section anatomy — caps micro-header, then rows.
+/// Shows the group in failover order with each member's state
+/// (active / tested delay / untested / cooling down) and the
+/// on/off toggle; tapping a member selects it. Hidden when the
+/// group has a single member: there is nothing to fall back to.
+class _FallbackGroupCard extends StatelessWidget {
+  const _FallbackGroupCard({required this.xray});
+  final XrayController xray;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final sel = xray.selected;
+    if (sel == null) return const SizedBox.shrink();
+    final members = xray.fallbackGroupMembers(sel);
+    if (members.length < 2) return const SizedBox.shrink();
+    final groupName = xray.subscriptionOf(sel)?.name ?? l.looseGroup;
+    final on = xray.settings.adaptiveFailover;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(
+              Icons.alt_route_rounded,
+              size: 14,
+              color: Ember.orange,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'FALLBACK GROUP — ${groupName.toUpperCase()}',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.6,
+                  color: MapUi.dim,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Text(latDigits(members.length), style: Ember.caption),
+            const SizedBox(width: 8),
+            MapToggle(
+              value: on,
+              onChanged: (v) async {
+                xray.settings.adaptiveFailover = v;
+                await xray.save();
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          on
+              ? 'If a config dies, the next member takes over automatically'
+              : 'Off — turn on to switch to the next member automatically',
+          style: const TextStyle(fontSize: 11, color: MapUi.dim),
+        ),
+        const SizedBox(height: 8),
+        for (final p in members) ...[
+          _FallbackMemberRow(
+            xray: xray,
+            profile: p,
+            active: p.id == xray.selectedProfileId,
+          ),
+          const SizedBox(height: 6),
+        ],
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+class _FallbackMemberRow extends StatelessWidget {
+  const _FallbackMemberRow({
+    required this.xray,
+    required this.profile,
+    required this.active,
+  });
+  final XrayController xray;
+  final Profile profile;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final coolingDown = xray.isCoolingDown(profile.id);
+    final status = coolingDown
+        ? 'Cooling down'
+        : profile.delayMs >= 0
+        ? '${latDigits(profile.delayMs)}ms'
+        : profile.delayFailed
+        ? 'Failed'
+        : 'Untested';
+    final statusColor = coolingDown || profile.delayFailed
+        ? Ember.red
+        : profile.delayMs >= 0
+        ? mapPingColor(profile.delayMs)
+        : MapUi.dim;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => xray.select(profile),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+          child: Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: active
+                      ? Ember.orange
+                      : coolingDown
+                      ? Ember.red
+                      : MapUi.faint,
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  profile.name,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                    color: active ? Ember.orange : MapUi.text,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (active)
+                const Padding(
+                  padding: EdgeInsets.only(right: 8),
+                  child: Text(
+                    'ACTIVE',
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8,
+                      color: Ember.orange,
+                    ),
+                  ),
+                ),
+              Text(
+                status,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: statusColor,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
