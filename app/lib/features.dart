@@ -1,12 +1,13 @@
 /// Per-platform feature flags (PLAN.md §1: "Scope enforcement").
 ///
 /// One tree serves every platform; an engine whose backend does not
-/// exist on the running platform is simply never offered there. On
-/// Windows the scope locked for Ralysnd Ember is Mozilla + V2Ray +
-/// Psiphon: Lantern and WARP stay in the tree for Android (their
-/// controllers, pages and settings sections are compiled in but
-/// unreachable), while the navigation, the mode switch and the
-/// persisted mode are clamped so they can never be selected.
+/// exist on the running platform is simply never offered there.
+/// Through 2.1.0 the Windows scope was Mozilla + V2Ray + Psiphon.
+/// The 2.2.0 parity port brought every Android engine across:
+/// Lantern (honest unavailable state — its core is an Android
+/// library; see lantern_platform.dart), WARP+ (warp-plus.exe),
+/// WireGuard (via the Xray core), OpenVPN (openvpn.exe), and the
+/// Aether engines (aether.exe: standalone WARP + MASQUE).
 library;
 
 import 'dart:io';
@@ -29,22 +30,20 @@ abstract final class Features {
   static final bool xray = true;
   static final bool psiphon = true;
 
-  /// No Windows backend exists for these two (user's scope cut for the
-  /// Windows version); Android keeps both. The screenshot harness's
-  /// forceDesktop counts as Windows here so the rail matches.
-  static final bool lantern = !Platform.isWindows && !forceDesktop;
-  static final bool warp = !Platform.isWindows && !forceDesktop;
+  /// Lantern and WARP+ have Windows presence since the parity
+  /// port (Lantern as an honest unavailable state, WARP+ with its
+  /// warp-plus.exe backend), so both are offered on every platform.
+  static final bool lantern = true;
+  static final bool warp = true;
 
   /// The Ember engine modes (settings.emberMode) this platform may
   /// show, in rail/switch order: 0 Mozilla, 1 V2Ray, 2 Psiphon,
-  /// 3 Lantern, 4 WARP+.
-  static List<int> get engineModes => [
-        0,
-        1,
-        2,
-        if (lantern) 3,
-        if (warp) 4,
-      ];
+  /// 3 Lantern, 4 WARP+, 5 WireGuard, 6 OpenVPN, 7 WARP (Aether),
+  /// 8 MASQUE. (The desktop numbering extends the 2.1.0 tree's —
+  /// Android's own shell numbers OpenVPN 4 / WireGuard 5 / WARP 6 /
+  /// MASQUE 7; the persisted desktop values 3/4 keep their desktop
+  /// meanings here.)
+  static List<int> get engineModes => [0, 1, 2, 3, 4, 5, 6, 7, 8];
 
   /// [mode] clamped to an offered engine: a settings file written on
   /// Android (or an older build) may persist 3/4, which Windows must

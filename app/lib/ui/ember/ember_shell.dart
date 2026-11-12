@@ -15,7 +15,9 @@ import 'package:flutter/material.dart';
 
 import '../../app_info.dart';
 import '../../app_settings.dart';
+import '../../aether/aether_controller.dart';
 import '../../core/android_core.dart';
+import '../../openvpn/openvpn_controller.dart';
 import '../../core/core_controller.dart';
 import '../../core/models.dart';
 import '../../features.dart';
@@ -36,7 +38,11 @@ import 'ember_servers.dart';
 import 'ember_settings.dart';
 import 'ember_theme.dart';
 import 'lantern_pages.dart';
+import 'aether_pages.dart';
 import 'map_mozilla.dart';
+import 'mozilla_bootstrap.dart';
+import 'openvpn_pages.dart';
+import 'wireguard_pages.dart';
 import 'map_widgets.dart';
 import 'profile_country.dart';
 import 'psiphon_pages.dart';
@@ -73,6 +79,22 @@ class _EmberShellState extends State<EmberShell>
   late final PsiphonController _psiphon = PsiphonController();
   late final LanternController _lantern = LanternController();
   late final WarpController _warp = WarpController();
+  late final OpenVpnController _openvpn = OpenVpnController();
+  late final AetherController _aetherWarp = AetherController('cfwarp');
+  late final AetherController _aetherMasque = AetherController('masque');
+
+  /// The Mozilla bootstrap handoff (build 2034, parity port): on
+  /// connect, if the stored Guardian pass is missing or stale and
+  /// a donor is configured, the donor engine fetches a fresh pass
+  /// through itself before Mozilla starts. Donors on Windows:
+  /// Psiphon, V2Ray, WARP+ (warp-plus, SOCKS 8086) or a relay URL.
+  late final MozillaBootstrap _bootstrap = MozillaBootstrap(
+    core: core,
+    settings: widget.settings,
+    psiphon: _psiphon,
+    xray: _xray,
+    warp: _warp,
+  );
   bool _defaultsApplied = false;
 
   /// The exit pin's pulse on the desktop map (1.6 s cycle); runs
@@ -160,6 +182,14 @@ class _EmberShellState extends State<EmberShell>
     if (widget.desktop) {
       unawaited(_applyDesktopDefaults());
       unawaited(_applyDesktopTransportDefault());
+    }
+    if (Platform.isWindows) {
+      _psiphon.load();
+      _lantern.load();
+      _warp.load();
+      _openvpn.load();
+      _aetherWarp.load();
+      _aetherMasque.load();
     }
     if (Platform.isAndroid) {
       _psiphon.load();
@@ -353,6 +383,9 @@ class _EmberShellState extends State<EmberShell>
     _psiphon.dispose();
     _lantern.dispose();
     _warp.dispose();
+    _openvpn.dispose();
+    _aetherWarp.dispose();
+    _aetherMasque.dispose();
     super.dispose();
   }
 
@@ -527,6 +560,17 @@ class _EmberShellState extends State<EmberShell>
     if (_warp.state.active) await _warp.disconnect();
   }
 
+  /// The OpenVPN engine goes off.
+  Future<void> _stopOpenVpn() async {
+    if (_openvpn.state.running) await _openvpn.disconnect();
+  }
+
+  /// Both Aether engines go off (standalone WARP + MASQUE).
+  Future<void> _stopAether() async {
+    if (_aetherWarp.state.running) await _aetherWarp.disconnect();
+    if (_aetherMasque.state.running) await _aetherMasque.disconnect();
+  }
+
   /// The Mozilla engine's matching hook, used by the home page:
   /// all other engines go off before Mozilla starts.
   Future<void> stopXray() async {
@@ -534,6 +578,8 @@ class _EmberShellState extends State<EmberShell>
     await _stopPsiphon();
     await _stopLantern();
     await _stopWarp();
+    await _stopOpenVpn();
+    await _stopAether();
   }
 
   @override
@@ -548,6 +594,10 @@ class _EmberShellState extends State<EmberShell>
     final psiphonMode = mode == 2;
     final lanternMode = mode == 3;
     final warpMode = mode == 4;
+    final wireguardMode = mode == 5;
+    final openvpnMode = mode == 6;
+    final aetherWarpMode = mode == 7;
+    final masqueMode = mode == 8;
     final pages = [
       EmberHome(
         core: core,
@@ -565,6 +615,9 @@ class _EmberShellState extends State<EmberShell>
         stopOtherEngine: stopXray,
         hideModeSwitch: widget.desktop,
         desktop: widget.desktop,
+        openvpn: _openvpn,
+        aetherWarp: _aetherWarp,
+        aetherMasque: _aetherMasque,
       ),
       // In Psiphon mode the Servers tab is the exit-region list and
       // the Accounts tab the no-account status page; Lantern mode
@@ -576,6 +629,14 @@ class _EmberShellState extends State<EmberShell>
         LanternServersView(lantern: _lantern)
       else if (warpMode)
         WarpServersView(warp: _warp)
+      else if (wireguardMode)
+        WireGuardServersView(xray: _xray)
+      else if (openvpnMode)
+        OpenVpnServersView(openvpn: _openvpn)
+      else if (aetherWarpMode)
+        AetherServersView(controller: _aetherWarp)
+      else if (masqueMode)
+        AetherServersView(controller: _aetherMasque)
       else
         EmberServers(
           core: core,
@@ -590,8 +651,21 @@ class _EmberShellState extends State<EmberShell>
         LanternAboutView(lantern: _lantern)
       else if (warpMode)
         WarpAboutView(warp: _warp)
+      else if (wireguardMode)
+        WireGuardAboutView(xray: _xray)
+      else if (openvpnMode)
+        OpenVpnStatusView(openvpn: _openvpn)
+      else if (aetherWarpMode)
+        AetherAboutView(controller: _aetherWarp)
+      else if (masqueMode)
+        AetherAboutView(controller: _aetherMasque)
       else
-        EmberAccounts(core: core, xray: _xray, v2ray: v2ray),
+        EmberAccounts(
+          core: core,
+          xray: _xray,
+          v2ray: v2ray,
+          bootstrap: _bootstrap,
+        ),
       EmberSettings(
         core: core,
         xray: _xray,
@@ -652,11 +726,20 @@ class _EmberShellState extends State<EmberShell>
     // mode (the locations panel); in the other modes the tab
     // lands back on the engine home (V2Ray's configs panel and
     // Psiphon's region chips ARE their servers views).
-    final shownTab = (_tab == 1 && mode != 0) ? 0 : _tab;
+    final shownTab = (_tab == 1 && mode != 0 && mode < 5) ? 0 : _tab;
     return Scaffold(
       backgroundColor: MapUi.baseTop,
       body: ListenableBuilder(
-        listenable: Listenable.merge([core, _xray, _psiphon]),
+        listenable: Listenable.merge([
+          core,
+          _xray,
+          _psiphon,
+          _lantern,
+          _warp,
+          _openvpn,
+          _aetherWarp,
+          _aetherMasque,
+        ]),
         builder: (context, _) {
           final bar = _barModel(l);
           final actors = _actors(context, l, bar.engine);
@@ -859,6 +942,10 @@ class _EmberShellState extends State<EmberShell>
     1 => l.modeV2ray,
     2 => l.modePsiphon,
     3 => l.modeLantern,
+    5 => 'WireGuard',
+    6 => 'OpenVPN',
+    7 => 'WARP',
+    8 => 'MASQUE',
     _ => l.modeWarp,
   };
 
@@ -881,6 +968,12 @@ class _EmberShellState extends State<EmberShell>
           core.status?.state.phase == Phase.starting,
     1 => _xray.state.running,
     2 => _psiphon.state.connected,
+    3 => _lantern.state.running,
+    4 => _warp.state.active,
+    5 => _xray.state.running,
+    6 => _openvpn.state.connected,
+    7 => _aetherWarp.state.connected,
+    8 => _aetherMasque.state.connected,
     _ => false,
   };
 
@@ -897,6 +990,11 @@ class _EmberShellState extends State<EmberShell>
     }
     if (_xray.state.running) return 1;
     if (_psiphon.state.running) return 2;
+    if (_lantern.state.running) return 3;
+    if (_warp.state.active) return 4;
+    if (_openvpn.state.connected) return 6;
+    if (_aetherWarp.state.connected) return 7;
+    if (_aetherMasque.state.connected) return 8;
     return null;
   }
 
@@ -1017,6 +1115,161 @@ class _EmberShellState extends State<EmberShell>
           ],
           microLine: 'PSIPHON',
           onToggle: () => unawaited(_togglePsiphon(l)),
+        );
+      case 3:
+        final lantern = _lantern;
+        final lOn = lantern.state.running;
+        return (
+          engine: 3,
+          connectedEngine: connected,
+          on: lOn,
+          busy: lantern.connecting,
+          stateWord: lOn ? 'Connected' : 'Not connected',
+          stateColor: lOn ? MapUi.text : MapUi.dim,
+          segments: [
+            (
+              label: 'STATUS',
+              value: lantern.state.error ?? (lOn ? 'Connected' : '—'),
+              flex: 5,
+            ),
+          ],
+          microLine: 'LANTERN',
+          onToggle: () => unawaited(_toggleLantern(l)),
+        );
+      case 4:
+        final warpPlus = _warp;
+        final wOn = warpPlus.state.connected;
+        final wExit = warpPlus.exitInfo;
+        return (
+          engine: 4,
+          connectedEngine: connected,
+          on: wOn,
+          busy: warpPlus.connecting,
+          stateWord: wOn ? 'Connected' : 'Not connected',
+          stateColor: wOn ? MapUi.text : MapUi.dim,
+          segments: [
+            (label: 'EXIT IP', value: wExit?.ip ?? '—', flex: 4),
+            (
+              label: 'COUNTRY',
+              value: wExit?.countryCode ?? '—',
+              flex: 3,
+            ),
+            (
+              label: 'UP',
+              value: wOn ? fmtRate(warpPlus.upRate) : '—',
+              flex: 3,
+            ),
+            (
+              label: 'DOWN',
+              value: wOn ? fmtRate(warpPlus.downRate) : '—',
+              flex: 3,
+            ),
+          ],
+          microLine: 'WARP+',
+          onToggle: () => unawaited(_toggleWarpPlus(l)),
+        );
+      case 5:
+        final wgSelected = _xray.selected;
+        final wgOn = _xray.state.running;
+        return (
+          engine: 5,
+          connectedEngine: connected,
+          on: wgOn,
+          busy: _xray.connecting,
+          stateWord: wgOn ? 'Connected' : 'Not connected',
+          stateColor: wgOn ? MapUi.text : MapUi.dim,
+          segments: [
+            (
+              label: 'ACTIVE CONFIG',
+              value: wgSelected?.name ?? '—',
+              flex: 5,
+            ),
+            (
+              label: 'UP',
+              value: wgOn ? fmtRate(_xray.upRate) : '—',
+              flex: 3,
+            ),
+            (
+              label: 'DOWN',
+              value: wgOn ? fmtRate(_xray.downRate) : '—',
+              flex: 3,
+            ),
+          ],
+          microLine: 'WIREGUARD',
+          onToggle: () => unawaited(_toggleXray(l)),
+        );
+      case 6:
+        final ovpn = _openvpn;
+        final oOn = ovpn.state.connected;
+        return (
+          engine: 6,
+          connectedEngine: connected,
+          on: oOn,
+          busy: ovpn.connecting,
+          stateWord: oOn ? 'Connected' : 'Not connected',
+          stateColor: oOn ? MapUi.text : MapUi.dim,
+          segments: [
+            (
+              label: 'PROFILE',
+              value: ovpn.state.profileName.isNotEmpty
+                  ? ovpn.state.profileName
+                  : '—',
+              flex: 5,
+            ),
+            (
+              label: 'EXIT IP',
+              value: ovpn.state.exitIp.isNotEmpty ? ovpn.state.exitIp : '—',
+              flex: 4,
+            ),
+            (
+              label: 'UP',
+              value: oOn ? fmtRate(ovpn.upRate) : '—',
+              flex: 3,
+            ),
+            (
+              label: 'DOWN',
+              value: oOn ? fmtRate(ovpn.downRate) : '—',
+              flex: 3,
+            ),
+          ],
+          microLine: 'OPENVPN',
+          onToggle: () => unawaited(_toggleOpenVpn(l)),
+        );
+      case 7:
+      case 8:
+        final aether = engine == 7 ? _aetherWarp : _aetherMasque;
+        final aState = aether.state;
+        final aOn = aState.connected;
+        return (
+          engine: engine,
+          connectedEngine: connected,
+          on: aOn,
+          busy: aether.connecting,
+          stateWord: aOn
+              ? 'Connected'
+              : aState.running
+              ? 'Connecting…'
+              : 'Not connected',
+          stateColor: aOn ? MapUi.text : MapUi.dim,
+          segments: [
+            (
+              label: 'SERVER',
+              value: aState.server.isNotEmpty ? aState.server : '—',
+              flex: 5,
+            ),
+            (
+              label: 'RTT',
+              value: aState.rtt.isNotEmpty ? aState.rtt : '—',
+              flex: 3,
+            ),
+            (
+              label: 'PROFILE',
+              value: aState.profile.isNotEmpty ? aState.profile : '—',
+              flex: 4,
+            ),
+          ],
+          microLine: engine == 7 ? 'WARP' : 'MASQUE',
+          onToggle: () => unawaited(_toggleAether(l, aether)),
         );
       default:
         final status = core.status;
@@ -1178,9 +1431,82 @@ class _EmberShellState extends State<EmberShell>
       await runShowingErrors(context, () => core.setOn(false));
     } else if (phase == Phase.off || phase == Phase.waiting || phase == null) {
       await runShowingErrors(context, () async {
+        // Build 2034 bootstrap handoff (parity port): a stale or
+        // missing Guardian pass is fetched through the configured
+        // donor first; the donor stops before Mozilla starts.
+        final verdict = await _bootstrap.prepareIfNeeded();
+        if (verdict.cancelled) return;
+        if (!verdict.proceed) {
+          throw StateError(verdict.message ?? 'Bootstrap failed');
+        }
         await stopXray();
         await core.setOn(true);
       });
+    }
+  }
+
+  /// The Lantern bar toggle (on Windows the engine reports its
+  /// unavailable state — the toggle surfaces that error honestly).
+  Future<void> _toggleLantern(AppLocalizations l) async {
+    try {
+      if (_lantern.state.running) {
+        await _lantern.disconnect();
+      } else {
+        await _lantern.connect();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  /// The WARP+ (warp-plus) bar toggle.
+  Future<void> _toggleWarpPlus(AppLocalizations l) async {
+    try {
+      if (_warp.state.active) {
+        await _warp.disconnect();
+      } else {
+        await _warp.connect();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  /// The OpenVPN bar toggle.
+  Future<void> _toggleOpenVpn(AppLocalizations l) async {
+    try {
+      if (_openvpn.state.running) {
+        await _openvpn.disconnect();
+      } else {
+        await _openvpn.connect();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  /// The Aether engines' bar toggle (standalone WARP + MASQUE).
+  Future<void> _toggleAether(AppLocalizations l, AetherController a) async {
+    try {
+      if (a.state.running) {
+        await a.disconnect();
+      } else {
+        await a.connect();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
     }
   }
 

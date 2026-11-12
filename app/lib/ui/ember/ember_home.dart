@@ -19,7 +19,13 @@ import '../../xray/exit_info.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import 'ember_format.dart';
+import '../../aether/aether_controller.dart';
+import '../../openvpn/openvpn_controller.dart';
+import 'aether_pages.dart';
 import 'map_mozilla.dart';
+import 'map_widgets.dart';
+import 'openvpn_pages.dart';
+import 'wireguard_pages.dart';
 import 'map_psiphon.dart';
 import 'map_v2ray.dart';
 import 'ember_theme.dart';
@@ -42,6 +48,9 @@ class EmberHome extends StatelessWidget {
     required this.stopOtherEngine,
     this.hideModeSwitch = false,
     this.desktop = false,
+    this.openvpn,
+    this.aetherWarp,
+    this.aetherMasque,
   });
 
   final CoreController core;
@@ -68,6 +77,13 @@ class EmberHome extends StatelessWidget {
   /// this.
   final bool desktop;
 
+  /// The parity-port engines (desktop modes 6/7/8): provided by
+  /// the shell on desktop; null in the phone layout (the Android
+  /// shell wires its own copies).
+  final OpenVpnController? openvpn;
+  final AetherController? aetherWarp;
+  final AetherController? aetherMasque;
+
   @override
   Widget build(BuildContext context) {
     // The desktop overlays are their own pages; the phone layout
@@ -76,6 +92,43 @@ class EmberHome extends StatelessWidget {
       return switch (mode) {
         1 => MapV2rayPage(xray: xray),
         2 => MapPsiphonPage(psiphon: psiphon),
+        // The parity-port engines keep the desktop Map Control
+        // language by floating their (mobile) Map Control pages
+        // in a glass panel at the window's left, clear of the
+        // engine chips and the bottom bar.
+        3 => _DesktopEnginePanel(
+          child: ListView(
+            children: [
+              _LanternHome(lantern: lantern, onOpenServers: onOpenServers),
+            ],
+          ),
+        ),
+        4 => _DesktopEnginePanel(
+          child: ListView(
+            children: [_WarpHome(warp: warp, onOpenServers: onOpenServers)],
+          ),
+        ),
+        5 => _DesktopEnginePanel(
+          child: WireGuardHomePage(xray: xray, onOpenServers: onOpenServers),
+        ),
+        6 => _DesktopEnginePanel(
+          child: openvpn == null
+              ? const SizedBox.shrink()
+              : OpenVpnHomePage(
+                  openvpn: openvpn!,
+                  onOpenServers: onOpenServers,
+                ),
+        ),
+        7 => _DesktopEnginePanel(
+          child: aetherWarp == null
+              ? const SizedBox.shrink()
+              : WarpHomePage(warp: aetherWarp!),
+        ),
+        8 => _DesktopEnginePanel(
+          child: aetherMasque == null
+              ? const SizedBox.shrink()
+              : MasqueHomePage(masque: aetherMasque!),
+        ),
         _ => MapMozillaPage(
           core: core,
           onOpenServers: onOpenServers,
@@ -92,6 +145,10 @@ class EmberHome extends StatelessWidget {
       1 => l.modeV2ray,
       2 => l.modePsiphon,
       3 => l.modeLantern,
+      5 => 'WireGuard',
+      6 => 'OpenVPN',
+      7 => 'WARP',
+      8 => 'MASQUE',
       _ => l.modeWarp,
     };
     return ListenableBuilder(
@@ -132,6 +189,14 @@ class EmberHome extends StatelessWidget {
             _PsiphonHome(psiphon: psiphon, onOpenServers: onOpenServers)
           else if (mode == 3)
             _LanternHome(lantern: lantern, onOpenServers: onOpenServers)
+          else if (mode == 5)
+            WireGuardHomePage(xray: xray, onOpenServers: onOpenServers)
+          else if (mode == 6 && openvpn != null)
+            OpenVpnHomePage(openvpn: openvpn!, onOpenServers: onOpenServers)
+          else if (mode == 7 && aetherWarp != null)
+            WarpHomePage(warp: aetherWarp!)
+          else if (mode == 8 && aetherMasque != null)
+            MasqueHomePage(masque: aetherMasque!)
           else
             _WarpHome(warp: warp, onOpenServers: onOpenServers),
         ],
@@ -1451,4 +1516,38 @@ String maskEmail(String email) {
   final at = email.indexOf('@');
   if (at <= 1) return email;
   return '${email[0]}•••${email.substring(at)}';
+}
+
+
+/// A floating glass panel at the window's left for the
+/// parity-port engine pages: the mobile Map Control pages keep
+/// their own panels inside, this wrapper only gives them the
+/// desktop overlay's placement (clear of the brand panel above,
+/// the engine chips at the right, and the bottom bar below).
+class _DesktopEnginePanel extends StatelessWidget {
+  const _DesktopEnginePanel({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final height = MediaQuery.of(context).size.height - 214;
+    return Align(
+      alignment: Alignment.topLeft,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 96, 24, 118),
+        child: SizedBox(
+          width: 460,
+          height: height > 200 ? height : 200,
+          child: MapGlass(
+            padding: const EdgeInsets.all(6),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(MapUi.panelRadius - 2),
+              child: child,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

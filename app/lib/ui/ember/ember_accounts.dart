@@ -17,6 +17,7 @@ import '../signin_dialog.dart';
 import 'ember_format.dart';
 import 'ember_home.dart' show maskEmail;
 import 'ember_theme.dart';
+import 'mozilla_bootstrap.dart';
 import 'world_map.dart';
 
 class EmberAccounts extends StatelessWidget {
@@ -25,22 +26,29 @@ class EmberAccounts extends StatelessWidget {
     required this.core,
     required this.xray,
     required this.v2ray,
+    this.bootstrap,
   });
 
   final CoreController core;
   final XrayController xray;
   final bool v2ray;
 
+  /// The Mozilla bootstrap card's runtime (build 2034, parity
+  /// port): shown under the Mozilla accounts when provided.
+  final MozillaBootstrap? bootstrap;
+
   @override
-  Widget build(BuildContext context) =>
-      v2ray ? _V2raySubs(xray: xray) : _MozillaAccounts(core: core);
+  Widget build(BuildContext context) => v2ray
+      ? _V2raySubs(xray: xray)
+      : _MozillaAccounts(core: core, bootstrap: bootstrap);
 }
 
 // ---------------------------------------------------------------- Mozilla
 
 class _MozillaAccounts extends StatelessWidget {
-  const _MozillaAccounts({required this.core});
+  const _MozillaAccounts({required this.core, this.bootstrap});
   final CoreController core;
+  final MozillaBootstrap? bootstrap;
 
   @override
   Widget build(BuildContext context) {
@@ -79,6 +87,10 @@ class _MozillaAccounts extends StatelessWidget {
               label: l.addFirefoxAccount,
               onTap: () => showSignInDialog(context, core),
             ),
+            if (bootstrap != null) ...[
+              const SizedBox(height: 16),
+              MozillaBootstrapCard(bootstrap: bootstrap!),
+            ],
           ],
         );
       },
