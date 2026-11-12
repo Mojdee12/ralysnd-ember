@@ -175,8 +175,29 @@ try {
         'db8c47027a6eeb24c723301a225145d7b3f7d5b96ffcfbef388f7af803f89631' `
         $aetherZip
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
-    $mingw = Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue
-    if ($cargo -and $mingw) {
+    # The full prefixed mingw-w64 tool set (gcc/g++/ar) must be on
+    # PATH for cc-rs; runners keep it in a few known places — find
+    # and prepend the folder rather than trusting PATH.
+    $mingwBin = $null
+    $gccCmd = Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue
+    if ($gccCmd -and (Get-Command x86_64-w64-mingw32-ar -ErrorAction SilentlyContinue)) {
+        $mingwBin = Split-Path -Parent $gccCmd.Source
+    } else {
+        foreach ($candidate in @(
+            'C:\mingw64\bin',
+            'C:\Program Files\Git\mingw64\bin',
+            'C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin',
+            'C:\tools\mingw64\bin'
+        )) {
+            if (Test-Path (Join-Path $candidate 'x86_64-w64-mingw32-gcc.exe')) {
+                $mingwBin = $candidate
+                break
+            }
+        }
+    }
+    if ($cargo -and $mingwBin) {
+        $env:PATH = "$mingwBin;$env:PATH"
+
         $aetherDir = Join-Path $tmp 'aether'
         Expand-Archive -Path $aetherZip -DestinationPath $aetherDir -Force
         $aetherSrc = Get-ChildItem $aetherDir -Directory | Select-Object -First 1
@@ -190,8 +211,15 @@ try {
             $env:AR_x86_64_pc_windows_gnu = 'x86_64-w64-mingw32-ar'
             & rustup target add x86_64-pc-windows-gnu
             & cargo build --release --locked --target x86_64-pc-windows-gnu --bin aether
-            if ($LASTEXITCODE -ne 0) { throw 'aether build failed' }
-            Copy-Item (Join-Path $crate 'target\x86_64-pc-windows-gnu\release\aether.exe') $aetherDest -Force
+            if ($LASTEXITCODE -ne 0) {
+                # NOT a throw: a failed optional engine build must
+                # not kill the whole sidecar fetch. The app
+                # reports EmberWarp/MASQUE unavailable without
+                # their core — loudly, here and in the app.
+                Write-Warning 'aether build failed on this machine — the EmberWarp and MASQUE engines will report unavailable in this package.'
+            } else {
+                Copy-Item (Join-Path $crate 'target\x86_64-pc-windows-gnu\release\aether.exe') $aetherDest -Force
+            }
         } finally {
             Pop-Location
             Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER, Env:CC_x86_64_pc_windows_gnu, Env:CXX_x86_64_pc_windows_gnu, Env:AR_x86_64_pc_windows_gnu -ErrorAction SilentlyContinue
