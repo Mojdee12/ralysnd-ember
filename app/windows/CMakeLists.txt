@@ -32,6 +32,14 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# flutter_inappwebview's Windows plugin (the Mozilla browser
+# sign-in's WebView2 view) still builds on <experimental/coroutine>
+# with /await; the newest MSVC STL turns that deprecation into a
+# hard error (STL1011) unless silenced. Directory-level, set
+# before the plugins are included below, so it reaches the
+# plugin targets too.
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
