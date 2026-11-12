@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import '../../l10n/app_localizations.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
+import 'cf_scanner_page.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
@@ -161,6 +162,12 @@ class _MapV2rayPageState extends State<MapV2rayPage> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                ),
+                MapGhostButton(
+                  icon: Icons.cloud_done_rounded,
+                  label: 'CF clean IP',
+                  primary: false,
+                  onTap: () => unawaited(openCfScanner(context, xray)),
                 ),
                 MapGhostButton(
                   icon: Icons.download_rounded,
