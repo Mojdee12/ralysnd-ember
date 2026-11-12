@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -235,6 +236,21 @@ type Network struct {
 	// never uses it.
 	APIRelay         string `json:"api_relay"`
 	GuardianEndpoint string `json:"guardian_endpoint"`
+	// BootstrapSocks is the loopback SOCKS5 address ("127.0.0.1:1080") of
+	// another engine the app ran as a bootstrap donor (build 2034): when
+	// Guardian refuses this region (HTTP 451), the control plane retries
+	// once through it to fetch a ProxyPass, which is then persisted and
+	// used directly. Written by the bootstrap prepare call, not by hand.
+	BootstrapSocks string `json:"bootstrap_socks,omitempty"`
+	// BootstrapRelayURL and BootstrapRelayKey configure the path-form
+	// Cloudflare Worker relay (mozilla-relay/worker.js): control-plane
+	// requests rewritten to <base>/<original-host>/<path> with an
+	// X-Relay-Key header. An alternative bootstrap egress to
+	// BootstrapSocks; whichever the app configured last is the one the
+	// bootstrap retry uses. The key is a secret: config.json is
+	// owner-only, like the dashboard password hash it already holds.
+	BootstrapRelayURL string `json:"bootstrap_relay_url,omitempty"`
+	BootstrapRelayKey string `json:"bootstrap_relay_key,omitempty"`
 }
 
 // DNS chooses how this program resolves the host names it connects to
@@ -428,6 +444,55 @@ func Load(path string) (cfg Config, created bool, err error) {
 	return cfg, false, nil
 }
 
+// ValidateBootstrapSocks checks a bootstrap donor address: empty
+// (none), or a loopback host:port. Anything else is refused — the
+// bootstrap egress must stay on this device, where the donor engine
+// listens.
+func ValidateBootstrapSocks(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return fmt.Errorf("must be a loopback host:port: %w", err)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return errors.New("port must be between 1 and 65535")
+	}
+	if host != "localhost" {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return errors.New("host must be loopback (127.0.0.1 or ::1)")
+		}
+	}
+	return nil
+}
+
+// ValidateBootstrapRelay checks the Worker relay pair: both empty
+// (none), or an https:// base URL (no credentials, query, or fragment
+// — the target is appended as path segments) with a non-empty key.
+func ValidateBootstrapRelay(rawURL, key string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" && strings.TrimSpace(key) == "" {
+		return nil
+	}
+	if rawURL == "" || strings.TrimSpace(key) == "" {
+		return errors.New("the relay URL and its key must be set together")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return errors.New("relay URL must be an https:// URL (the sign-in and the account tokens cross it)")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("relay URL must not carry credentials, a query, or a fragment")
+	}
+	return nil
+}
+
 // ValidateRelay checks an API relay URL: empty (none), or https:// with a
 // host. Plain http is refused: the sign-in and the account tokens cross
 // the relay.
@@ -515,6 +580,12 @@ func (c Config) Validate() error {
 	if err := ValidateRelay(c.Network.APIRelay); err != nil {
 		return fmt.Errorf("network.api_relay: %w", err)
 	}
+	if err := ValidateBootstrapSocks(c.Network.BootstrapSocks); err != nil {
+		return fmt.Errorf("network.bootstrap_socks: %w", err)
+	}
+	if err := ValidateBootstrapRelay(c.Network.BootstrapRelayURL, c.Network.BootstrapRelayKey); err != nil {
+		return fmt.Errorf("network.bootstrap_relay: %w", err)
+	}
 	r := c.Routing
 	if err := routing.ValidateRegion(r.Region); err != nil {
 		return fmt.Errorf("routing.region: %w", err)
@@ -586,7 +657,7 @@ const (
 
 // appExecutables are the desktop app's executables: Windows, Linux, and
 // macOS (inside Firefox VPN.app/Contents/MacOS).
-var appExecutables = []string{"ralysnd-ember.exe", "firefox-vpn.exe", "firefox-vpn", "Firefox VPN"}
+var appExecutables = []string{"firefox-vpn.exe", "firefox-vpn", "Firefox VPN"}
 
 // DefaultDataDir returns the data folder: DataDirName next to the running
 // executable (symlinks resolved, so a linked binary still uses its real

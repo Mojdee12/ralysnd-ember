@@ -33,13 +33,11 @@ const (
 	// fst-post-back ({ch, tok} responses). Fastly issues a new image after
 	// a wrong CAPTCHA answer, so rounds also bound CAPTCHA retries.
 	maxPostBackRounds = 8
-
-	fastlySolverUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
 
 var (
 	fastlyChallengePrefixRe = regexp.MustCompile(`/_fs-ch-[A-Za-z0-9]+`)
-	fastlyInitCallRe        = regexp.MustCompile(`init\((\[[^\]]*\]),\s*"([^"]+)",\s*"([^"]+)"`)
+	fastlyInitCallRe        = regexp.MustCompile(`init\s*\(`)
 
 	// powAlphabet is the character set the Fastly proof-of-work solver
 	// brute-forces; it mirrors the challenge script's own alphabet.
@@ -85,13 +83,35 @@ type fastlyPostBackResponse struct {
 	Tok    string            `json:"tok"`
 }
 
-// solveFastlyChallenge performs the Fastly client-challenge handshake and
-// installs the resulting anti-bot cookie into the control plane client's
-// cookie jar. The solver shares the control plane client's transport so that
-// the request exits through the same proxy (and therefore the same exit IP)
-// as the subsequent API call: the issued cookie is bound to the exit IP that
-// solved the challenge.
-func solveFastlyChallenge(ctx context.Context) error {
+// solverUserAgent is the User-Agent the challenge solver presents. It is
+// the control plane client's own Firefox User-Agent — the same identity
+// the API requests carry — so Fastly sees one coherent client fingerprint
+// across the challenge handshake and the API call that follows it. (An
+// earlier version solved under a stale Chrome/126 UA that no API request
+// ever used; FoxyVPN v2.0.2's solver likewise solves under its API UA.)
+func solverUserAgent() string {
+	return controlplane.FirefoxUserAgent()
+}
+
+// isChallengePage reports whether body looks like a Fastly client-challenge
+// page: it carries a challenge asset prefix plus at least one challenge
+// marker. The marker set mirrors FoxyVPN v2.0.2's detector — the current
+// challenge pages do not always carry the "Client Challenge" title.
+func isChallengePage(body string) bool {
+	if len(body) == 0 || len(body) > 2<<20 {
+		return false
+	}
+	if !fastlyChallengePrefixRe.MatchString(body) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(body), "client challenge") ||
+		strings.Contains(body, "script.js") ||
+		strings.Contains(body, "fst-post-back")
+}
+
+// withSolveSlot runs fn holding the single challenge-solve slot and with
+// at least fastlySolveTimeout of deadline.
+func withSolveSlot(ctx context.Context, fn func(context.Context) error) error {
 	select {
 	case challengeSolveSlot <- struct{}{}:
 	case <-ctx.Done():
@@ -101,25 +121,51 @@ func solveFastlyChallenge(ctx context.Context) error {
 
 	ctx, cancel := contextWithMinDeadline(ctx, fastlySolveTimeout)
 	defer cancel()
+	return fn(ctx)
+}
 
-	// Prefer the host that actually rejected the API request, but fall
-	// back to the site host: the API host usually serves no challenge
-	// page at all and the cookie it needs is issued with Domain=firefox.com.
-	var lastErr error
-	for _, base := range []string{fxaAPIHost, strings.TrimRight(fxaSiteURL, "/")} {
-		err := solveChallengeOnHost(ctx, base)
-		if err == nil {
-			return nil
+// solveFastlyChallenge performs the Fastly client-challenge handshake and
+// installs the resulting anti-bot cookie into the control plane client's
+// cookie jar. The solver shares the control plane client's transport so that
+// the request exits through the same proxy (and therefore the same exit IP)
+// as the subsequent API call: the issued cookie is bound to the exit IP that
+// solved the challenge.
+func solveFastlyChallenge(ctx context.Context) error {
+	return withSolveSlot(ctx, func(ctx context.Context) error {
+		// Prefer the host that actually rejected the API request, but fall
+		// back to the site host: the API host usually serves no challenge
+		// page at all and the cookie it needs is issued with Domain=firefox.com.
+		var lastErr error
+		for _, base := range []string{fxaAPIHost, strings.TrimRight(fxaSiteURL, "/")} {
+			err := solveChallengeOnHost(ctx, base)
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+			if errors.Is(err, errNoChallengePage) {
+				continue
+			}
 		}
-		lastErr = err
-		if errors.Is(err, errNoChallengePage) {
-			continue
+		if lastErr == nil {
+			lastErr = errNoChallengePage
 		}
-	}
-	if lastErr == nil {
-		lastErr = errNoChallengePage
-	}
-	return lastErr
+		return lastErr
+	})
+}
+
+// SolveChallenge solves the Fastly challenge for one origin, following
+// FoxyVPN v2.0.2's approach: when the HTTP 406 response body is itself a
+// challenge page it is solved directly; otherwise the origin's root page
+// is fetched and solved. It is exported for the Guardian client, whose
+// endpoint (vpn.mozilla.org) sits behind the same Fastly challenge but is
+// not one of the FxA hosts solveFastlyChallenge probes.
+func SolveChallenge(ctx context.Context, origin string, challengedBody []byte) error {
+	return withSolveSlot(ctx, func(ctx context.Context) error {
+		if len(challengedBody) > 0 && isChallengePage(string(challengedBody)) {
+			return solveChallengeWithPage(ctx, origin, string(challengedBody))
+		}
+		return solveChallengeOnHost(ctx, origin)
+	})
 }
 
 // solveChallengeOnHost runs the whole challenge flow against one host using
@@ -145,6 +191,30 @@ func solveChallengeOnHost(ctx context.Context, base string) error {
 	if !isChallenge {
 		return errNoChallengePage
 	}
+	return solveChallengePage(ctx, client, jar, base, page)
+}
+
+// solveChallengeWithPage solves a challenge page that arrived as the body
+// of a challenged (HTTP 406) response instead of fetching the host's root
+// page: current Fastly deployments serve the challenge on the API request
+// itself, and the root page may not carry one.
+func solveChallengeWithPage(ctx context.Context, base, page string) error {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{
+		Transport: controlplane.Transport(),
+		Jar:       jar,
+		Timeout:   fastlySolveTimeout,
+	}
+	return solveChallengePage(ctx, client, jar, base, page)
+}
+
+// solveChallengePage runs the script/answer/post-back rounds for one
+// already-fetched challenge page and installs the earned cookies.
+func solveChallengePage(ctx context.Context, client *http.Client, jar http.CookieJar, base, page string) error {
+	pageURL := base + "/"
 
 	prefix := fastlyChallengePrefixRe.FindString(page)
 	if prefix == "" {
@@ -156,7 +226,7 @@ func solveChallengeOnHost(ctx context.Context, base string) error {
 		return fmt.Errorf("fetching challenge script: %w", err)
 	}
 
-	challenges, token, err := parseChallengeInit(script)
+	challenges, token, err := parseChallengeInitForPrefix(script, prefix)
 	if err != nil {
 		return err
 	}
@@ -181,7 +251,7 @@ func solveChallengeOnHost(ctx context.Context, base string) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", fastlySolverUserAgent)
+		req.Header.Set("User-Agent", solverUserAgent())
 		req.Header.Set("Origin", baseOrigin(base+prefix))
 
 		resp, err := client.Do(req)
@@ -210,7 +280,7 @@ func solveChallengeOnHost(ctx context.Context, base string) error {
 			} else if stillChallenged {
 				return errChallengeNotAccepted
 			}
-			return installChallengeCookies(jar, pageURL)
+			return installChallengeCookies(jar, pageURL, base+prefix)
 		}
 		if len(pbResp.Ch) == 0 || pbResp.Tok == "" {
 			return fmt.Errorf("unexpected post-back response: %s", truncate(string(data), 256))
@@ -227,8 +297,7 @@ func fetchChallengePage(ctx context.Context, client *http.Client, pageURL string
 	if err != nil {
 		return "", false, err
 	}
-	isChallenge := strings.Contains(body, "/_fs-ch-") && strings.Contains(body, "Client Challenge")
-	return body, isChallenge, nil
+	return body, isChallengePage(body), nil
 }
 
 func fetchText(ctx context.Context, client *http.Client, rawURL string) (string, error) {
@@ -236,7 +305,7 @@ func fetchText(ctx context.Context, client *http.Client, rawURL string) (string,
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", fastlySolverUserAgent)
+	req.Header.Set("User-Agent", solverUserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
 	resp, err := client.Do(req)
@@ -257,20 +326,100 @@ func fetchText(ctx context.Context, client *http.Client, rawURL string) (string,
 // parseChallengeInit extracts the challenge list and the challenge token
 // from the trailing init([...], "token", "prefix", ...) call in the script.
 func parseChallengeInit(script string) ([]fastlyChallenge, string, error) {
-	matches := fastlyInitCallRe.FindAllStringSubmatch(script, -1)
-	if len(matches) == 0 {
-		return nil, "", fmt.Errorf("challenge init call not found in script")
-	}
-	m := matches[len(matches)-1]
+	return parseChallengeInitForPrefix(script, "")
+}
 
-	var challenges []fastlyChallenge
-	if err := json.Unmarshal([]byte(m[1]), &challenges); err != nil {
-		return nil, "", fmt.Errorf("parsing challenge list: %w", err)
+// parseChallengeInitForPrefix mirrors FoxyVPN v2.0.2's tolerant init-call
+// parser. The challenge script's init call has drifted across Fastly
+// deployments (an optional script-prefix argument, a legacy two-argument
+// form, unrelated init(...) calls in the same file), and the previous
+// single-regex extraction broke on the current format. Candidates are
+// scanned from the last init( in the script backwards; a candidate is a
+// JSON challenge array whose every item names a challenge type, followed
+// by the token string and — in the three-argument form — the script
+// prefix, which must match the prefix of the page being solved when one
+// is known. A two-argument init([...], "token") is kept as a legacy
+// fallback when no three-argument candidate validates.
+func parseChallengeInitForPrefix(script, prefix string) ([]fastlyChallenge, string, error) {
+	positions := fastlyInitCallRe.FindAllStringIndex(script, -1)
+
+	type candidate struct {
+		challenges []fastlyChallenge
+		token      string
 	}
-	if len(challenges) == 0 {
-		return nil, "", fmt.Errorf("empty challenge list")
+	var legacy *candidate
+
+	skipSpaces := func(s string) string { return strings.TrimLeft(s, " \t\r\n") }
+
+	for i := len(positions) - 1; i >= 0; i-- {
+		rest := script[positions[i][1]:]
+
+		dec := json.NewDecoder(strings.NewReader(rest))
+		var challenges []fastlyChallenge
+		if err := dec.Decode(&challenges); err != nil {
+			continue
+		}
+		if len(challenges) == 0 || len(challenges) > 16 {
+			continue
+		}
+		valid := true
+		for _, ch := range challenges {
+			if ch.Ty == "" {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+
+		rest = skipSpaces(rest[dec.InputOffset():])
+		if !strings.HasPrefix(rest, ",") {
+			continue
+		}
+		rest = skipSpaces(rest[1:])
+
+		tokenDec := json.NewDecoder(strings.NewReader(rest))
+		var token string
+		if err := tokenDec.Decode(&token); err != nil || token == "" {
+			continue
+		}
+		rest = skipSpaces(rest[tokenDec.InputOffset():])
+
+		if strings.HasPrefix(rest, ")") {
+			// Legacy two-argument form; keep the last one in the script
+			// (the first met scanning backwards) as a fallback.
+			if legacy == nil {
+				legacy = &candidate{challenges, token}
+			}
+			continue
+		}
+		if !strings.HasPrefix(rest, ",") {
+			continue
+		}
+		rest = skipSpaces(rest[1:])
+
+		thirdDec := json.NewDecoder(strings.NewReader(rest))
+		var thirdRaw json.RawMessage
+		if err := thirdDec.Decode(&thirdRaw); err != nil {
+			continue
+		}
+		var thirdString string
+		_ = json.Unmarshal(thirdRaw, &thirdString)
+		if prefix != "" && thirdString != prefix {
+			continue
+		}
+		rest = skipSpaces(rest[thirdDec.InputOffset():])
+		if !strings.HasPrefix(rest, ")") && !strings.HasPrefix(rest, ",") {
+			continue
+		}
+		return challenges, token, nil
 	}
-	return challenges, m[2], nil
+
+	if legacy != nil {
+		return legacy.challenges, legacy.token, nil
+	}
+	return nil, "", fmt.Errorf("could not read the Fastly challenge init call in script")
 }
 
 // answerChallenge produces the fst-post-back answer payload for one
@@ -357,7 +506,7 @@ func fetchPAT(ctx context.Context, client *http.Client, prefixURL, token string)
 	}
 	req.Header.Set("Accept", "text/plain")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", fastlySolverUserAgent)
+	req.Header.Set("User-Agent", solverUserAgent())
 	req.Header.Set("Origin", baseOrigin(prefixURL))
 
 	resp, err := client.Do(req)
@@ -404,16 +553,41 @@ func clientMetricsAnswer() map[string]interface{} {
 	}
 }
 
+// challengeCookieHosts are the hosts the solved anti-bot cookie is
+// installed for, mirroring FoxyVPN v2.0.2's install step: the FxA API and
+// site hosts, the OAuth token host, and the Guardian host.
+var challengeCookieHosts = []string{
+	"api.accounts.firefox.com",
+	"accounts.firefox.com",
+	"oauth.accounts.firefox.com",
+	"vpn.mozilla.org",
+}
+
 // installChallengeCookies copies the cookies earned by the solver into the
-// control plane client's jar so subsequent FxA API calls carry them. The
-// cookie is issued with Domain=firefox.com, which covers
-// api.accounts.firefox.com.
-func installChallengeCookies(solverJar http.CookieJar, pageURL string) error {
-	parsed, err := url.Parse(pageURL)
-	if err != nil {
-		return err
+// control plane client's jar so subsequent API calls carry them. The
+// original cookies are installed for the FxA hosts as before (preserving
+// a Domain=firefox.com attribute when Fastly issues one); in addition,
+// host-scoped copies are installed for every challenged host, as FoxyVPN
+// does — a host-only cookie earned on the solving host would otherwise
+// never be sent to the OAuth token endpoint or to Guardian, and those
+// calls would stay challenged.
+func installChallengeCookies(solverJar http.CookieJar, pageURL, prefixURL string) error {
+	seen := map[string]bool{}
+	var cookies []*http.Cookie
+	for _, raw := range []string{pageURL, prefixURL} {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return err
+		}
+		for _, c := range solverJar.Cookies(parsed) {
+			key := c.Name + "\x00" + c.Value
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			cookies = append(cookies, c)
+		}
 	}
-	cookies := solverJar.Cookies(parsed)
 	if len(cookies) == 0 {
 		return fmt.Errorf("challenge completed but no cookies were issued")
 	}
@@ -423,8 +597,27 @@ func installChallengeCookies(solverJar http.CookieJar, pageURL string) error {
 		return err
 	}
 	controlplane.SetCookies(apiURL, cookies)
-	parsed2, _ := url.Parse(fxaSiteURL)
-	controlplane.SetCookies(parsed2, cookies)
+	siteURL, err := url.Parse(fxaSiteURL)
+	if err != nil {
+		return err
+	}
+	controlplane.SetCookies(siteURL, cookies)
+
+	for _, host := range challengeCookieHosts {
+		u := &url.URL{Scheme: "https", Host: host, Path: "/"}
+		copies := make([]*http.Cookie, 0, len(cookies))
+		for _, c := range cookies {
+			copies = append(copies, &http.Cookie{
+				Name:     c.Name,
+				Value:    c.Value,
+				Path:     "/",
+				Secure:   c.Secure,
+				HttpOnly: c.HttpOnly,
+				Expires:  c.Expires,
+			})
+		}
+		controlplane.SetCookies(u, copies)
+	}
 	return nil
 }
 

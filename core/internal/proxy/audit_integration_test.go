@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -101,9 +100,12 @@ func TestAuditSOCKSConnectAndRenewal(t *testing.T) {
 				header := make(http.Header)
 				var body string
 				switch {
-				case r.URL.String() == "https://api.accounts.firefox.com/v1/oauth/token" && r.Method == http.MethodPost:
-					var payload map[string]string
-					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload["grant_type"] != "refresh_token" || payload["refresh_token"] != "local-refresh-fixture" {
+				case r.URL.String() == "https://api.accounts.firefox.com/v1/token" && r.Method == http.MethodPost:
+					// Build 2033: refresh is a form grant at
+					// /v1/token, not the retired JSON route.
+					raw, _ := io.ReadAll(r.Body)
+					payload, err := url.ParseQuery(string(raw))
+					if err != nil || payload.Get("grant_type") != "refresh_token" || payload.Get("refresh_token") != "local-refresh-fixture" {
 						return nil, fmt.Errorf("unexpected local OAuth request")
 					}
 					oauthRequests.Add(1)

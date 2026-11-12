@@ -71,6 +71,13 @@ type TokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope"`
 	TokenType    string `json:"token_type"`
+	// IDToken rides the browser code exchange (build 2033);
+	// its email claim names the account (see EmailFromIDToken).
+	IDToken string `json:"id_token"`
+	// ClientID is the OAuth client that minted these tokens
+	// (not an FxA wire field): a refresh grant is bound to
+	// its client, so the store keeps it beside the tokens.
+	ClientID string `json:"-"`
 }
 
 // fxaAPIError carries a non-2xx FxA response so callers can branch on the
@@ -150,11 +157,20 @@ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http
 		if resp.StatusCode != http.StatusNotAcceptable {
 			return resp, nil
 		}
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		// The 406 body is usually the challenge page itself; keep it so
+		// the solver can solve that page directly (FoxyVPN v2.0.2's
+		// primary path) instead of relying on the host root serving one.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		resp.Body.Close()
 
-		if err := solveFastlyChallenge(ctx); err != nil {
-			return nil, fmt.Errorf("Fastly anti-bot challenge: %w", err)
+		origin := req.URL.Scheme + "://" + req.URL.Host
+		if err := SolveChallenge(ctx, origin, body); err != nil {
+			if !errors.Is(err, errNoChallengePage) {
+				return nil, fmt.Errorf("Fastly anti-bot challenge: %w", err)
+			}
+			if err := solveFastlyChallenge(ctx); err != nil {
+				return nil, fmt.Errorf("Fastly anti-bot challenge: %w", err)
+			}
 		}
 	}
 	return nil, fmt.Errorf("Fastly anti-bot challenge still failing after %d attempts (HTTP 406)", maxChallengeAttempts)
@@ -316,7 +332,31 @@ func DestroySession(ctx context.Context, sessionToken string) error {
 	return nil
 }
 
+// fxaOAuthToken runs the password flow's fxa-credentials
+// grant. Kumiho's endpoints table puts this grant on the
+// OAUTH host (build 2033): it is tried there first, and a
+// block-shaped failure (an exhausted challenge or a hard
+// block) retries once on the API host before giving up.
 func fxaOAuthToken(ctx context.Context, sessionToken string) (*TokenResponse, error) {
+	tok, err := fxaOAuthTokenOn(ctx, sessionToken, fxaOAuthHost)
+	if err != nil && isBlockShaped(err) {
+		tok, err = fxaOAuthTokenOn(ctx, sessionToken, fxaAuthServer)
+	}
+	if err == nil && tok != nil {
+		tok.ClientID = firefoxClientID
+	}
+	return tok, err
+}
+
+// isBlockShaped reports whether err looks like Fastly
+// refusing the route (challenge unsolved after the attempt
+// budget, or a hard block) rather than FxA answering.
+func isBlockShaped(err error) bool {
+	return errors.Is(err, errHardBlock) ||
+		strings.Contains(err.Error(), "HTTP 406")
+}
+
+func fxaOAuthTokenOn(ctx context.Context, sessionToken, host string) (*TokenResponse, error) {
 	hawkID, hawkKey, err := deriveHawkCredentials(sessionToken, "sessionToken")
 	if err != nil {
 		return nil, fmt.Errorf("deriving hawk credentials: %w", err)
@@ -330,7 +370,7 @@ func fxaOAuthToken(ctx context.Context, sessionToken string) (*TokenResponse, er
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	tokenURL := fxaAuthServer + "/oauth/token"
+	tokenURL := host + "/oauth/token"
 
 	resp, err := fxaDo(ctx, func() (*http.Request, error) {
 		authHeader, err := hawkHeader("POST", tokenURL, hawkID, hawkKey, string(bodyJSON))
@@ -366,48 +406,11 @@ func fxaOAuthToken(ctx context.Context, sessionToken string) (*TokenResponse, er
 	return &tok, nil
 }
 
-func fxaRefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
-	body := map[string]interface{}{
-		"client_id":     firefoxClientID,
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
-		"scope":         oauthScope,
-	}
-	bodyJSON, _ := json.Marshal(body)
-
-	tokenURL := fxaAuthServer + "/oauth/token"
-
-	resp, err := fxaDo(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(bodyJSON)))
-		if err != nil {
-			return nil, fmt.Errorf("creating refresh request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		controlplane.ApplyFirefoxHeaders(req)
-		return req, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("refresh request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, newFxaAPIError(resp.StatusCode, []byte(controlplane.ReadErrorBody(resp.Body)))
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading refresh response: %w", err)
-	}
-
-	var tok TokenResponse
-	if err := json.Unmarshal(data, &tok); err != nil {
-		return nil, fmt.Errorf("parsing refresh response: %w", err)
-	}
-	// Refresh response may not include a new refresh_token; keep the old one
-	if tok.RefreshToken == "" {
-		tok.RefreshToken = refreshToken
-	}
-	return &tok, nil
+func fxaRefreshToken(ctx context.Context, refreshToken, clientID string) (*TokenResponse, error) {
+	// Build 2033: the /v1/token form grant in oauth.go
+	// replaced this function's legacy JSON route, which the
+	// 2026 hard blocks made unusable.
+	return refreshViaFormGrant(ctx, refreshToken, clientID)
 }
 
 func Login(ctx context.Context, email, password string) (*LoginResponse, error) {
@@ -422,6 +425,9 @@ func OAuthToken(ctx context.Context, sessionToken string) (*TokenResponse, error
 	return fxaOAuthToken(ctx, sessionToken)
 }
 
-func RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
-	return fxaRefreshToken(ctx, refreshToken)
+// RefreshToken refreshes an access token. clientID names
+// the OAuth client that minted the tokens ("" = the desktop
+// client, which every pre-2033 account used).
+func RefreshToken(ctx context.Context, refreshToken, clientID string) (*TokenResponse, error) {
+	return fxaRefreshToken(ctx, refreshToken, clientID)
 }

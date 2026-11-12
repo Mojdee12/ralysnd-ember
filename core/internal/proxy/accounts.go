@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/accounts"
+	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
 	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
 	"github.com/armanlife/firefox-vpn-client/core/internal/guardian"
 	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
@@ -55,6 +56,7 @@ func (p *AccountPool) AuthFor(acc accounts.Account) (*runtimeAuth, error) {
 			Scope:        creds.Scope,
 			ExpiresIn:    creds.ExpiresIn,
 			TokenType:    "bearer",
+			ClientID:     creds.ClientID,
 		},
 		ObtainedAt: creds.ObtainedAt,
 		accountID:  acc.ID,
@@ -76,6 +78,7 @@ func (p *AccountPool) persist(auth *runtimeAuth) error {
 		Scope:        auth.Token.Scope,
 		ObtainedAt:   auth.ObtainedAt,
 		ExpiresIn:    auth.Token.ExpiresIn,
+		ClientID:     auth.Token.ClientID,
 	})
 }
 
@@ -106,7 +109,7 @@ func (p *AccountPool) AcquirePass(ctx context.Context, endpoint string) (*runtim
 		}
 		tried[acc.ID] = true
 
-		auth, pass, err := p.passFor(ctx, endpoint, acc)
+		auth, pass, err := p.passFor(ctx, endpoint, acc, false)
 		switch outcome := p.Record(acc, pass, err); outcome {
 		case accountUsable:
 			if err := p.mgr.Activate(acc.ID); err != nil {
@@ -163,12 +166,25 @@ func (p *AccountPool) logSelected(acc, previous accounts.Account, hadActive bool
 	}
 }
 
+// storedPassReuseMargin is how much life a stored pass must have
+// left to be used without a fetch (Kumiho's prepared-pass reuse
+// window is the same minute).
+const storedPassReuseMargin = time.Minute
+
 // passFor refreshes the account's credentials when needed and fetches a
 // pass, recovering from Guardian rejections like the single-account path.
 // Whenever the tokens no longer work and cannot be renewed (the refresh
 // token is revoked, or Guardian keeps refusing a refreshed access token),
 // it signs in again with the stored password.
-func (p *AccountPool) passFor(ctx context.Context, endpoint string, acc accounts.Account) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
+//
+// Build 2034 (the bootstrap): unless force is set, a stored pass with
+// life left is returned WITHOUT any control-plane fetch — that is what
+// lets a region-blocked user connect after one prepared handoff. Every
+// freshly fetched pass is persisted for the next start. When a fetch
+// is refused for the region (HTTP 451) and a bootstrap egress is
+// configured and not already in use, the fetch is retried ONCE through
+// it.
+func (p *AccountPool) passFor(ctx context.Context, endpoint string, acc accounts.Account, force bool) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
 	auth, err := p.AuthFor(acc)
 	if err != nil {
 		err = fmt.Errorf("%w: loading credentials: %w", fxa.ErrReauthRequired, err)
@@ -183,6 +199,55 @@ func (p *AccountPool) passFor(ctx context.Context, endpoint string, acc accounts
 	if err != nil {
 		return nil, nil, err
 	}
+	if !force {
+		if stored, ok := p.storedPass(acc); ok {
+			return auth, stored, nil
+		}
+	}
+	viaRelay := controlplane.InBootstrapEgress(ctx) && controlplane.Bootstrap() == controlplane.BootstrapRelay
+	auth, pass, err := p.fetchPassSequence(ctx, guardianEndpointFor(endpoint, viaRelay), acc, auth, signedIn)
+	if err != nil && errors.Is(err, guardian.ErrRegionUnavailable) &&
+		controlplane.Bootstrap() != controlplane.BootstrapNone &&
+		!controlplane.InBootstrapEgress(ctx) {
+		var bAuth *runtimeAuth
+		var bPass *guardian.ProxyPassInfo
+		berr := controlplane.WithBootstrapEgress(ctx, func(ctx context.Context) error {
+			var rerr error
+			bAuth, bPass, rerr = p.fetchPassSequence(ctx, guardianEndpointFor(endpoint, controlplane.Bootstrap() == controlplane.BootstrapRelay), acc, auth, signedIn)
+			return rerr
+		})
+		if berr == nil {
+			auth, pass, err = bAuth, bPass, nil
+			logx.Info("proxy pass fetched through the bootstrap egress account=%s", logx.Email(acc.Name()))
+		} else {
+			logx.Warn("bootstrap pass fetch failed account=%s err=%s", logx.Email(acc.Name()), logx.Err(berr))
+		}
+	}
+	if err == nil && pass != nil {
+		if serr := p.store.SavePass(acc.ID, pass); serr != nil {
+			logx.Warn("storing proxy pass failed account=%s err=%s", logx.Email(acc.Name()), logx.Err(serr))
+		}
+	}
+	return auth, pass, err
+}
+
+// guardianEndpointFor picks the Guardian endpoint of a pass fetch.
+// A fetch riding the Worker-relay egress calls Guardian at the
+// relay contract's host (guardian.mozilla.org — the production
+// vpn.mozilla.org is not on the relay's allowlist); any other
+// fetch, and any custom configured endpoint, is untouched.
+func guardianEndpointFor(endpoint string, viaRelayEgress bool) string {
+	if viaRelayEgress && (endpoint == "" || endpoint == guardian.DefaultEndpoint) {
+		return "https://guardian.mozilla.org"
+	}
+	return endpoint
+}
+
+// fetchPassSequence is one full pass-fetch attempt for an
+// authenticated account: the fetch itself, Guardian's rejection
+// recovery (refresh, activate), and a re-login with the stored
+// password when the tokens turn out refused.
+func (p *AccountPool) fetchPassSequence(ctx context.Context, endpoint string, acc accounts.Account, auth *runtimeAuth, signedIn bool) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
 	pass, err := fetchProxyPassCtx(ctx, endpoint, auth.Token.AccessToken)
 	if errors.Is(err, guardian.ErrTokenInvalid) {
 		auth, pass, err = recoverGuardianRejection(ctx, endpoint, auth, err, nil)
@@ -194,6 +259,65 @@ func (p *AccountPool) passFor(ctx context.Context, endpoint string, acc accounts
 		}
 	}
 	return auth, pass, err
+}
+
+// storedPass returns the account's persisted pass when it still has
+// more than storedPassReuseMargin of life.
+func (p *AccountPool) storedPass(acc accounts.Account) (*guardian.ProxyPassInfo, bool) {
+	pass, ok, err := p.store.LoadPass(acc.ID)
+	if err != nil {
+		logx.Warn("reading stored proxy pass failed account=%s err=%s", logx.Email(acc.Name()), logx.Err(err))
+		return nil, false
+	}
+	if !ok || pass == nil {
+		return nil, false
+	}
+	if time.Until(pass.ExpiresAt()) <= storedPassReuseMargin {
+		return nil, false
+	}
+	return pass, true
+}
+
+// PreparePass fetches a FRESH pass for the account AcquirePass would
+// pick, and persists it (build 2034). It is the daemon side of the
+// app's bootstrap handoff: the caller wraps it in the bootstrap
+// egress window, so the fetch exits through the donor engine or the
+// Worker relay while the app holds that route open.
+func (p *AccountPool) PreparePass(ctx context.Context, endpoint string) (*guardian.ProxyPassInfo, error) {
+	tried := make(map[string]bool)
+	for {
+		acc, err := p.mgr.Candidate(tried)
+		if err != nil {
+			return nil, err
+		}
+		tried[acc.ID] = true
+		_, pass, err := p.passFor(ctx, endpoint, acc, true)
+		switch outcome := p.Record(acc, pass, err); outcome {
+		case accountUsable:
+			if err := p.mgr.Activate(acc.ID); err != nil {
+				logx.Warn("persisting active account failed account=%s err=%s", logx.Email(acc.Name()), logx.Err(err))
+			}
+			return pass, nil
+		case AccountSkipped:
+			continue
+		default:
+			return nil, err
+		}
+	}
+}
+
+// StoredPassExpiry reports when the active account's stored pass
+// expires (zero when none is stored), for the status view.
+func (p *AccountPool) StoredPassExpiry() time.Time {
+	acc, ok := p.mgr.Active()
+	if !ok {
+		return time.Time{}
+	}
+	pass, ok, err := p.store.LoadPass(acc.ID)
+	if err != nil || !ok || pass == nil {
+		return time.Time{}
+	}
+	return pass.ExpiresAt()
 }
 
 // tokensRefused reports whether err means the account's tokens are no
