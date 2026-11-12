@@ -112,6 +112,35 @@ if (Test-Path "$psiSidecar\psiphon-core.exe") {
     Write-Warning "No Psiphon sidecar in $psiSidecar (run scripts\fetch-windows-sidecars.ps1 first): the Psiphon engine will have no core"
 }
 
+# The parity-port engines' sidecars (2.2.0), same pattern: each
+# folder beside the app, where its Windows backend looks for it.
+# Absent, the build still succeeds and that engine reports it has
+# no core.
+$warpSidecar = "$root\tools\sidecars\warp"
+if (Test-Path "$warpSidecar\warp-plus.exe") {
+    New-Item -ItemType Directory -Force "$out\warp" | Out-Null
+    Copy-Item "$warpSidecar\*" "$out\warp" -Recurse -Force
+    Write-Host "WARP+ sidecar copied from $warpSidecar"
+} else {
+    Write-Warning "No warp-plus sidecar in $warpSidecar (run scripts\fetch-windows-sidecars.ps1 first): the WARP+ engine will have no core"
+}
+$aetherSidecar = "$root\tools\sidecars\aether"
+if (Test-Path "$aetherSidecar\aether.exe") {
+    New-Item -ItemType Directory -Force "$out\aether" | Out-Null
+    Copy-Item "$aetherSidecar\*" "$out\aether" -Recurse -Force
+    Write-Host "Aether sidecar copied from $aetherSidecar"
+} else {
+    Write-Warning "No aether sidecar in $aetherSidecar (run scripts\fetch-windows-sidecars.ps1 first): the EmberWarp and MASQUE engines will have no core"
+}
+$ovpnSidecar = "$root\tools\sidecars\openvpn"
+if (Test-Path "$ovpnSidecar\openvpn.exe") {
+    New-Item -ItemType Directory -Force "$out\openvpn" | Out-Null
+    Copy-Item "$ovpnSidecar\*" "$out\openvpn" -Recurse -Force
+    Write-Host "OpenVPN sidecar copied from $ovpnSidecar"
+} else {
+    Write-Warning "No OpenVPN sidecar in $ovpnSidecar (run scripts\fetch-windows-sidecars.ps1 first): the OpenVPN engine will have no core"
+}
+
 # A clean copy named as the user sees it, for the zip and the installer.
 $stage = "$root\dist\.stage-$version"
 $app = "$stage\Ralysnd Ember"

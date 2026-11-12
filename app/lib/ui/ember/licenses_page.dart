@@ -17,6 +17,11 @@ import 'ember_theme.dart';
 const _aetherSourceUrl = 'https://github.com/patterniha/Aether';
 const _xraySourceUrl = 'https://github.com/XTLS/Xray-core';
 const _openVpnSourceUrl = 'https://github.com/OpenVPN/openvpn3';
+const _kumihoSourceUrl = 'https://github.com/benyamin-git/Kumiho';
+const _warpPlusSourceUrl = 'https://github.com/bepass-org/warp-plus';
+const _openVpnCommunityUrl = 'https://github.com/OpenVPN/openvpn';
+const _inAppWebViewUrl =
+    'https://github.com/pichillilorenzo/flutter_inappwebview';
 
 class LicensesPage extends StatelessWidget {
   const LicensesPage({super.key});
@@ -82,6 +87,72 @@ class LicensesPage extends StatelessWidget {
               links: [
                 ('Source: OpenVPN/openvpn3', () {
                   unawaited(AndroidCore.openUrl(_openVpnSourceUrl));
+                }),
+              ],
+            ),
+            _entry(
+              context,
+              title: 'Kumiho (Mozilla sign-in)',
+              license: 'MIT',
+              body:
+                  'The Mozilla engine’s browser sign-in follows '
+                  'the Kumiho client’s contract — the Firefox for '
+                  'Android OAuth client, PKCE, and the success-'
+                  'redirect handoff — re-implemented in Ember’s '
+                  'own core (build 2034).',
+              links: [
+                ('Source: benyamin-git/Kumiho', () {
+                  unawaited(AndroidCore.openUrl(_kumihoSourceUrl));
+                }),
+              ],
+            ),
+            _entry(
+              context,
+              title: 'warp-plus (Windows WARP+)',
+              license: 'MIT',
+              body:
+                  'The Windows WARP+ engine runs the warp-plus '
+                  'sidecar by bepass-org.',
+              links: [
+                ('Source: bepass-org/warp-plus', () {
+                  unawaited(AndroidCore.openUrl(_warpPlusSourceUrl));
+                }),
+              ],
+            ),
+            _entry(
+              context,
+              title: 'OpenVPN (Windows sidecar)',
+              license: 'GNU GPL-2.0',
+              body:
+                  'On Windows the OpenVPN engine drives the '
+                  'official openvpn.exe from the OpenVPN '
+                  'community project.',
+              links: [
+                ('Source: OpenVPN/openvpn', () {
+                  unawaited(AndroidCore.openUrl(_openVpnCommunityUrl));
+                }),
+              ],
+            ),
+            _entry(
+              context,
+              title: 'Wintun',
+              license: 'Wintun license',
+              body:
+                  'The Windows TUN driver DLL, shipped '
+                  'unmodified from the official Wintun '
+                  'distribution (wintun.net).',
+              links: const [],
+            ),
+            _entry(
+              context,
+              title: 'flutter_inappwebview (Windows sign-in)',
+              license: 'MIT',
+              body:
+                  'The embedded WebView2 view the Windows '
+                  'Mozilla browser sign-in runs in.',
+              links: [
+                ('Source: flutter_inappwebview', () {
+                  unawaited(AndroidCore.openUrl(_inAppWebViewUrl));
                 }),
               ],
             ),

@@ -2,7 +2,7 @@ name: firefox_vpn
 description: "Ralysnd Ember — Mozilla, V2Ray and Psiphon in one client (a cross-platform shell for the Go VPN core)"
 publish_to: 'none'
 
-version: 2.1.0+2026
+version: 2.2.0+2038
 
 environment:
   sdk: ^3.13.5
