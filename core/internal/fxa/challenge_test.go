@@ -77,6 +77,67 @@ func TestParseChallengeInitPowData(t *testing.T) {
 	}
 }
 
+// The legacy two-argument init form (no script prefix) still parses.
+func TestParseChallengeInitLegacyTwoArg(t *testing.T) {
+	t.Parallel()
+
+	script := `;init([{"ty":"pow","data":{"base":"b","expires":"1","hmac":"h","hash":"00"}}], "tok-legacy");`
+	challenges, token, err := parseChallengeInit(script)
+	if err != nil {
+		t.Fatalf("parseChallengeInit returned error: %v", err)
+	}
+	if token != "tok-legacy" || len(challenges) != 1 || challenges[0].Ty != "pow" {
+		t.Fatalf("unexpected result: %q %+v", token, challenges)
+	}
+}
+
+// A three-argument candidate whose script prefix does not match the page
+// being solved is skipped in favour of the matching one.
+func TestParseChallengeInitPrefixMismatchSkipped(t *testing.T) {
+	t.Parallel()
+
+	script := `init([{"ty":"pat","data":{}}], "tok-other", "/_fs-ch-OTHER", true);` +
+		`init([{"ty":"pat","data":{}}], "tok-match", "/_fs-ch-MINE", true);`
+	challenges, token, err := parseChallengeInitForPrefix(script, "/_fs-ch-MINE")
+	if err != nil {
+		t.Fatalf("parseChallengeInitForPrefix returned error: %v", err)
+	}
+	if token != "tok-match" || len(challenges) != 1 {
+		t.Fatalf("unexpected result: %q %+v", token, challenges)
+	}
+}
+
+// Brackets inside challenge data strings must not break extraction (the
+// previous regex parser stopped the challenge array at the first "]").
+func TestParseChallengeInitBracketInData(t *testing.T) {
+	t.Parallel()
+
+	script := `;init([{"ty":"clientmetrics","data":{"note":"a]b"}}], "tok-b", "/_fs-ch-x", true);`
+	challenges, token, err := parseChallengeInit(script)
+	if err != nil {
+		t.Fatalf("parseChallengeInit returned error: %v", err)
+	}
+	if token != "tok-b" || len(challenges) != 1 || challenges[0].Ty != "clientmetrics" {
+		t.Fatalf("unexpected result: %q %+v", token, challenges)
+	}
+}
+
+// Challenge pages are recognised by any of the current markers, not just
+// the "Client Challenge" title.
+func TestIsChallengePageMarkers(t *testing.T) {
+	t.Parallel()
+
+	if !isChallengePage(`<script src="/_fs-ch-abc/script.js"></script>`) {
+		t.Fatal("script.js marker not recognised")
+	}
+	if !isChallengePage(`<form action="/_fs-ch-abc/fst-post-back">`) {
+		t.Fatal("fst-post-back marker not recognised")
+	}
+	if isChallengePage(`<html>regular page</html>`) {
+		t.Fatal("regular page misdetected as challenge")
+	}
+}
+
 // A caller waiting for another solve gives up when its context ends, and
 // leaves the slot to its holder.
 func TestChallengeSlotWaiterGivesUp(t *testing.T) {

@@ -44,7 +44,9 @@ func mockFxA(t *testing.T, verified bool, logins *atomic.Int32, devices *atomic.
 		case r.URL.Host == "api.accounts.firefox.com" && r.URL.Path == "/v1/session/destroy":
 			destroyed.Add(1)
 			return reply(200, `{}`)
-		case r.URL.Host == "api.accounts.firefox.com" && r.URL.Path == "/v1/oauth/token":
+		case (r.URL.Host == "api.accounts.firefox.com" || r.URL.Host == "oauth.accounts.firefox.com") && r.URL.Path == "/v1/oauth/token":
+			// Build 2033: the fxa-credentials grant is asked
+			// of the oauth. host first (Kumiho's table).
 			return reply(200, `{"access_token":"new-access","refresh_token":"new-refresh","scope":"profile","expires_in":86400,"token_type":"bearer"}`)
 		case r.URL.Host == "api.accounts.firefox.com" && r.URL.Path == "/v1/account/device":
 			devices.Add(1)

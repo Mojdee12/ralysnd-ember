@@ -1,11 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Auto Backup (Android 6 to 11): everything, so a new phone keeps the
      accounts and the settings, except what the core makes again: logs,
-     routing lists, caches, and per-run files. -->
+     routing lists, caches, and per-run files.
+
+     Build 2057 (audit F-M17): the secret-bearing stores are excluded
+     too. A backup is a plaintext copy on Google's servers (or the
+     device-to-device channel) — it must never carry credentials:
+       - xray/state.json: WireGuard private keys, profile UUIDs and
+         passwords, subscription URLs.
+       - core/config.json: the Mozilla core config, including the
+         bootstrap_relay_key.
+       - core/accounts/: Guardian tokens (credentials.json, pass.json).
+       - openvpn/state.json: profile texts, including inline key
+         material.
+     The trade-off is honest and deliberate: a restored phone loses
+     the V2Ray profiles/subscriptions, the Mozilla sign-in, and the
+     OpenVPN profiles — they are re-added (subscription link, sign-in,
+     .ovpn import) instead of arriving in a backup. The app's own
+     backup/restore export (which the user controls) is the way to
+     move profiles between phones. Non-secret settings still restore. -->
 <full-backup-content>
     <exclude domain="file" path="core/logs/" />
     <exclude domain="file" path="core/routing/" />
     <exclude domain="file" path="core/servers.json" />
     <exclude domain="file" path="core/status.json" />
     <exclude domain="file" path="core/local-api.token" />
+    <exclude domain="file" path="xray/state.json" />
+    <exclude domain="file" path="core/config.json" />
+    <exclude domain="file" path="core/accounts/" />
+    <exclude domain="file" path="openvpn/state.json" />
 </full-backup-content>

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'core_api.dart';
+import 'poll_policy.dart';
 import 'remote_flags.dart';
 import 'models.dart';
 import 'ports.dart';
@@ -46,6 +47,18 @@ class CoreController extends ChangeNotifier {
 
   CoreApi? _api;
   Timer? _timer;
+
+  /// Poll cadence state (build 2050, audit B-H2): until now
+  /// this poller ticked every 2 s from app launch, forever —
+  /// Mozilla off, another engine on screen, app backgrounded.
+  /// Now: 2 s only while foregrounded AND the Mozilla engine
+  /// is on stage (the shell says so via [setEngineFocus]) or
+  /// the proxy is on; a 30 s heartbeat otherwise. A poll that
+  /// changes nothing also skips its notifyListeners, so an
+  /// idle app stops rebuilding the shell at poll rate.
+  bool _foreground = true;
+  bool _engineFocus = false;
+  String _lastPollSignature = '';
 
   /// A quick retry while the core is starting, so the app shows it as soon
   /// as its API answers rather than at the next poll.
@@ -104,8 +117,43 @@ class CoreController extends ChangeNotifier {
   bool get connected => _api != null && unavailable == null;
 
   void start() {
-    _timer ??= Timer.periodic(pollInterval, (_) => refresh());
+    _timer ??= Timer.periodic(_currentPeriod, (_) => refresh());
     refresh();
+  }
+
+  /// The live cadence: fast only while foregrounded and the
+  /// Mozilla engine is focused or actually on.
+  Duration get _currentPeriod => corePollPeriod(
+    foreground: _foreground,
+    active:
+        _engineFocus ||
+        (status?.state.phase == Phase.running) ||
+        switchingProxy ||
+        testing,
+  );
+
+  void _restartTimer() {
+    if (_timer == null) return;
+    _timer!.cancel();
+    _timer = Timer.periodic(_currentPeriod, (_) => refresh());
+  }
+
+  /// The shell's lifecycle feed (build 2050).
+  void setForeground(bool fg) {
+    if (fg == _foreground) return;
+    _foreground = fg;
+    _restartTimer();
+    // Coming back to the foreground refreshes at once — the
+    // user must never wait out a heartbeat to see true state.
+    if (fg) refresh();
+  }
+
+  /// The shell's mode feed (build 2050): Mozilla is the
+  /// engine on stage.
+  void setEngineFocus(bool focus) {
+    if (focus == _engineFocus) return;
+    _engineFocus = focus;
+    _restartTimer();
   }
 
   /// Reads the status, and the accounts every third tick (the core reads
@@ -153,7 +201,16 @@ class CoreController extends ChangeNotifier {
     } finally {
       _polling = false;
       if (!_disposed) {
-        notifyListeners();
+        // Build 2050 (audit B-H2): a poll whose outcome is
+        // identical to the last one does not rebuild the
+        // shell. Anything the user can see changing — phase,
+        // exit, traffic, a fresh test, accounts, an error —
+        // changes the signature and notifies as before.
+        final signature = _pollSignature();
+        if (signature != _lastPollSignature) {
+          _lastPollSignature = signature;
+          notifyListeners();
+        }
         if ((unavailable?.problem == CoreProblem.starting || _failures > 0) &&
             _timer != null) {
           _quick?.cancel();
@@ -161,6 +218,29 @@ class CoreController extends ChangeNotifier {
         }
       }
     }
+  }
+
+  /// What a poll's outcome looks like to the UI, as one
+  /// comparable string (build 2050).
+  String _pollSignature() {
+    final st = status;
+    return [
+      st?.state.phase.name ?? 'none',
+      st?.state.message ?? '',
+      st?.exit?.ipv4 ?? '',
+      st?.exitMismatch != null,
+      st?.activeAccount?.id ?? '',
+      st?.activeAccount?.status ?? '',
+      st?.traffic?.up ?? -1,
+      st?.traffic?.down ?? -1,
+      st?.lastTest?.at?.millisecondsSinceEpoch ?? -1,
+      unavailable?.problem.name ?? '',
+      accounts?.accounts.length ?? -1,
+      // Account state the Accounts tab renders (status/reason
+      // flips, usage movement) rides the signature too.
+      if (accounts != null)
+        for (final a in accounts!.accounts) '${a.id}:${a.status}:${a.usedPercent}',
+    ].join('|');
   }
 
   void _lost(CoreUnavailable problem) {

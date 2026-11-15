@@ -149,7 +149,9 @@ void main() {
       expect(dir(portable: true), r'D:\dist\Firefox-VPN-1.3\user-data');
       expect(
         dir(os: 'macos', env: {'HOME': '/Users/u'}),
-        '/Users/u/Library/Application Support/Firefox VPN Client',
+        // Build 2057 (audit F-H10): the rebrand — the macOS data
+        // dir carries the app's own name now, not upstream's.
+        '/Users/u/Library/Application Support/Ralysnd Ember',
       );
       expect(
         dir(os: 'linux', env: {'HOME': '/home/u'}),

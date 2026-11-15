@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../core/android_core.dart';
 import '../l10n/app_localizations.dart';
+import 'ember/ember_theme.dart';
+import 'ember/map_widgets.dart';
 import 'widgets.dart';
 
 /// Android, per-app proxy (v2rayN's words): bypass the selected apps, or
@@ -86,8 +88,12 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
         }
       },
       child: Scaffold(
+        backgroundColor: Ember.bg,
         appBar: AppBar(
-          title: Text(l.bypassApps),
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          foregroundColor: Ember.text,
+          title: Text(l.bypassApps, style: Ember.heading),
           actions: [
             PopupMenuButton<void>(
               itemBuilder: (context) => [
@@ -100,119 +106,138 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
             ),
           ],
         ),
-        body: routing == null || _apps == null
-            ? const Center(child: CircularProgressIndicator())
-            : ListView.builder(
-                itemCount: apps.length + 1,
-                itemBuilder: (context, i) {
-                  if (i == 0) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          SegmentedButton<bool>(
-                            showSelectedIcon: false,
-                            segments: [
-                              ButtonSegment(
-                                value: false,
-                                label: Text(l.appModeExclude),
+        body: EmberBackground(
+          child: routing == null || _apps == null
+              ? const Center(child: CircularProgressIndicator())
+              : ListView.builder(
+                  itemCount: apps.length + 1,
+                  itemBuilder: (context, i) {
+                    if (i == 0) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SegmentedButton<bool>(
+                              showSelectedIcon: false,
+                              segments: [
+                                ButtonSegment(
+                                  value: false,
+                                  label: Text(l.appModeExclude),
+                                ),
+                                ButtonSegment(
+                                  value: true,
+                                  label: Text(l.appModeInclude),
+                                ),
+                              ],
+                              selected: {routing.onlyChosen},
+                              onSelectionChanged: (v) {
+                                setState(() {
+                                  routing.onlyChosen = v.first;
+                                  _sort();
+                                });
+                                _save();
+                              },
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              routing.onlyChosen
+                                  ? l.appModeIncludeHint
+                                  : l.appModeExcludeHint,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
                               ),
-                              ButtonSegment(
-                                value: true,
-                                label: Text(l.appModeInclude),
+                            ),
+                            if (!routing.onlyChosen &&
+                                routing.suggested.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: AlignmentDirectional.centerStart,
+                                child: MapActionPill(
+                                  icon: Icons.auto_awesome_rounded,
+                                  label: l.suggestedApps,
+                                  onTap: () {
+                                    final added = routing.checkSuggested(
+                                      _apps!.map((a) => a.package),
+                                    );
+                                    setState(_sort);
+                                    _save();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(l.suggestedAdded(added)),
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                  },
+                                ),
                               ),
                             ],
-                            selected: {routing.onlyChosen},
-                            onSelectionChanged: (v) {
-                              setState(() {
-                                routing.onlyChosen = v.first;
-                                _sort();
-                              });
-                              _save();
-                            },
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            routing.onlyChosen
-                                ? l.appModeIncludeHint
-                                : l.appModeExcludeHint,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          if (!routing.onlyChosen &&
-                              routing.suggested.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Align(
-                              alignment: AlignmentDirectional.centerStart,
-                              child: OutlinedButton.icon(
-                                onPressed: () {
-                                  final added = routing.checkSuggested(
-                                    _apps!.map((a) => a.package),
-                                  );
-                                  setState(_sort);
-                                  _save();
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(l.suggestedAdded(added)),
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                },
-                                icon: const Icon(Icons.auto_awesome_rounded),
-                                label: Text(l.suggestedApps),
+                            const SizedBox(height: 12),
+                            TextField(
+                              decoration: emberField(
+                                context,
+                                l.search,
+                                prefix: const Icon(
+                                  Icons.search_rounded,
+                                  color: MapUi.faint,
+                                  size: 18,
+                                ),
                               ),
+                              onChanged: (v) => setState(() => _query = v),
                             ),
+                            // Build 2056 (audit §5): a search that
+                            // matches nothing showed a bare header.
+                            if (q.isNotEmpty && apps.isEmpty) ...[
+                              const SizedBox(height: 16),
+                              Text(
+                                'No apps match “$q”.',
+                                style: Ember.caption,
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
                           ],
-                          const SizedBox(height: 12),
-                          TextField(
-                            decoration: InputDecoration(
-                              isDense: true,
-                              prefixIcon: const Icon(Icons.search_rounded),
-                              hintText: l.search,
-                              border: const OutlineInputBorder(),
-                            ),
-                            onChanged: (v) => setState(() => _query = v),
-                          ),
-                        ],
+                        ),
+                      );
+                    }
+                    final app = apps[i - 1];
+                    final onList =
+                        widget.region != null &&
+                        routing.suggested.contains(app.package);
+                    final icon = _icons.putIfAbsent(
+                      app.package,
+                      () => AndroidCore.appIcon(app.package),
+                    );
+                    return CheckboxListTile(
+                      value: routing.checked(app.package),
+                      onChanged: (v) {
+                        setState(() => routing.toggle(app.package, v ?? false));
+                        _save();
+                      },
+                      secondary: SizedBox.square(
+                        dimension: 40,
+                        child: FutureBuilder<Uint8List?>(
+                          future: icon,
+                          builder: (context, snap) => snap.data == null
+                              ? const Icon(Icons.android_rounded)
+                              : Image.memory(snap.data!, gaplessPlayback: true),
+                        ),
+                      ),
+                      title: Text(
+                        app.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        onList ? l.fromRegionList(widget.region!) : app.package,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: onList ? theme.colorScheme.primary : null,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     );
-                  }
-                  final app = apps[i - 1];
-                  final onList =
-                      widget.region != null &&
-                      routing.suggested.contains(app.package);
-                  final icon = _icons.putIfAbsent(
-                    app.package,
-                    () => AndroidCore.appIcon(app.package),
-                  );
-                  return CheckboxListTile(
-                    value: routing.checked(app.package),
-                    onChanged: (v) {
-                      setState(() => routing.toggle(app.package, v ?? false));
-                      _save();
-                    },
-                    secondary: SizedBox.square(
-                      dimension: 40,
-                      child: FutureBuilder<Uint8List?>(
-                        future: icon,
-                        builder: (context, snap) => snap.data == null
-                            ? const Icon(Icons.android_rounded)
-                            : Image.memory(snap.data!, gaplessPlayback: true),
-                      ),
-                    ),
-                    title: Text(app.label),
-                    subtitle: Text(
-                      onList ? l.fromRegionList(widget.region!) : app.package,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: onList ? theme.colorScheme.primary : null,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  );
-                },
-              ),
+                  },
+                ),
+        ),
       ),
     );
   }

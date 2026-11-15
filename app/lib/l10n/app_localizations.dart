@@ -3462,7 +3462,7 @@ abstract class AppLocalizations {
   /// No description provided for @testAllDelays.
   ///
   /// In en, this message translates to:
-  /// **'Test all delays'**
+  /// **'Test all'**
   String get testAllDelays;
 
   /// No description provided for @tuicNote.
@@ -3680,114 +3680,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'WARP+'**
   String get modeWarp;
-
-  /// No description provided for @warpLogs.
-  ///
-  /// In en, this message translates to:
-  /// **'WARP logs'**
-  String get warpLogs;
-
-  /// No description provided for @warpNoAccount.
-  ///
-  /// In en, this message translates to:
-  /// **'No account needed — warp-plus registers an anonymous WARP identity on this device and keeps it here.'**
-  String get warpNoAccount;
-
-  /// No description provided for @warpMode.
-  ///
-  /// In en, this message translates to:
-  /// **'Connection mode'**
-  String get warpMode;
-
-  /// No description provided for @warpModeStandard.
-  ///
-  /// In en, this message translates to:
-  /// **'Standard'**
-  String get warpModeStandard;
-
-  /// No description provided for @warpModeGool.
-  ///
-  /// In en, this message translates to:
-  /// **'WARP in WARP'**
-  String get warpModeGool;
-
-  /// No description provided for @warpModeCfon.
-  ///
-  /// In en, this message translates to:
-  /// **'Psiphon chain'**
-  String get warpModeCfon;
-
-  /// No description provided for @warpModeStandardHint.
-  ///
-  /// In en, this message translates to:
-  /// **'One WARP tunnel, direct.'**
-  String get warpModeStandardHint;
-
-  /// No description provided for @warpModeGoolHint.
-  ///
-  /// In en, this message translates to:
-  /// **'A second WARP tunnel inside the first — helps where a single WARP connection is throttled or blocked.'**
-  String get warpModeGoolHint;
-
-  /// No description provided for @warpModeCfonHint.
-  ///
-  /// In en, this message translates to:
-  /// **'warp-plus\'s own built-in Psiphon carries the WARP handshake — separate from Ember\'s Psiphon mode.'**
-  String get warpModeCfonHint;
-
-  /// No description provided for @warpScan.
-  ///
-  /// In en, this message translates to:
-  /// **'Scan endpoints first'**
-  String get warpScan;
-
-  /// No description provided for @warpScanHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Probes WARP endpoints and connects to the fastest. Starting takes longer.'**
-  String get warpScanHint;
-
-  /// No description provided for @warpCountry.
-  ///
-  /// In en, this message translates to:
-  /// **'Psiphon exit country'**
-  String get warpCountry;
-
-  /// No description provided for @warpEndpoint.
-  ///
-  /// In en, this message translates to:
-  /// **'Endpoint'**
-  String get warpEndpoint;
-
-  /// No description provided for @warpEndpointAuto.
-  ///
-  /// In en, this message translates to:
-  /// **'Automatic'**
-  String get warpEndpointAuto;
-
-  /// No description provided for @warpEndpointHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Optional host:port. Empty = a random endpoint, or the scan\'s winner.'**
-  String get warpEndpointHint;
-
-  /// No description provided for @warpNextConnectHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Changes apply on the next connect.'**
-  String get warpNextConnectHint;
-
-  /// No description provided for @warpLocalProxy.
-  ///
-  /// In en, this message translates to:
-  /// **'Local proxy'**
-  String get warpLocalProxy;
-
-  /// No description provided for @warpMasqueNote.
-  ///
-  /// In en, this message translates to:
-  /// **'MASQUE is not in warp-plus v1.2.6 — this engine always uses the WireGuard protocol.'**
-  String get warpMasqueNote;
 }
 
 class _AppLocalizationsDelegate

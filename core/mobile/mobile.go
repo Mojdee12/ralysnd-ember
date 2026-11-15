@@ -41,8 +41,29 @@ var (
 // at once (its port taken) would otherwise loop.
 const restartPause = 5 * time.Second
 
-// tunMTU is the VPN interface's MTU; the app sets the same.
-const tunMTU = 1500
+// tunMTU is the VPN interface's MTU; the app sets the same on its
+// VpnService.Builder. It starts at the 1500 default and the app may
+// lower it (build 2038, Iran-priority queue 2f, custom tunnel MTU)
+// before StartTun; the gVisor stack and the interface must agree, or
+// frames larger than the interface are dropped. Clamped 1280..1500:
+// 1280 is the IPv6 minimum MTU (the floor), and above 1500 is
+// pointless on a phone VPN path. A corrupt or out-of-range value can
+// never break a connect: it clamps instead.
+var tunMTU uint32 = 1500
+
+// SetTunMTU sets the MTU StartTun gives the tunnel's stack, clamped
+// to 1280..1500 (see tunMTU). The app calls it at each connect, before
+// StartTun; a running tunnel keeps its start MTU.
+func SetTunMTU(mtu int32) {
+	if mtu < 1280 {
+		mtu = 1280
+	} else if mtu > 1500 {
+		mtu = 1500
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	tunMTU = uint32(mtu)
+}
 
 // Start runs the daemon with its data in dataDir (created when missing),
 // with the proxy on or off (SetOn). It returns once the daemon is started;

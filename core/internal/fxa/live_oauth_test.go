@@ -35,7 +35,7 @@ func TestLiveOAuthRefresh(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
-	token, err := RefreshToken(ctx, saved.RefreshToken)
+	token, err := RefreshToken(ctx, saved.RefreshToken, saved.ClientID)
 	if err != nil {
 		var apiError *fxaAPIError
 		if errors.As(err, &apiError) {

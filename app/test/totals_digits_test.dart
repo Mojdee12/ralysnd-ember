@@ -12,7 +12,9 @@ void main() {
     );
     final line = fmtProfileTotals(p);
     // Exact expected line: Latin digits, '.' separator, Latin units.
-    expect(line, '↓ 1.2 GB · ↑ 340 MB');
+    // Build 2056 (audit Batch 11): the ↓/↑ glyphs are gone —
+    // string contexts render "Down X · Up Y" instead.
+    expect(line, 'Down 1.2 GB · Up 340 MB');
     // No Arabic-script characters at all (digits or unit words).
     final arabicScript = RegExp(r'[؀-ۿݐ-ݿ]');
     expect(arabicScript.hasMatch(line), isFalse,
@@ -26,6 +28,8 @@ void main() {
       totalDownBytes: 37539021, // 35.8 MB
       totalUpBytes: 3565158, // 3.4 MB
     );
-    expect(fmtProfileTotals(p), '↓ 35.8 MB · ↑ 3.4 MB');
+    // Build 2056 (audit Batch 11): the ↓/↑ glyphs are gone —
+    // string contexts render "Down X · Up Y" instead.
+    expect(fmtProfileTotals(p), 'Down 35.8 MB · Up 3.4 MB');
   });
 }

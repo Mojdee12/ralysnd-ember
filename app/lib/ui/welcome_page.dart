@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../app_settings.dart';
 import '../core/core_controller.dart';
 import '../l10n/app_localizations.dart';
+import 'ember/ember_theme.dart';
 import 'widgets.dart';
 
 /// The first run: the user picks a language and a country, and the
@@ -71,92 +73,82 @@ class _WelcomePageState extends State<WelcomePage> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final theme = Theme.of(context);
+    // Build 2056: the first screen a new user sees is Map
+    // Control now — the Ember background and glass card, Ember
+    // dropdowns and the gradient Start button. The
+    // language/region choice and the first-run routing rule are
+    // untouched.
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: Panel(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Icon(
-                    Icons.shield_rounded,
-                    size: 56,
-                    color: theme.colorScheme.primary,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    l.welcomeTitle,
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
+      backgroundColor: Ember.bg,
+      body: EmberBackground(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: GlassCard(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Icon(
+                      Icons.shield_rounded,
+                      size: 56,
+                      color: Ember.orange,
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    l.welcomeBody,
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                    const SizedBox(height: 16),
+                    Text(
+                      l.welcomeTitle,
+                      textAlign: TextAlign.center,
+                      style: Ember.title,
                     ),
-                  ),
-                  const SizedBox(height: 28),
-                  DropdownButtonFormField<String>(
-                    initialValue: _language,
-                    decoration: InputDecoration(
-                      labelText: l.language,
-                      prefixIcon: const Icon(Icons.translate_rounded),
-                      border: const OutlineInputBorder(),
+                    const SizedBox(height: 8),
+                    Text(
+                      l.welcomeBody,
+                      textAlign: TextAlign.center,
+                      style: Ember.dimStyle,
                     ),
-                    onChanged: (v) => _pickLanguage(v!),
-                    items: [
-                      for (final code in AppSettings.supportedLanguages)
-                        DropdownMenuItem(
-                          value: code,
-                          child: Text(
-                            languageNames[code]!,
-                            style: languageStyle(code),
+                    const SizedBox(height: 28),
+                    _dropdown(
+                      label: l.language,
+                      value: _language,
+                      items: [
+                        for (final code in AppSettings.supportedLanguages)
+                          DropdownMenuItem(
+                            value: code,
+                            child: Text(
+                              languageNames[code]!,
+                              style: languageStyle(code),
+                            ),
                           ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    key: ValueKey(_region),
-                    initialValue: _region,
-                    decoration: InputDecoration(
-                      labelText: l.region,
-                      helperText: l.routingDirectHint,
-                      helperMaxLines: 3,
-                      prefixIcon: const Icon(Icons.alt_route_rounded),
-                      border: const OutlineInputBorder(),
+                      ],
+                      onChanged: (v) => _pickLanguage(v!),
                     ),
-                    onChanged: (v) => setState(() {
-                      _region = v!;
-                      _regionPicked = true;
-                    }),
-                    items: [
-                      for (final r in AppSettings.regions)
-                        DropdownMenuItem(
-                          value: r,
-                          child: Text(regionName(l, r)),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 28),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(48),
+                    const SizedBox(height: 16),
+                    _dropdown(
+                      label: l.region,
+                      value: _region,
+                      items: [
+                        for (final r in AppSettings.regions)
+                          DropdownMenuItem(
+                            value: r,
+                            child: Text(regionName(l, r)),
+                          ),
+                      ],
+                      onChanged: (v) => setState(() {
+                        _region = v!;
+                        _regionPicked = true;
+                      }),
+                      helper: l.routingDirectHint,
                     ),
-                    onPressed: _saving ? null : _start,
-                    child: Text(l.start),
-                  ),
-                ],
+                    const SizedBox(height: 28),
+                    EmberButton(
+                      label: l.start,
+                      onTap: _saving ? null : () => unawaited(_start()),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -164,4 +156,47 @@ class _WelcomePageState extends State<WelcomePage> {
       ),
     );
   }
+
+  /// A picker in the Ember field style (build 2056): the label
+  /// above, the value in a dark inset container, the options on
+  /// the Ember card.
+  Widget _dropdown({
+    required String label,
+    required String value,
+    required List<DropdownMenuItem<String>> items,
+    required ValueChanged<String?> onChanged,
+    String? helper,
+  }) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: Ember.dimStyle),
+          const SizedBox(height: 7),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            decoration: BoxDecoration(
+              color: Ember.field,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Ember.line),
+            ),
+            child: DropdownButton<String>(
+              value: value,
+              isExpanded: true,
+              dropdownColor: Ember.card,
+              underline: const SizedBox.shrink(),
+              style: Ember.body,
+              icon: const Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: Ember.dim,
+              ),
+              items: items,
+              onChanged: onChanged,
+            ),
+          ),
+          if (helper != null) ...[
+            const SizedBox(height: 7),
+            Text(helper, style: Ember.caption),
+          ],
+        ],
+      );
 }

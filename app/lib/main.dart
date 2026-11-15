@@ -80,6 +80,13 @@ Future<void> runAndroid() async {
     turnOn: AndroidCore.setOn,
   )..start();
   AppLifecycleListener(onResume: core.retryNow);
-  Updates.start(core, settings);
+  // Build 2071 (review §3.3): the inherited update checker is
+  // NOT started on Android. It polls the upstream repo
+  // (armanlife/firefox-vpn-client) every 5 days and can surface
+  // a foreign "Firefox-VPN" update in this app; Ember has no
+  // update feed of its own, so until one exists the checker
+  // stays off here. Updates.start also refuses Android itself,
+  // so no other entry point can revive it on this platform.
+  // The desktop entry above keeps its behaviour.
   runApp(VpnApp(core: core, settings: settings));
 }

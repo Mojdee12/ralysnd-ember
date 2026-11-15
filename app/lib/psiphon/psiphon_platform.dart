@@ -1,19 +1,7 @@
-/// The Psiphon engine's platform seam: [PsiphonBackend] is what a
-/// platform provides, [AndroidPsiphonBackend] drives the Kotlin
-/// service over the 'app/android' channel, and
-/// [WindowsPsiphonBackend] (psiphon_platform_windows.dart) runs the
-/// tunnel-core ConsoleClient as a child process. [PsiphonPlatform]
-/// keeps the static surface the controller has always used and adds
-/// [PsiphonPlatform.workDir], the engine's folder on this platform
-/// (the Xray seam's shape, so both engines resolve their paths the
-/// same way).
-
-import 'dart:io';
+/// The Dart side of the Psiphon engine's platform calls (the same
+/// 'app/android' channel MainActivity serves).
 
 import 'package:flutter/services.dart';
-
-import '../core/android_core.dart';
-import 'psiphon_platform_windows.dart';
 
 class PsiphonState {
   final bool running;
@@ -34,10 +22,8 @@ class PsiphonState {
   /// The egress regions the core announced this run.
   final List<String> regions;
 
-  /// The backend's last failure, in words ('' when none). Only the
-  /// Windows backend records one; it makes a dead core diagnosable
-  /// instead of a silent "not connected".
-  final String lastError;
+  /// The ladder rung that connected (build 2065; "" when none).
+  final String method;
 
   const PsiphonState({
     required this.running,
@@ -49,7 +35,7 @@ class PsiphonState {
     required this.region,
     required this.clientAddress,
     required this.regions,
-    this.lastError = '',
+    this.method = '',
   });
 
   static const stopped = PsiphonState(
@@ -65,39 +51,34 @@ class PsiphonState {
   );
 }
 
-/// What a platform provides for the Psiphon engine.
-abstract interface class PsiphonBackend {
-  Future<void> setOn({
-    required bool vpnMode,
-    required String region,
-    required String upstream,
-    required List<String> protocols,
-    required String dns,
-  });
-
-  Future<void> stop();
-
-  Future<PsiphonState> state();
-
-  /// The exit IP/country of the running tunnel, asked through the
-  /// tunnel itself. Best-effort: null on any failure.
-  Future<Map<String, String>?> exitInfo();
-
-  /// The engine's folder (settings, the core's data root, logs).
-  Future<Directory> workDir();
-}
-
-/// Android: the Kotlin PsiphonVpnService over the app channel.
-class AndroidPsiphonBackend implements PsiphonBackend {
+class PsiphonPlatform {
   static const _channel = MethodChannel('app/android');
 
-  @override
-  Future<void> setOn({
+  /// The engine's fixed local proxy ports (PsiphonConstants.kt).
+  static const socksPort = 11808;
+  static const httpPort = 11809;
+
+  static Future<void> setOn({
     required bool vpnMode,
     required String region,
     required String upstream,
     required List<String> protocols,
     required String dns,
+    required int mtu,
+    // Build 2057 (audit F-M4): capture IPv6 in the TUN only when
+    // true. Optional (default true) so the Xray underlay call site
+    // in xray_controller.dart keeps compiling unchanged — it runs
+    // proxy-only, where the flag has no effect.
+    bool ipv6 = true,
+    // Build 2065: the strategy ladder. All optional with the
+    // pre-2065 defaults, so the Xray underlay call site keeps its
+    // single-attempt behaviour unchanged.
+    List<String> rungs = const [],
+    String compartment = '',
+    List<String> cleanAkamai = const [],
+    List<String> cleanFastly = const [],
+    bool disableTimeouts = false,
+    bool cdnFront = false,
   }) =>
       _channel.invokeMethod('psiphonSetOn', {
         'on': true,
@@ -106,13 +87,19 @@ class AndroidPsiphonBackend implements PsiphonBackend {
         'upstream': upstream,
         'protocols': protocols,
         'dns': dns,
+        'mtu': mtu,
+        'ipv6': ipv6,
+        'rungs': rungs,
+        'compartment': compartment,
+        'cleanAkamai': cleanAkamai,
+        'cleanFastly': cleanFastly,
+        'disableTimeouts': disableTimeouts,
+        'cdnFront': cdnFront,
       });
 
-  @override
-  Future<void> stop() => _channel.invokeMethod('psiphonStop');
+  static Future<void> stop() => _channel.invokeMethod('psiphonStop');
 
-  @override
-  Future<PsiphonState> state() async {
+  static Future<PsiphonState> state() async {
     final m = await _channel.invokeMapMethod<String, dynamic>('psiphonState');
     if (m == null) return PsiphonState.stopped;
     return PsiphonState(
@@ -124,12 +111,16 @@ class AndroidPsiphonBackend implements PsiphonBackend {
       downBytes: (m['down'] as num?)?.toInt() ?? 0,
       region: m['region'] as String? ?? '',
       clientAddress: m['clientAddress'] as String? ?? '',
-      regions: ((m['regions'] as List?) ?? []).map((e) => e.toString()).toList(),
+      regions: ((m['regions'] as List?) ?? [])
+          .map((e) => e.toString())
+          .toList(),
+      method: m['method'] as String? ?? '',
     );
   }
 
-  @override
-  Future<Map<String, String>?> exitInfo() async {
+  /// The exit IP/country of the running Psiphon tunnel, asked through
+  /// its own SOCKS proxy. Best-effort: null on any failure.
+  static Future<Map<String, String>?> exitInfo() async {
     try {
       final m =
           await _channel.invokeMapMethod<String, dynamic>('psiphonExitInfo');
@@ -139,42 +130,4 @@ class AndroidPsiphonBackend implements PsiphonBackend {
       return null;
     }
   }
-
-  @override
-  Future<Directory> workDir() async {
-    final coreDir = await AndroidCore.dataDir();
-    return Directory('${File(coreDir).parent.path}/psiphon');
-  }
-}
-
-abstract final class PsiphonPlatform {
-  /// The engine's fixed local proxy ports (PsiphonConstants.kt).
-  static const socksPort = 11808;
-  static const httpPort = 11809;
-
-  static final PsiphonBackend backend =
-      Platform.isWindows ? WindowsPsiphonBackend() : AndroidPsiphonBackend();
-
-  static Future<void> setOn({
-    required bool vpnMode,
-    required String region,
-    required String upstream,
-    required List<String> protocols,
-    required String dns,
-  }) =>
-      backend.setOn(
-        vpnMode: vpnMode,
-        region: region,
-        upstream: upstream,
-        protocols: protocols,
-        dns: dns,
-      );
-
-  static Future<void> stop() => backend.stop();
-
-  static Future<PsiphonState> state() => backend.state();
-
-  static Future<Map<String, String>?> exitInfo() => backend.exitInfo();
-
-  static Future<Directory> workDir() => backend.workDir();
 }

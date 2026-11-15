@@ -1,149 +1,83 @@
-<div align="center">
-
-**🇺🇸 English** &nbsp;/&nbsp; [🇨🇳 简体中文](docs/readme/README_zh.md) &nbsp;/&nbsp; [🇷🇺 Русский](docs/readme/README_ru.md) &nbsp;/&nbsp; [🇮🇷 فارسی](docs/readme/README_fa.md)
-
-</div>
-<br>
-
-<p align="center"><img src="docs/images/logo.png" width="128" alt="Firefox VPN"></p>
-
-<h1 align="center">Firefox VPN</h1>
-
-<div align="center">
-
-[![Downloads](https://img.shields.io/github/downloads/armanlife/firefox-vpn-client/total?style=flat-square&logo=github&label=Downloads)](https://github.com/armanlife/firefox-vpn-client/releases)
-[![Last Version](https://img.shields.io/github/v/release/armanlife/firefox-vpn-client?style=flat-square&label=Version)](https://github.com/armanlife/firefox-vpn-client/releases/latest)
-[![License](https://img.shields.io/github/license/armanlife/firefox-vpn-client?style=flat-square&label=License)](LICENSE)
-
-</div>
-
-## What is Firefox VPN?
-
-**Firefox VPN** is a free, open-source VPN that works with a Firefox Account. It carries your internet traffic through Mozilla's servers, on **Fastly**'s infrastructure, over secure **HTTP/2 and HTTP/3** tunnels.
-
-Every Firefox Account comes with **50 GB of free data a month**, and the **multi-account** feature multiplies it: when one runs out, the next connects **automatically**.
-
-For **Android, Windows, macOS, and Linux**; completely free, with no ads.
-
-<p align="center"><a href="https://raw.githubusercontent.com/armanlife/firefox-vpn-client/main/docs/screenshots/main.webp" target="_blank"><img src="docs/screenshots/main.webp" width="720" alt="Firefox VPN"></a></p>
-
-## 🚀 Main features
-
-✈️ Cross-platform: Android, Windows, macOS, and Linux
-
-⭐ Very easy to use, with a simple interface
-
-🆓 Free: 50 GB a month for every Firefox Account
-
-➕ Multi-account: when one account's data runs out, the next takes over automatically
-
-🌐 Mozilla's official servers: choose a country with a ping test, or let the app pick the best server
-
-⚡ Fast, stable connections over HTTP/2 and HTTP/3
-
-🔀 Smart routing: local sites open directly, faster and without using data
-
-🔌 Several connection modes (VPN and proxy)
-
-🔒 Encrypted DNS (DNS over HTTPS)
-
-🌍 15 languages, including English, Persian, Chinese, and Russian
-
-🌙 Light and dark themes
-
-🛡 Open source, secure, and community-driven
-
-🔄 Automatic update checks
-
-## 📸 Screenshots
-
 <p align="center">
-<img src="docs/screenshots/phone_01.webp" width="240" alt="Home">&nbsp;&nbsp;
-<img src="docs/screenshots/phone_02.webp" width="240" alt="Servers">&nbsp;&nbsp;
-<img src="docs/screenshots/phone_03.webp" width="240" alt="Settings">
+  <img src="images/logo.png" width="120" alt="Ralysnd Ember logo">
 </p>
 
-## 📥 Download
+<h1 align="center">Ralysnd Ember</h1>
 
-<table>
-<thead>
-<tr><th>System</th><th>Download</th></tr>
-</thead>
-<tbody>
-<tr><td>Android</td><td><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Android-universal.apk"><img src="https://img.shields.io/badge/APK-Universal-1a7f37?logo=android&logoColor=white" alt="APK Universal"></a><br><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Android-arm64-v8a.apk"><img src="https://img.shields.io/badge/APK-ARMv8-2da44e?logo=android&logoColor=white" alt="APK ARMv8"></a><br><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Android-armeabi-v7a.apk"><img src="https://img.shields.io/badge/APK-ARMv7-4ac26b?logo=android&logoColor=white" alt="APK ARMv7"></a><br><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Android-x86_64.apk"><img src="https://img.shields.io/badge/APK-x64-6fdd8b?logo=android&logoColor=white" alt="APK x64"></a></td></tr>
-<tr><td>Windows</td><td><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Windows-Setup-x64.exe"><img src="https://img.shields.io/badge/Setup-x64-0550ae?logo=windows&logoColor=white" alt="Setup x64"></a><br><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Windows-x64.zip"><img src="https://img.shields.io/badge/Portable-x64-0969da" alt="Portable x64"></a></td></tr>
-<tr><td>macOS</td><td><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-macOS.dmg"><img src="https://img.shields.io/badge/DMG-Universal-24292f?logo=apple&logoColor=white" alt="DMG Universal"></a></td></tr>
-<tr><td rowspan="2">Linux</td><td><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Linux-amd64.tar.gz"><img src="https://img.shields.io/badge/App-amd64-e36209?logo=linux&logoColor=white" alt="App amd64"></a><br><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/Firefox-VPN-Linux-arm64.tar.gz"><img src="https://img.shields.io/badge/App-ARM64-e36209?logo=linux&logoColor=white" alt="App ARM64"></a></td></tr>
-<tr><td><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/firefox-vpn-core-linux-amd64.tar.gz"><img src="https://img.shields.io/badge/Core-amd64-f0883e?logo=linux&logoColor=white" alt="Core amd64"></a><br><a href="https://github.com/armanlife/firefox-vpn-client/releases/latest/download/firefox-vpn-core-linux-arm64.tar.gz"><img src="https://img.shields.io/badge/Core-ARM64-f6a35e?logo=linux&logoColor=white" alt="Core ARM64"></a></td></tr>
-</tbody>
-</table>
+<p align="center">
+  A personal multi-engine VPN client for Android with a signature <b>Map Control</b> design —<br>
+  black glass panels over a living dotted world map, one ember-orange accent, a glowing arc to your exit.
+</p>
 
-**Which file should I download?**
+<p align="center">
+  <a href="https://github.com/Mojdee12/ralysnd-ember/releases/latest"><b>⬇ Download the latest build</b></a>
+  &nbsp;·&nbsp; Android 7.0+ (arm64) &nbsp;·&nbsp; English UI
+</p>
 
-- **Android:** if you are not sure, take **Universal**; it installs on every phone. **ARMv8** is for most of today's phones and is smaller.
-- **Windows:** **Setup** is a normal installer; **Portable** needs no install and runs from any folder.
-- **Linux:** **App** for a Linux desktop (with a graphical environment); **Core** for a server (without a graphical environment, with a web panel).
+---
 
-## 💻 Install and update on Linux and macOS
+## What is it?
 
-> Windows and Android users don't need this section: take the installer from the "Download" table above.
+Ralysnd Ember is not one VPN protocol — it is **nine engines in one app**, sharing one design
+language and one home screen: a dotted world map that lights up with your home marker, the exit
+pin, and a pulsing arc while you are connected. Pick the engine that works on your network;
+Ember keeps your configs, subscriptions and traffic stats per engine, and can even chain
+engines (for example V2Ray over Psiphon) or fall back across engines automatically.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/armanlife/firefox-vpn-client/main/install.sh | bash
-```
+## Screenshots
 
-### 🌐 Web panel
+<p align="center">
+  <img src="images/ui-v2ray-connected.webp" width="270" alt="V2Ray home, connected">
+  <img src="images/ui-v2ray-home.webp" width="270" alt="V2Ray home with test results">
+  <img src="images/ui-subscriptions.webp" width="270" alt="Subscriptions">
+</p>
+<p align="center">
+  <img src="images/ui-editor.webp" width="270" alt="Config editor">
+  <img src="images/ui-lantern.png" width="270" alt="Lantern">
+  <img src="images/ui-masque.png" width="270" alt="WARP MASQUE">
+</p>
 
-For Linux servers, Firefox VPN has a **web panel** that opens in any browser and has everything the app has: managing accounts and data, choosing a server and testing delay, the connection test, the live log, and every setting.
+## Engines
 
-<p align="center"><img src="docs/screenshots/web.webp" width="720" alt="Web panel"></p>
+| Engine | What it is |
+|---|---|
+| **Mozilla VPN** | Mozilla VPN via the Kumiho core — Fenix OAuth sign-in, serverless bootstrap |
+| **V2Ray** | Full Xray-core client: VLESS / VMess / Trojan / Shadowsocks / WireGuard / Hysteria2, REALITY, XHTTP, gRPC, WebSocket, fragment, mux, fakeDNS |
+| **Psiphon** | Psiphon with a connection ladder, CDN fronting, clean-IP scanner and per-network winner memory |
+| **Lantern** | Lantern (Radiance) with CDN-fronted config fetch |
+| **WireGuard** | WireGuard + AmneziaWG obfuscation, file import, per-peer stats |
+| **OpenVPN** | OpenVPN profiles with an encrypted credential vault |
+| **WARP** | Cloudflare WARP via warp-plus (SOCKS) |
+| **WARP MASQUE** | Cloudflare MASQUE via the Aether core — six registration rungs incl. TLS-identity and tlshello modes, per-network memory, Auto h3/h2 learning |
+| **Underlays** | DNSTT (DNS tunnel) and wstunnel (WebSocket) as chain underlays for the other engines |
 
-- **Panel address:** `http://SERVER-IP:10820/app/`, with a username and password. The exact address is shown at the end of the install.
-- **Proxy:** SOCKS5 and HTTP on port `10810`, with a username and password of its own.
+## Highlights
 
-### ⌨️ Managing from the terminal
+- **Subscriptions** with auto-update, per-subscription certificate pinning and custom headers
+- **Fallback groups** and cross-engine fallback chains — if one engine dies, the next takes over
+- **Sandbox config test** — dry-run a config before you trust it
+- **Real kill switch**, LAN proxy sharing, seamless server switching
+- **Per-config traffic accounting** (persisted, resettable), real delay + speed tests
+- **Routing presets + custom rules**, per-app proxy, smart auto-connect triggers
+- **Backup / restore** of everything, transactional and atomic
+- **In-app updates** — from build 2075 the app checks this repo's Releases and updates itself
 
-On the server, run `sudo firefox-vpn` to open the management menu:
+## Download & install
 
-```text
-$ sudo firefox-vpn
+1. Open the [**latest release**](https://github.com/Mojdee12/ralysnd-ember/releases/latest).
+2. Download `RalysndEmber2.apk` (check the SHA-256 in the release notes if you like).
+3. Install it — Android will ask once to allow installs from your browser/files app.
 
-  Firefox VPN
-  ────────────────────────────────────────────────────────────────────────────
-   0) Exit
-  ────────────────────────────────────────────────────────────────────────────
-   1) Update                                   firefox-vpn update
-   2) Uninstall                                firefox-vpn uninstall
-  ────────────────────────────────────────────────────────────────────────────
-   3) Set panel login                          firefox-vpn panel
-   4) View panel info                          firefox-vpn panel-info
-  ────────────────────────────────────────────────────────────────────────────
-   5) Status                                   firefox-vpn status
-   6) Start                                    firefox-vpn start
-   7) Stop                                     firefox-vpn stop
-   8) Restart                                  firefox-vpn restart
-   9) Show the log                             firefox-vpn logs
-  ────────────────────────────────────────────────────────────────────────────
-  10) Enable autostart                         firefox-vpn enable
-  11) Disable autostart                        firefox-vpn disable
-  ────────────────────────────────────────────────────────────────────────────
-  12) Add a Firefox Account                    firefox-vpn add-account
-  13) List the accounts                        firefox-vpn list-accounts
-  ────────────────────────────────────────────────────────────────────────────
-  Enter a number [0-13]:
-```
+## Honest notes
 
-## OpenWrt routers
+- TUIC configs can be stored, edited and shared, but Xray-core has no TUIC outbound, so the
+  app badges them and refuses to pretend they connect.
+- This is a personal project, built for one person's networks (including heavily filtered
+  ones). It is source-available here; the Android app in Releases is the supported artifact.
+- The native engine cores ship prebuilt in `app/android/app/src/main/jniLibs/`; the Flutter
+  app is in `app/` and the Go mobile core sources are in `core/`.
 
-To install on an OpenWrt router, see the [OpenWrt guide](docs/OPENWRT.md).
+## License
 
-## Known limitations
-
-<details>
-<summary>What Mozilla's servers do not carry</summary>
-
-- **TCP only, no UDP:** voice and video calls in some apps, online games, and other UDP traffic do not go through. Browsers and most apps work normally.
-- **Web ports only:** Mozilla connects only to ports 80, 443, 8080, and 8443. Other ports, such as mail (25, 465, 587, 993) and SSH (22), are refused. Git over SSH to GitHub is the exception: it goes through port 443 by itself.
-- **Android notifications:** Google's push service uses port 5228, so with the VPN on, some apps' notifications (WhatsApp, Telegram, and others) may arrive only when the app is opened.
-
-</details>
+See [LICENSE](LICENSE). Bundled engines keep their own licenses (the Aether/MASQUE core is
+AGPL — its license text and source link are also shown inside the app under Settings).

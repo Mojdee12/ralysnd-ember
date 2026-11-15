@@ -13,7 +13,41 @@ import (
 	"time"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
+	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
 )
+
+// maxGuardianChallengeAttempts bounds the solve-and-retry rounds for one
+// Guardian call, matching the FxA client's budget.
+const maxGuardianChallengeAttempts = 5
+
+// guardianDo sends a Guardian request built by newRequest, transparently
+// solving the Fastly anti-bot client challenge when the edge answers
+// HTTP 406 — the Guardian endpoint sits behind the same challenge as FxA,
+// and FoxyVPN v2.0.2 wraps its Guardian calls the same way. The request
+// factory is invoked again after each successful solve because requests
+// are single-use.
+func guardianDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http.Response, error) {
+	for attempt := 1; attempt <= maxGuardianChallengeAttempts; attempt++ {
+		req, err := newRequest()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := controlplane.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusNotAcceptable {
+			return resp, nil
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		resp.Body.Close()
+		origin := req.URL.Scheme + "://" + req.URL.Host
+		if err := fxa.SolveChallenge(ctx, origin, body); err != nil {
+			return nil, fmt.Errorf("Fastly anti-bot challenge: %w", err)
+		}
+	}
+	return nil, fmt.Errorf("Fastly anti-bot challenge still failing after %d attempts (HTTP 406)", maxGuardianChallengeAttempts)
+}
 
 // DefaultEndpoint is the production Guardian endpoint, matching Firefox's
 // browser.ipProtection.guardian.endpoint preference.
@@ -48,13 +82,14 @@ func guardianURL(endpoint, path string) string {
 }
 
 func fetchProxyPass(ctx context.Context, endpoint, accessToken string) (*ProxyPassInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, guardianURL(endpoint, "/api/v1/fpn/token"), nil)
-	if err != nil {
-		return nil, err
-	}
-	applyGuardianHeaders(req, accessToken)
-
-	resp, err := controlplane.Do(req)
+	resp, err := guardianDo(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, guardianURL(endpoint, "/api/v1/fpn/token"), nil)
+		if err != nil {
+			return nil, err
+		}
+		applyGuardianHeaders(req, accessToken)
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("guardian request failed: %w", err)
 	}
@@ -105,13 +140,14 @@ func fetchProxyPass(ctx context.Context, endpoint, accessToken string) (*ProxyPa
 // fetchProxyUsage reads the quota headers with a HEAD request to the token
 // endpoint, as Firefox does, without minting a new pass.
 func fetchProxyUsage(ctx context.Context, endpoint, accessToken string) (*ProxyUsage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, guardianURL(endpoint, "/api/v1/fpn/token"), nil)
-	if err != nil {
-		return nil, err
-	}
-	applyGuardianHeaders(req, accessToken)
-
-	resp, err := controlplane.Do(req)
+	resp, err := guardianDo(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, guardianURL(endpoint, "/api/v1/fpn/token"), nil)
+		if err != nil {
+			return nil, err
+		}
+		applyGuardianHeaders(req, accessToken)
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("guardian usage request failed: %w", err)
 	}
@@ -129,13 +165,14 @@ func fetchProxyUsage(ctx context.Context, endpoint, accessToken string) (*ProxyU
 }
 
 func fetchUserInfo(ctx context.Context, endpoint, accessToken string) (*Entitlement, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, guardianURL(endpoint, "/api/v1/fpn/status"), nil)
-	if err != nil {
-		return nil, err
-	}
-	applyGuardianHeaders(req, accessToken)
-
-	resp, err := controlplane.Do(req)
+	resp, err := guardianDo(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, guardianURL(endpoint, "/api/v1/fpn/status"), nil)
+		if err != nil {
+			return nil, err
+		}
+		applyGuardianHeaders(req, accessToken)
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("guardian user info request failed: %w", err)
 	}
@@ -158,13 +195,14 @@ func fetchUserInfo(ctx context.Context, endpoint, accessToken string) (*Entitlem
 }
 
 func activateGuardian(ctx context.Context, endpoint, accessToken string) (*Entitlement, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, guardianURL(endpoint, "/api/v1/fpn/activate"), nil)
-	if err != nil {
-		return nil, err
-	}
-	applyGuardianHeaders(req, accessToken)
-
-	resp, err := controlplane.Do(req)
+	resp, err := guardianDo(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, guardianURL(endpoint, "/api/v1/fpn/activate"), nil)
+		if err != nil {
+			return nil, err
+		}
+		applyGuardianHeaders(req, accessToken)
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("guardian activate request failed: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -104,6 +105,44 @@ func proxyPassClaimStartTime(claims ProxyPassClaims) (time.Time, bool) {
 	default:
 		return time.Time{}, false
 	}
+}
+
+// RestorePass rebuilds a ProxyPassInfo from a persisted pass (build
+// 2034's pass store): the raw token plus the quota header values and
+// the receipt time captured when Guardian issued it. The claims are
+// re-parsed and re-anchored exactly as a fresh fetch anchors them, so
+// ExpiresAt means the same for a restored pass as for a live one.
+func RestorePass(token, quotaMax, quotaLeft, quotaReset string, receivedAt time.Time) (*ProxyPassInfo, error) {
+	claims, err := parseJWTClaims(token)
+	if err != nil {
+		return nil, fmt.Errorf("parsing JWT claims: %w", err)
+	}
+	offset, err := anchorProxyPassClaims(*claims, receivedAt)
+	if err != nil {
+		return nil, err
+	}
+	header := make(http.Header)
+	if quotaMax != "" {
+		header.Set("X-Quota-Limit", quotaMax)
+	}
+	if quotaLeft != "" {
+		header.Set("X-Quota-Remaining", quotaLeft)
+	}
+	if quotaReset != "" {
+		header.Set("X-Quota-Reset", quotaReset)
+	}
+	usage, usageErr := parseProxyUsage(header)
+	return &ProxyPassInfo{
+		RawToken:        token,
+		Claims:          *claims,
+		QuotaMax:        quotaMax,
+		QuotaLeft:       quotaLeft,
+		QuotaReset:      quotaReset,
+		Usage:           usage,
+		UsageErr:        usageErr,
+		ReceivedAt:      receivedAt,
+		claimTimeOffset: offset,
+	}, nil
 }
 
 func parseJWTClaims(token string) (*ProxyPassClaims, error) {

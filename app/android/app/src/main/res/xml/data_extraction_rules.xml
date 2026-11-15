@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Cloud backup and device-to-device transfer (Android 12 and later), as
-     backup_rules.xml: everything but what the core makes again. -->
+     backup_rules.xml: everything but what the core makes again — and,
+     since build 2057 (audit F-M17), everything that carries secrets.
+     See backup_rules.xml for the list and the trade-off: a restored
+     phone loses the V2Ray profiles/subscriptions, the Mozilla sign-in,
+     and the OpenVPN profiles (they are re-added, not restored), so no
+     plaintext credential ever travels in a backup. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="core/logs/" />
@@ -8,6 +13,10 @@
         <exclude domain="file" path="core/servers.json" />
         <exclude domain="file" path="core/status.json" />
         <exclude domain="file" path="core/local-api.token" />
+        <exclude domain="file" path="xray/state.json" />
+        <exclude domain="file" path="core/config.json" />
+        <exclude domain="file" path="core/accounts/" />
+        <exclude domain="file" path="openvpn/state.json" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="core/logs/" />
@@ -15,5 +24,9 @@
         <exclude domain="file" path="core/servers.json" />
         <exclude domain="file" path="core/status.json" />
         <exclude domain="file" path="core/local-api.token" />
+        <exclude domain="file" path="xray/state.json" />
+        <exclude domain="file" path="core/config.json" />
+        <exclude domain="file" path="core/accounts/" />
+        <exclude domain="file" path="openvpn/state.json" />
     </device-transfer>
 </data-extraction-rules>

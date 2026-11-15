@@ -5,7 +5,6 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../app_settings.dart';
 import '../core/core_api.dart';
-import '../features.dart';
 import '../core/core_controller.dart';
 import '../core/models.dart';
 import '../l10n/app_localizations.dart';
@@ -283,22 +282,6 @@ class _ShellState extends State<Shell> {
         _page = pages[i];
         _settingsOpening = null;
       });
-      // Windows at desktop width: the Fluent Ember shell (rail +
-      // glass, the locked mockups). Narrow windows keep the phone
-      // shell, like Android. (Features.forceDesktop is the screenshot
-      // harness's EMBER_FORCE_DESKTOP=1 override — see features.dart.)
-      if ((Platform.isWindows || Features.forceDesktop) &&
-          MediaQuery.sizeOf(context).width >= 640) {
-        return EmberShell(
-          core: core,
-          settings: widget.settings,
-          desktop: true,
-          banner: core.unavailable != null && status != null
-              ? const _LostBanner()
-              : null,
-          noCore: status == null ? _NoCore(core: core) : null,
-        );
-      }
       // Android (a phone, or a tablet in either orientation) and a narrow
       // window: the phone layout, Home and Settings. The computer layout
       // offers computer-only choices, such as Windows' system proxy.

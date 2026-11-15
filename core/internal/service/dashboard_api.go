@@ -14,6 +14,7 @@ import (
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/accounts"
 	"github.com/armanlife/firefox-vpn-client/core/internal/config"
+	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
 	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
 	"github.com/armanlife/firefox-vpn-client/core/internal/netstate"
 	"github.com/armanlife/firefox-vpn-client/core/internal/proxy"
@@ -173,6 +174,15 @@ type StatusView struct {
 	// OpenFolderRequest counts the dashboard's requests to open the data
 	// folder, for the tray to carry out.
 	OpenFolderRequest uint64 `json:"open_folder_request"`
+	// PassExpiresAt is when the active account's stored ProxyPass
+	// expires (unix seconds; 0 when none is stored) — build 2034's
+	// prepared pass. The app compares it to now to decide whether a
+	// bootstrap handoff is needed before connecting.
+	PassExpiresAt int64 `json:"pass_expires_at"`
+	// Bootstrap describes the configured bootstrap egress (build
+	// 2034): its kind, and the saved Worker relay's URL (never its
+	// key).
+	Bootstrap *bootstrapView `json:"bootstrap,omitempty"`
 	// Traffic is what clients sent and received since the proxy started,
 	// and the current speed.
 	Traffic *proxy.Traffic `json:"traffic,omitempty"`
@@ -197,8 +207,20 @@ func (s *dashboardServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 // screen.
 func (d *Daemon) StatusView() (StatusView, error) {
 	cfg := d.config()
+	var passExpiry time.Time
+	if d.pool != nil {
+		passExpiry = d.pool.StoredPassExpiry()
+	}
 	d.mu.Lock()
 	view := StatusView{State: d.state, LastTest: d.lastTest, DataDir: d.paths.Dir, Threshold: cfg.Accounts.SwitchThresholdPercent}
+	if !passExpiry.IsZero() {
+		view.PassExpiresAt = passExpiry.Unix()
+	}
+	view.Bootstrap = &bootstrapView{
+		Egress:      string(controlplane.Bootstrap()),
+		RelayURL:    cfg.Network.BootstrapRelayURL,
+		RelayKeySet: cfg.Network.BootstrapRelayKey != "",
+	}
 	view.DNS = dnsDescription(cfg.DNS)
 	view.Version = version.Current
 	view.CanExit = d.ExitApp != nil
@@ -370,8 +392,21 @@ func (s *dashboardServer) handleSignInStart(w http.ResponseWriter, r *http.Reque
 		// AccountID signs an existing account in again with its stored
 		// password, so only a confirmation code may be asked for.
 		AccountID string `json:"account_id"`
+		// Browser starts a browser sign-in instead (build
+		// 2033): no email or password is involved; the session
+		// view carries the authorize URL.
+		Browser bool `json:"browser"`
 	}
 	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.Browser {
+		view, err := s.d.signins.startBrowser()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, view)
 		return
 	}
 	if in.AccountID != "" {
@@ -417,6 +452,29 @@ func (s *dashboardServer) handleSignInAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := session.answer(in.Value); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session.snapshot())
+}
+
+// handleSignInBrowserCode receives what the app's WebView
+// intercepted on the OAuth success redirect (build 2033).
+func (s *dashboardServer) handleSignInBrowserCode(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.d.signins.get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown sign-in")
+		return
+	}
+	var in struct {
+		Code  string `json:"code"`
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if err := session.answerBrowser(browserResult{code: in.Code, state: in.State, err: in.Error}); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}

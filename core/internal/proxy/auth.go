@@ -16,7 +16,7 @@ func refreshRuntimeAuth(ctx context.Context, auth *runtimeAuth) (*runtimeAuth, e
 		return nil, fmt.Errorf("no refresh token available")
 	}
 	ctx, cancel := context.WithTimeout(ctx, APIRequestTimeout)
-	token, err := fxa.RefreshToken(ctx, auth.Token.RefreshToken)
+	token, err := fxa.RefreshToken(ctx, auth.Token.RefreshToken, auth.Token.ClientID)
 	cancel()
 	if err != nil {
 		return nil, err

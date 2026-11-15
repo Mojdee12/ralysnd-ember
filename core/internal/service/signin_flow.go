@@ -33,9 +33,14 @@ const (
 	stepUnblockCode = "need_unblock_code"
 	stepCaptcha     = "need_captcha"
 	stepEmailLink   = "need_email_link"
-	stepDone        = "done"
-	stepFailed      = "failed"
-	stepCancelled   = "cancelled"
+	// stepBrowser (build 2033): the sign-in continues in a
+	// WebView on Mozilla's own pages (the Kumiho contract);
+	// the view's AuthURL is where it starts, and the code
+	// arrives through the browser-answer route.
+	stepBrowser   = "need_browser"
+	stepDone      = "done"
+	stepFailed    = "failed"
+	stepCancelled = "cancelled"
 )
 
 var errSignInCancelled = errors.New("sign-in cancelled")
@@ -55,10 +60,13 @@ type signInView struct {
 	// PasswordAccepted is set once Mozilla accepted the email and the
 	// password (the steps after it confirm the sign-in), so an app can let
 	// a password manager save them only then.
-	PasswordAccepted bool      `json:"password_accepted,omitempty"`
-	Captcha          string    `json:"captcha,omitempty"`
-	AccountID        string    `json:"account_id,omitempty"`
-	Updated          time.Time `json:"updated"`
+	PasswordAccepted bool   `json:"password_accepted,omitempty"`
+	Captcha          string `json:"captcha,omitempty"`
+	AccountID        string `json:"account_id,omitempty"`
+	// AuthURL is the browser sign-in's authorize URL, present
+	// while the step is need_browser (build 2033).
+	AuthURL string    `json:"auth_url,omitempty"`
+	Updated time.Time `json:"updated"`
 }
 
 // signIn runs one interactive Firefox Accounts sign-in in the background.
@@ -69,6 +77,23 @@ type signIn struct {
 	view   signInView
 	input  chan string
 	cancel context.CancelFunc
+
+	// Browser sign-in state (build 2033): the PKCE verifier
+	// and anti-CSRF state minted at start, and the channel
+	// the intercepted redirect's answer arrives on. Nil for
+	// password sign-ins.
+	browserVerifier string
+	browserState    string
+	browserAnswer   chan browserResult
+}
+
+// browserResult is what the WebView intercepted on the
+// success redirect: the authorization code and the state it
+// came back with, or the error FxA put in the URL instead.
+type browserResult struct {
+	code  string
+	state string
+	err   string
 }
 
 type signInRegistry struct {
@@ -103,6 +128,125 @@ func (r *signInRegistry) start(email, password string) (signInView, error) {
 	r.mu.Unlock()
 	go s.run(ctx, r.d, email, password)
 	return s.snapshot(), nil
+}
+
+// startBrowser begins a browser sign-in (build 2033): the
+// session waits at the need_browser step with the authorize
+// URL in its view until the app hands back the code the
+// WebView intercepted, or the sign-in times out / is
+// cancelled like any other.
+func (r *signInRegistry) startBrowser() (signInView, error) {
+	verifier, challenge, state, err := fxa.NewBrowserChallenge()
+	if err != nil {
+		return signInView{}, err
+	}
+	var idBytes [12]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		return signInView{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), signInTimeout)
+	s := &signIn{
+		view: signInView{
+			ID:      hex.EncodeToString(idBytes[:]),
+			Step:    stepBrowser,
+			Message: "Sign in on Mozilla's page",
+			AuthURL: fxa.BrowserAuthURL(challenge, state),
+			Updated: time.Now(),
+		},
+		input:           make(chan string),
+		cancel:          cancel,
+		browserVerifier: verifier,
+		browserState:    state,
+		browserAnswer:   make(chan browserResult, 1),
+	}
+	r.mu.Lock()
+	r.pruneLocked()
+	r.sessions[s.view.ID] = s
+	r.mu.Unlock()
+	go s.runBrowser(ctx, r.d)
+	return s.snapshot(), nil
+}
+
+// answerBrowser delivers the WebView's intercepted result.
+func (s *signIn) answerBrowser(res browserResult) error {
+	if s.snapshot().Step != stepBrowser {
+		return errors.New("this sign-in is not waiting for the browser")
+	}
+	select {
+	case s.browserAnswer <- res:
+		return nil
+	case <-time.After(5 * time.Second):
+		return errors.New("this sign-in is not waiting for the browser")
+	}
+}
+
+func (s *signIn) runBrowser(ctx context.Context, d *Daemon) {
+	defer s.cancel()
+	accountID, email, err := s.signInBrowser(ctx, d)
+	switch {
+	case errors.Is(err, errSignInCancelled):
+		s.set(stepCancelled, "Sign-in cancelled", signInProblem{}, "")
+	case err != nil:
+		logx.Warn("browser sign-in failed err=%s", fxa.Message(err))
+		s.set(stepFailed, "The account was not added.", signInFailure(err), "")
+	default:
+		s.mu.Lock()
+		s.view.AccountID = accountID
+		s.view.Email = email
+		s.mu.Unlock()
+		s.set(stepDone, "Account added", signInProblem{}, "")
+	}
+}
+
+// signInBrowser completes a browser sign-in once the WebView
+// hands back the code: state check, code exchange, account.
+func (s *signIn) signInBrowser(ctx context.Context, d *Daemon) (string, string, error) {
+	var res browserResult
+	select {
+	case res = <-s.browserAnswer:
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return "", "", errSignInCancelled
+		}
+		return "", "", errSignInTimedOut
+	}
+	if res.err != "" {
+		return "", "", fmt.Errorf("Mozilla refused the sign-in: %s", res.err)
+	}
+	if res.state != s.browserState {
+		return "", "", errors.New("the sign-in answer does not match this sign-in (state mismatch)")
+	}
+	if res.code == "" {
+		return "", "", errors.New("the browser sign-in returned no code")
+	}
+	s.set(stepWorking, "Getting the account token", signInProblem{}, "")
+	token, err := fxa.ExchangeAuthCode(ctx, res.code, s.browserVerifier)
+	if err != nil {
+		return "", "", err
+	}
+	if token.RefreshToken == "" {
+		// The account store cannot hold an account without a
+		// refresh token (Kumiho rejects this exchange too).
+		return "", "", errors.New("Mozilla's answer carried no refresh token; the sign-in cannot be kept")
+	}
+	// The account's email comes from the FxA profile endpoint
+	// (Kumiho's source); the id_token claim is only a fallback
+	// for a profile call that fails outright.
+	email, err := fxa.ProfileEmail(ctx, token.AccessToken)
+	if err != nil || email == "" {
+		email = fxa.EmailFromIDToken(token)
+	}
+	if email == "" {
+		return "", "", errors.New("Mozilla's answer did not name the account (profile lookup failed)")
+	}
+	// No password exists for a browser account: the refresh
+	// token is the credential, and when it stops working the
+	// person signs in with the browser again.
+	acc, err := d.addSignedInAccount(email, "", token)
+	if err != nil {
+		return "", "", err
+	}
+	return acc.ID, email, nil
 }
 
 func (r *signInRegistry) get(id string) (*signIn, bool) {

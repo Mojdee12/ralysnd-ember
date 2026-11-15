@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Build 2065: the boot flag for auto-connect (BootReceiver
+         only records that a boot happened; it starts nothing). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -13,7 +16,7 @@
         tools:ignore="QueryAllPackagesPermission" />
     <application
         android:label="@string/app_name"
-        android:name="${applicationName}"
+        android:name=".EmberApplication"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
@@ -68,13 +71,26 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="A VPN that carries the device's traffic through the Xray core." />
         </service>
-        <!-- The Psiphon engine's service: the tunnel core runs in this
-             process (gomobile AAR) in both of its modes — as a VPN with
-             the TUN bridge, or proxy-only without one. Never up at the
-             same time as the other engines; the app turns one off
-             before another on. -->
+        <!-- The Psiphon engine's service: the tunnel core runs
+             (gomobile AAR) in both of its modes — as a VPN with
+             the TUN bridge, or proxy-only without one. Never up at
+             the same time as the other engines; the app turns one
+             off before another on.
+             Build 2073: the service runs in its OWN process
+             (:psiphon). The Psiphon gomobile runtime (pg) wedged
+             on its first call in the main process, where the
+             Mozilla gomobile runtime (go) is already loaded and
+             started at every app launch — in ralysnd, where the
+             same stack works, the pg runtime is the first and
+             only gomobile runtime in its process. Isolation
+             restores that condition in any engine order. All
+             main-process interaction is intent- and file-based
+             (see PsiphonVpnService's published state file), so
+             nothing else about the engine changes. No other
+             component runs in its own process. -->
         <service
             android:name=".PsiphonVpnService"
+            android:process=":psiphon"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
@@ -85,19 +101,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="A VPN that carries the device's traffic through the Psiphon core." />
         </service>
-        <!-- The Lantern engine's service: the Radiance core runs in
-             this process (gomobile AAR, novpn build) serving its
-             local SOCKS proxy, and this service bridges the device
-             TUN to it. Never up at the same time as the other
-             engines; the app turns one off before another on.
-             2015: it runs in its OWN process (:lantern). Three
-             gomobile Go runtimes (Mozilla, Psiphon, Lantern) used
-             to share the main process; the Lantern core died hard
-             inside Go runtime init when its library loaded after
-             another runtime was already up. Isolated, it is the
-             only Go runtime in its process. Its state reaches the
-             UI through a published state file (see
-             LanternVpnService.publishState), not process statics. -->
+        <!-- The Lantern engine's VPN (build 2024): the radiance
+             core runs as a subprocess (liblantern.so) serving a
+             local SOCKS proxy that the TUN bridge exits through.
+             Never up at the same time as the other engines; the
+             app turns one off before another on. -->
         <service
             android:name=".LanternVpnService"
             android:exported="false"
@@ -110,13 +118,13 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="A VPN that carries the device's traffic through the Lantern core." />
         </service>
-        <!-- The WARP+ engine's service: the warp-plus core runs as a
-             subprocess (jniLibs/libwarpplus.so) serving its local
-             SOCKS5 proxy, and this service bridges the device TUN to
-             it. Never up at the same time as the other engines; the
-             app turns one off before another on. -->
+        <!-- The OpenVPN engine's VPN (build 2025): the OpenVPN 3
+             core, rebuilt from source behind Ember's own JNI
+             bridge, drives this service's TUN through its
+             callbacks. Never up at the same time as the other
+             engines; the app turns one off before another on. -->
         <service
-            android:name=".WarpVpnService"
+            android:name=".OpenVpnService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
@@ -125,7 +133,7 @@
             </intent-filter>
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="A VPN that carries the device's traffic through the warp-plus core." />
+                android:value="A VPN that carries the device's traffic through the OpenVPN core." />
         </service>
         <!-- The Quick Settings tile that turns the proxy on or off. -->
         <service
@@ -157,6 +165,14 @@
         <receiver
             android:name=".ConnectWidget$Toggle"
             android:exported="false" />
+        <!-- Build 2065: records boots for the auto-connect trigger. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

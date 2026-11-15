@@ -79,6 +79,34 @@ func configureAPIRelay(raw string) error {
 	return nil
 }
 
+// configureBootstrap installs the persisted bootstrap egress (build
+// 2034) into the control plane: the Worker relay when one is saved,
+// otherwise the donor SOCKS. The egress is only USED inside bootstrap
+// windows (prepare calls and the one region retry) — installing it
+// here changes no live traffic.
+func configureBootstrap(cfg config.Network) error {
+	if cfg.BootstrapRelayURL != "" {
+		if err := config.ValidateBootstrapRelay(cfg.BootstrapRelayURL, cfg.BootstrapRelayKey); err != nil {
+			return err
+		}
+		if err := controlplane.SetBootstrapRelay(cfg.BootstrapRelayURL, cfg.BootstrapRelayKey); err != nil {
+			return err
+		}
+		logx.Info("bootstrap egress: Worker relay %s", cfg.BootstrapRelayURL)
+		return nil
+	}
+	if err := config.ValidateBootstrapSocks(cfg.BootstrapSocks); err != nil {
+		return err
+	}
+	if cfg.BootstrapSocks != "" {
+		controlplane.SetBootstrapSocks(cfg.BootstrapSocks)
+		logx.Info("bootstrap egress: donor SOCKS %s", cfg.BootstrapSocks)
+		return nil
+	}
+	controlplane.ClearBootstrap()
+	return nil
+}
+
 // apiRelayTransport is the transport configureAPIRelay installed; nil when
 // no relay is set.
 var apiRelayTransport http.RoundTripper

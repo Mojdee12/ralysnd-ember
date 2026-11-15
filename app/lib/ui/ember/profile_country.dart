@@ -79,6 +79,11 @@ const _englishNames = <String, String>{
   'SA': 'Saudi Arabia',
 };
 
+/// The English display name for an ISO country code (the code
+/// itself when unknown) — for group titles (build 2032).
+String countryDisplayName(String code) =>
+    _englishNames[code.toUpperCase()] ?? code.toUpperCase();
+
 /// The country a profile's remark claims, or null when it claims none.
 /// Only codes the map has coordinates for are returned.
 String? profileCountryCode(Profile p) {

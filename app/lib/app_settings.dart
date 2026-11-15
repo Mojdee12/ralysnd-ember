@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'atomic_json_store.dart';
+
 /// What the window's close button does.
 enum CloseAction { ask, tray, quit }
 
@@ -64,32 +66,56 @@ class AppSettings extends ChangeNotifier {
   /// protocol. Kept in this file.
   Set<String> hiddenConnectionColumns = {'inbound', 'traffic', 'duration'};
 
-  /// The engine the Ember panel shows: 0 = Mozilla, 1 = V2Ray.
+  /// The engine the Ember panel shows: 0 = Mozilla, 1 = V2Ray,
+  /// 2 = Psiphon, 3 = Lantern (2024: Lantern is back as mode 3; a
+  /// stored 4 from the WARP era is clamped to 0 at load).
   int emberMode = 0;
+
+  /// The Mozilla bootstrap egress (build 2034): how the core
+  /// fetches a Guardian pass when the region blocks it (HTTP 451).
+  /// One of [bootstrapChoices]: 'off', 'psiphon', 'v2ray', 'warp',
+  /// 'relay' (the user's Cloudflare Worker relay). Persisted here;
+  /// the core learns the concrete egress on each prepare call.
+  String mozillaBootstrap = 'off';
+
+  /// The bootstrap egress choices, in picker order.
+  static const bootstrapChoices = ['off', 'psiphon', 'v2ray', 'warp', 'relay'];
 
   /// Ember 2's baked-in defaults (VPN mode, smart routing off, DoH on)
   /// have been applied to the core once.
   bool ember2DefaultsApplied = false;
 
-  /// The DESKTOP counterpart: the Windows first-run default (Mozilla
-  /// capture mode "clear" → "tun" when the TUN service is installed)
-  /// has been applied once. Separate from [ember2DefaultsApplied],
-  /// which is Android's flag and path.
-  bool desktopDefaultsApplied = false;
-
-  /// The desktop Mozilla transport default (proxy.transport = "h2")
-  /// has been pinned once (2.0.5): on a UDP-hostile network an "h3"
-  /// value makes every connect first burn the core's whole 20 s
-  /// connect timeout on dead QUIC attempts before the engine falls
-  /// back to H2. After this flag is set, the Settings protocol
-  /// choice owns the value again.
-  bool desktopTransportPinned = false;
+  /// The 2024 one-time transport pin has run: the Mozilla core's
+  /// proxy.transport was set to "h2" once (the desktop 2.0.5 pin,
+  /// brought to Android — an install whose saved core config says
+  /// "h3" pays the core's 20 s ConnectTimeout on every connect on
+  /// a UDP-hostile network before falling back). After this flag
+  /// is set, the Settings transport choice owns the value again.
+  bool transportPinned = false;
 
   /// The 2006 one-time migration has run: the stored language (which
   /// up to 2005 was the shipped Persian default, not necessarily a
   /// deliberate pick) was reset to English once. After this flag is
   /// set, the language picker owns the value again.
   bool emberEnDefaultApplied = false;
+
+  /// Cross-engine fallback (build 2065, item 5): when on, a power-on
+  /// that fails on the selected engine walks [fallbackChain] (engine
+  /// modes, in the owner's order) until one connects and carries.
+  /// Default off and default order Psiphon → Lantern → WARP →
+  /// V2Ray, per the owner's stated chain.
+  bool fallbackChainEnabled = false;
+  List<int> fallbackChain = [2, 3, 6, 1];
+
+  /// Auto-connect triggers (build 2065, item 14): one master
+  /// switch, off by default, with three triggers and a trusted
+  /// Wi-Fi exclusion list. Distinct from [autoConnect] above (the
+  /// desktop core's own start behaviour).
+  bool emberAutoConnect = false;
+  bool autoConnectOnBoot = true;
+  bool autoConnectOnUntrustedWifi = true;
+  bool autoConnectOnNetworkChange = true;
+  List<String> trustedSsids = [];
 
   /// The app's languages, in the order the language menus list them.
   /// 'zh' is Simplified and 'zh_Hant' Traditional Chinese.
@@ -212,10 +238,31 @@ class AppSettings extends ChangeNotifier {
         if (j['hidden_connection_columns'] case final List<Object?> v) {
           s.hiddenConnectionColumns = {...v.whereType<String>()};
         }
-        if (j['ember_mode'] case final int v) s.emberMode = v;
+        if (j['ember_mode'] case final int v) {
+          // 2024: Lantern is back as mode 3 (its pre-2023 stored
+          // values are valid again); WARP (4) stays gone. A stored
+          // mode pointing outside 0..3 falls back to Mozilla,
+          // never a crash or a dead page.
+          s.emberMode = v >= 0 && v <= 7 ? v : 0;
+        }
+        if (j['mozilla_bootstrap'] case final String v
+            when bootstrapChoices.contains(v)) {
+          s.mozillaBootstrap = v;
+        }
         s.ember2DefaultsApplied = j['ember2_defaults'] == true;
-        s.desktopDefaultsApplied = j['ember_desktop_defaults'] == true;
-        s.desktopTransportPinned = j['ember_desktop_transport'] == true;
+        s.transportPinned = j['transport_pinned'] == true;
+        s.fallbackChainEnabled = j['fallback_chain_enabled'] == true;
+        if (j['fallback_chain'] case final List<Object?> v) {
+          final chain = v.whereType<int>().where((m) => m >= 0 && m <= 7).toList();
+          if (chain.isNotEmpty) s.fallbackChain = chain;
+        }
+        s.emberAutoConnect = j['ember_auto_connect'] == true;
+        s.autoConnectOnBoot = j['auto_connect_boot'] != false;
+        s.autoConnectOnUntrustedWifi = j['auto_connect_untrusted_wifi'] != false;
+        s.autoConnectOnNetworkChange = j['auto_connect_network_change'] != false;
+        if (j['trusted_ssids'] case final List<Object?> v) {
+          s.trustedSsids = v.whereType<String>().toList();
+        }
         if (j['ember_en_default'] == true) {
           s.emberEnDefaultApplied = true;
         } else {
@@ -256,20 +303,35 @@ class AppSettings extends ChangeNotifier {
     bool? udpNotice,
     Set<String>? hiddenConnectionColumns,
     int? emberMode,
+    String? mozillaBootstrap,
     bool? ember2DefaultsApplied,
     bool? emberEnDefaultApplied,
-    bool? desktopDefaultsApplied,
-    bool? desktopTransportPinned,
+    bool? transportPinned,
+    bool? fallbackChainEnabled,
+    List<int>? fallbackChain,
+    bool? emberAutoConnect,
+    bool? autoConnectOnBoot,
+    bool? autoConnectOnUntrustedWifi,
+    bool? autoConnectOnNetworkChange,
+    List<String>? trustedSsids,
   }) {
+    this.fallbackChainEnabled =
+        fallbackChainEnabled ?? this.fallbackChainEnabled;
+    this.fallbackChain = fallbackChain ?? this.fallbackChain;
+    this.emberAutoConnect = emberAutoConnect ?? this.emberAutoConnect;
+    this.autoConnectOnBoot = autoConnectOnBoot ?? this.autoConnectOnBoot;
+    this.autoConnectOnUntrustedWifi =
+        autoConnectOnUntrustedWifi ?? this.autoConnectOnUntrustedWifi;
+    this.autoConnectOnNetworkChange =
+        autoConnectOnNetworkChange ?? this.autoConnectOnNetworkChange;
+    this.trustedSsids = trustedSsids ?? this.trustedSsids;
+    this.mozillaBootstrap = mozillaBootstrap ?? this.mozillaBootstrap;
     this.emberMode = emberMode ?? this.emberMode;
+    this.transportPinned = transportPinned ?? this.transportPinned;
     this.emberEnDefaultApplied =
         emberEnDefaultApplied ?? this.emberEnDefaultApplied;
     this.ember2DefaultsApplied =
         ember2DefaultsApplied ?? this.ember2DefaultsApplied;
-    this.desktopDefaultsApplied =
-        desktopDefaultsApplied ?? this.desktopDefaultsApplied;
-    this.desktopTransportPinned =
-        desktopTransportPinned ?? this.desktopTransportPinned;
     this.hiddenConnectionColumns =
         hiddenConnectionColumns ?? this.hiddenConnectionColumns;
     this.udpNotice = udpNotice ?? this.udpNotice;
@@ -290,35 +352,51 @@ class AppSettings extends ChangeNotifier {
     _save();
   }
 
+  /// The shared atomic store for this file (build 2054, audit
+  /// F-H8), created once so every write for this file goes
+  /// through one serialization chain. Writes are fire-and-
+  /// forget from update(), so serialization is what keeps two
+  /// quick setting changes from interleaving bytes.
+  AtomicJsonStore? _store;
+
   Future<void> _save() async {
     final f = file;
     if (f == null) return;
     try {
-      await f.parent.create(recursive: true);
-      await f.writeAsString(
-        const JsonEncoder.withIndent('  ').convert({
-          'language': language,
-          'theme': themeMode.name,
-          'close': closeAction.name,
-          'welcome_done': !firstRun,
-          'show_public_ip': showPublicIp,
-          'low_quota_dismissed_at': lowQuotaDismissedAt?.toIso8601String(),
-          'dismissed_update': dismissedUpdate,
-          'update_checked_at': updateCheckedAt?.toIso8601String(),
-          'update_version': updateVersion,
-          'update_url': updateUrl,
-          'autostart': autostart,
-          'auto_connect': autoConnect,
-          'auto_update': autoUpdate,
-          'udp_notice': udpNotice,
-          'hidden_connection_columns': hiddenConnectionColumns.toList(),
-          'ember_mode': emberMode,
-          'ember2_defaults': ember2DefaultsApplied,
-          'ember_desktop_defaults': desktopDefaultsApplied,
-          'ember_desktop_transport': desktopTransportPinned,
-          'ember_en_default': emberEnDefaultApplied,
-        }),
-      );
+      // Build 2054 (audit F-H8): tmp + flush + rename through
+      // the shared store — the old direct writeAsString could
+      // tear the file mid-save and silently reset every setting
+      // on the next launch.
+      _store ??= AtomicJsonStore(f);
+      await _store!.write({
+        'language': language,
+        'theme': themeMode.name,
+        'close': closeAction.name,
+        'welcome_done': !firstRun,
+        'show_public_ip': showPublicIp,
+        'low_quota_dismissed_at': lowQuotaDismissedAt?.toIso8601String(),
+        'dismissed_update': dismissedUpdate,
+        'update_checked_at': updateCheckedAt?.toIso8601String(),
+        'update_version': updateVersion,
+        'update_url': updateUrl,
+        'autostart': autostart,
+        'auto_connect': autoConnect,
+        'auto_update': autoUpdate,
+        'udp_notice': udpNotice,
+        'hidden_connection_columns': hiddenConnectionColumns.toList(),
+        'ember_mode': emberMode,
+        'mozilla_bootstrap': mozillaBootstrap,
+        'ember2_defaults': ember2DefaultsApplied,
+        'ember_en_default': emberEnDefaultApplied,
+        'transport_pinned': transportPinned,
+        'fallback_chain_enabled': fallbackChainEnabled,
+        'fallback_chain': fallbackChain,
+        'ember_auto_connect': emberAutoConnect,
+        'auto_connect_boot': autoConnectOnBoot,
+        'auto_connect_untrusted_wifi': autoConnectOnUntrustedWifi,
+        'auto_connect_network_change': autoConnectOnNetworkChange,
+        'trusted_ssids': trustedSsids,
+      });
     } on FileSystemException {
       // Not fatal: the choice holds until the app quits.
     }

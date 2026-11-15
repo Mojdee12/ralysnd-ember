@@ -116,11 +116,22 @@ class AndroidCore {
     }
   }
 
+  /// The tunnel MTU (build 2038, Iran-priority queue 2f): the
+  /// XraySettings value, mirrored here so the Mozilla connect path
+  /// can send it — CoreController's turnOn takes only (bool), and
+  /// the shell owns the Xray settings, so the shell and the
+  /// settings page keep this in sync (see EmberShell initState
+  /// and the MTU chips). Default 1500, the unchanged behaviour.
+  static final tunnelMtu = ValueNotifier<int>(1500);
+
   /// Turns the VPN on (asking the user for the VPN permission the first
   /// time) or off. It throws [VpnNotAllowed] when the user refuses.
   static Future<void> setOn(bool on) async {
     try {
-      await _channel.invokeMethod<void>('setOn', {'on': on});
+      await _channel.invokeMethod<void>('setOn', {
+        'on': on,
+        'mtu': tunnelMtu.value,
+      });
     } on PlatformException catch (e) {
       if (e.code == 'vpn_denied') throw const VpnNotAllowed();
       throw CoreApiException(0, e.message ?? e.code);

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -36,8 +37,28 @@ void main() {
       autostart: false,
       autoConnect: true,
     );
-    // update saves in the background.
-    await Future<void>.delayed(const Duration(milliseconds: 200));
+    // update saves in the background. Wait until the file actually
+    // lands: a fixed 200 ms delay is racy under full-suite load
+    // (1.5 shared CPUs, dozens of isolates), and a reload before
+    // the rename reads the first-run defaults instead of 'fa'.
+    // The assertion below is unchanged — only the wait is
+    // deterministic now (build 2057).
+    final file = File('${dir.path}/app-settings.json');
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    var landed = false;
+    while (!landed && DateTime.now().isBefore(deadline)) {
+      try {
+        final doc =
+            jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+        landed = doc['language'] == 'fa';
+      } catch (_) {
+        landed = false;
+      }
+      if (!landed) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+    }
+    expect(landed, isTrue, reason: 'settings file did not land in 5 s');
     final again = await AppSettings.load(dir.path);
     expect(again.locale, const Locale('fa'));
     expect(again.themeMode, ThemeMode.dark);

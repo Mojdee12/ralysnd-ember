@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,10 +25,19 @@ import (
 func reloginFixture(t *testing.T, logins *atomic.Int32, loginErr func(*http.Request) (*http.Response, error)) {
 	t.Helper()
 	setCoreControlPlane(t, func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host == "api.accounts.firefox.com" {
+		// Build 2033 wire shape: the fxa-credentials grant is
+		// asked of the oauth. host first; refresh is a FORM
+		// grant at /v1/token on the api. host.
+		if r.URL.Host == "api.accounts.firefox.com" || r.URL.Host == "oauth.accounts.firefox.com" {
 			var body map[string]any
+			var form url.Values
 			if r.Body != nil {
-				_ = json.NewDecoder(r.Body).Decode(&body)
+				raw, _ := io.ReadAll(r.Body)
+				if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+					form, _ = url.ParseQuery(string(raw))
+				} else {
+					_ = json.Unmarshal(raw, &body)
+				}
 			}
 			switch {
 			case r.URL.Path == "/v1/account/login":
@@ -37,7 +48,7 @@ func reloginFixture(t *testing.T, logins *atomic.Int32, loginErr func(*http.Requ
 				return coreResponse(r, http.StatusOK, `{"uid":"u1","sessionToken":"`+strings.Repeat("ab", 32)+`","verified":true}`, nil), nil
 			case r.URL.Path == "/v1/session/destroy":
 				return coreResponse(r, http.StatusOK, `{}`, nil), nil
-			case r.URL.Path == "/v1/oauth/token" && body["grant_type"] == "refresh_token":
+			case r.URL.Path == "/v1/token" && form.Get("grant_type") == "refresh_token":
 				return coreResponse(r, http.StatusOK, `{"access_token":"refreshed-access","refresh_token":"refresh-a","expires_in":3600,"token_type":"bearer"}`, nil), nil
 			case r.URL.Path == "/v1/oauth/token":
 				return coreResponse(r, http.StatusOK, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600,"token_type":"bearer"}`, nil), nil

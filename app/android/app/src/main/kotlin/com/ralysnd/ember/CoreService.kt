@@ -18,7 +18,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.widget.Toast
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -206,6 +205,34 @@ class CoreService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Build 2070 (review §5.1): the start net, same shape as
+        // the other engines' — the whole command body runs in
+        // onStartCommandGuarded below; a Throwable escaping it
+        // (above all an Error from the gomobile boundary: the
+        // `mobile` class's static init, isOn/setOn, stopTun) is
+        // recorded in crash.log and the service stops gracefully,
+        // instead of an uncaught main-thread death. This was the
+        // least protected start path in the app — onStartCommand
+        // had no catch at all and startTunnel caught Exception
+        // only — in the owner's most-used engine. crash.log only:
+        // this service's own log is the Go core's, inside its
+        // data folder, written by the core itself once it runs;
+        // there is no host session log to append into here.
+        return try {
+            onStartCommandGuarded(intent, flags, startId)
+        } catch (e: Throwable) {
+            CrashLog.append(this, "CoreService.onStartCommand", e)
+            try {
+                turnOff(this)
+            } catch (e2: Throwable) {
+                CrashLog.append(this, "CoreService.onStartCommand.stop", e2)
+            }
+            stopSelf()
+            START_NOT_STICKY
+        }
+    }
+
+    private fun onStartCommandGuarded(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             turnOff(this)
             return START_NOT_STICKY
@@ -269,9 +296,15 @@ class CoreService : VpnService() {
             return false
         }
         return try {
+            // The tunnel MTU (build 2038, queue 2f): the user's
+            // Settings choice, read from prefs so a service
+            // restarted by the system keeps it. The core's stack
+            // is told the same value before it takes the fd — the
+            // interface and the stack must agree.
+            val mtu = tunnelMtu(this)
             val builder = Builder()
                 .setSession(getString(R.string.app_name))
-                .setMtu(MTU)
+                .setMtu(mtu)
                 .addAddress("172.19.0.1", 30)
                 .addRoute("0.0.0.0", 0)
                 // The core answers DNS sent to any address.
@@ -281,12 +314,22 @@ class CoreService : VpnService() {
             applyApps(builder)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
             val tun = builder.establish() ?: return false
+            mobile.Mobile.setTunMTU(mtu)
             mobile.Mobile.startTun(tun.detachFd())
             tunnelUpAt = System.currentTimeMillis()
             true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Build 2070 (review §5.1): Throwable, not Exception —
+            // an UnsatisfiedLinkError / ExceptionInInitializerError
+            // from the gomobile calls above escaped this catch and
+            // the service died with it. The failure is recorded in
+            // crash.log and the start simply fails (the caller
+            // turns the engine off; the UI shows the off state) —
+            // the raw exception Toast that used to fire here is
+            // gone: technical detail belongs in the log, not on
+            // the user's screen.
+            CrashLog.append(this, "CoreService.startTunnel", e)
             Log.e(TAG, "the VPN did not start", e)
-            Toast.makeText(this, e.message ?: e.toString(), Toast.LENGTH_LONG).show()
             false
         }
     }
@@ -443,6 +486,21 @@ class CoreService : VpnService() {
             prefs(context).edit().putBoolean(SHOW_SPEED, on).apply()
         }
 
+        private const val TUNNEL_MTU = "tunnel_mtu"
+
+        /** The tunnel MTU (build 2038, queue 2f): the user's Settings
+         *  choice, mirrored here by MainActivity at each Mozilla
+         *  connect (and by the shell at load through
+         *  AndroidCore.tunnelMtu). 1500 when never set. Clamped
+         *  1280..1500 — 1280 is the IPv6 minimum MTU, the floor —
+         *  so a corrupt stored value can never break a connect. */
+        fun tunnelMtu(context: Context) =
+            prefs(context).getInt(TUNNEL_MTU, MTU).coerceIn(1280, 1500)
+
+        fun setTunnelMtu(context: Context, mtu: Int) {
+            prefs(context).edit().putInt(TUNNEL_MTU, mtu.coerceIn(1280, 1500)).apply()
+        }
+
         /** "↓ 1.2 MB/s  ↑ 35 KB/s" from the core's "down,up" in bytes per second. */
         fun speedText(downUp: String): String {
             val parts = downUp.split(",")
@@ -560,8 +618,14 @@ class CoreService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val TAG = "CoreService"
 
-        private const val COUNTRY_POLL_MS = 3000L
-        private const val SPEED_POLL_MS = 2000L
+        // Build 2055 (audit B-H5): country at 10 s, speed at
+        // 5 s — the speed is a 3 s-averaged value already, and
+        // the country changes rarely; the notification still
+        // re-posts only on change, so nothing visible moves.
+        // The core-stopped / given-up checks ride the same
+        // tick, so a dead core is noticed within 10 s.
+        private const val COUNTRY_POLL_MS = 10000L
+        private const val SPEED_POLL_MS = 5000L
 
         /** A country's flag emoji: its code in regional indicator letters. */
         fun flag(code: String): String =
@@ -600,19 +664,33 @@ class CoreService : VpnService() {
          * and later).
          */
         fun turnOn(context: Context) {
-            val intent = Intent(context, CoreService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            // Build 2070 (review §5.1): record-and-rethrow. The
+            // gomobile connect() below ran unguarded — an Error
+            // from it (or from the service start) reached the
+            // caller with no record anywhere. The throwable is
+            // appended to crash.log and then rethrown unchanged:
+            // the caller's own guard (MainActivity's startVpnGuarded
+            // since build 2070) answers the refusal exactly as
+            // before, so success- and failure-path behaviour are
+            // both untouched; only the evidence is new.
+            try {
+                val intent = Intent(context, CoreService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                startCore(context, on = true)
+                // Given up by the core if it does not reach Mozilla in a minute.
+                mobile.Mobile.connect()
+                on = true
+                connected = false
+                QuickTile.refresh(context)
+                ConnectWidget.updateAll(context)
+            } catch (e: Throwable) {
+                CrashLog.append(context, "CoreService.turnOn", e)
+                throw e
             }
-            startCore(context, on = true)
-            // Given up by the core if it does not reach Mozilla in a minute.
-            mobile.Mobile.connect()
-            on = true
-            connected = false
-            QuickTile.refresh(context)
-            ConnectWidget.updateAll(context)
         }
 
         /** Turns the VPN and the proxy off; the core keeps its API. */
@@ -631,7 +709,18 @@ class CoreService : VpnService() {
         /** Starts the core, with the proxy [on] or off, if it does not run. */
         @Synchronized
         fun startCore(context: Context, on: Boolean) {
-            if (mobile.Mobile.running()) return
+            // Build 2070 (review §5.1): the running() probe itself
+            // touches the gomobile class — if its static init is
+            // the thing that fails, the Error lands here, before
+            // any try in the old shape. It is recorded and the
+            // start is skipped, exactly as a failed start below.
+            val alreadyRunning = try {
+                mobile.Mobile.running()
+            } catch (e: Throwable) {
+                CrashLog.append(context, "CoreService.startCore", e)
+                return
+            }
+            if (alreadyRunning) return
             if ((context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
                 importFromComputer(context)
             } else {
@@ -641,7 +730,11 @@ class CoreService : VpnService() {
             }
             try {
                 mobile.Mobile.start(dataDir(context).absolutePath, on)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Build 2070: Throwable + crash.log (was Exception
+                // + logcat only) — a linkage failure at the
+                // gomobile boundary is now evidence, not silence.
+                CrashLog.append(context, "CoreService.startCore", e)
                 Log.e(TAG, "the core did not start", e)
             }
         }

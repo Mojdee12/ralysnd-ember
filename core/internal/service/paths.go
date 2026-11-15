@@ -92,6 +92,9 @@ func LoadConfig(paths DataPaths, forceVerbose bool) (config.Config, error) {
 	if err := configureAPIRelay(cfg.Network.APIRelay); err != nil {
 		return config.Config{}, fmt.Errorf("invalid network.api_relay: %w", err)
 	}
+	if err := configureBootstrap(cfg.Network); err != nil {
+		return config.Config{}, fmt.Errorf("invalid bootstrap egress: %w", err)
+	}
 	return cfg, nil
 }
 

@@ -2,9 +2,25 @@ import 'dart:convert';
 import 'dart:io';
 
 /// The app's version, "major.minor.patch": `version` in pubspec.yaml, which
-/// the build passes (scripts/build-*.ps1: --dart-define=APP_VERSION=1.1.0).
-/// "0.0.0" is a development build.
-const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.0.0');
+/// the build passes (--dart-define=APP_VERSION=2.2.0). The default names
+/// the current release (build 2027): in 2026 the APK was built without the
+/// define and fell back to "0.0.0", which is how the owner's brand panel
+/// came to read "V0.0.0 • BUILD 2023" on a 2026 build.
+const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '2.2.0');
+
+/// The release's build number (the pubspec versionCode), shown in
+/// the Map Control brand panel's micro-line. The build passes it
+/// as a dart-define (APP_BUILD, set to the versionCode, alongside
+/// APP_VERSION) — build 2071 (review §3.3): the hardcoded
+/// constant this replaces still read '2031' in build 2070, 38
+/// builds stale, while the panel presented it as the current
+/// build. The default names the current release, for runs
+/// without the define (tests, dev runs) — the same arrangement
+/// as [appVersion] above.
+const appBuildNumber = String.fromEnvironment(
+  'APP_BUILD',
+  defaultValue: '2071',
+);
 
 /// The GitHub repository, "owner/name", for the source link and the update
 /// check.

@@ -1,0 +1,1 @@
+{"selectedId":"user-1793749514564143","profiles":[{"id":"user-1793749514564143","name":"Work VPN","config":"client\ndev tun\nproto udp\nremote vpn.example.com 1194\nauth-user-pass\n<ca>\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUUVWvpAaBfLnDpIO+fKcvkPq+DdAwCgYIKoZIzj0EAwIw\n-----END CERTIFICATE-----\n</ca>"}]}

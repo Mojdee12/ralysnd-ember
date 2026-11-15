@@ -787,6 +787,7 @@ func (d *Daemon) addSignedInAccount(email, password string, token *fxa.TokenResp
 		Scope:        token.Scope,
 		ObtainedAt:   now,
 		ExpiresIn:    token.ExpiresIn,
+		ClientID:     token.ClientID,
 	}, now)
 	if err != nil {
 		return accounts.Account{}, err
@@ -988,6 +989,13 @@ func (d *Daemon) updateSettings(next config.Config, newPassword *string) (settin
 	if next.Network.APIRelay != prev.Network.APIRelay {
 		if err := configureAPIRelay(next.Network.APIRelay); err != nil {
 			return settingsChange{}, fmt.Errorf("invalid network.api_relay: %w", err)
+		}
+	}
+	if next.Network.BootstrapSocks != prev.Network.BootstrapSocks ||
+		next.Network.BootstrapRelayURL != prev.Network.BootstrapRelayURL ||
+		next.Network.BootstrapRelayKey != prev.Network.BootstrapRelayKey {
+		if err := configureBootstrap(next.Network); err != nil {
+			return settingsChange{}, fmt.Errorf("invalid bootstrap egress: %w", err)
 		}
 	}
 	if err := config.Save(d.paths.Config, next); err != nil {

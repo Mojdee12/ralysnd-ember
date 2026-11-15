@@ -4,6 +4,8 @@
 
 import 'dart:convert';
 
+import 'tls_cert_pin.dart';
+import 'vless_encryption.dart';
 import 'xray_models.dart';
 
 int _counter = 0;
@@ -67,8 +69,12 @@ Profile? parseLink(String rawLink) {
     return _wireguard(link);
   }
   if (link.startsWith('tuic://')) return _tuic(link);
+  if (link.startsWith('anytls://')) return _anytls(link);
   if (link.startsWith('socks://') || link.startsWith('socks5://')) {
     return _socks(link);
+  }
+  if (link.startsWith('http://') || link.startsWith('https://')) {
+    return _http(link);
   }
   return null;
 }
@@ -129,8 +135,18 @@ Profile? _outboundToProfile(Map<String, dynamic> config) {
       if (tls != null) {
         profile.sni = tls['serverName'] as String? ?? '';
         profile.alpn = (tls['alpn'] as List?)?.join(',') ?? '';
-        profile.allowInsecure = tls['allowInsecure'] as bool? ?? false;
+        // tls['allowInsecure'] is ignored (build 2048): the core
+        // removed it and refuses the whole config when it is set,
+        // so a raw JSON carrying it must still import — pinning
+        // is the replacement.
         profile.fingerprint = tls['fingerprint'] as String? ?? '';
+        // TLS certificate pin (build 2047): a raw core JSON
+        // carrying a valid pin keeps it; anything else reads as
+        // no pin, as before.
+        final rawPin = tls['pinnedPeerCertSha256'];
+        if (rawPin is String && isValidTlsCertPin(rawPin)) {
+          profile.tlsCertPin = rawPin;
+        }
       }
       final reality = (stream['realitySettings'] as Map?)?.cast<String, dynamic>();
       if (reality != null) {
@@ -139,6 +155,8 @@ Profile? _outboundToProfile(Map<String, dynamic> config) {
         profile.publicKey = reality['publicKey'] as String? ?? '';
         profile.shortId = reality['shortId'] as String? ?? '';
         profile.spiderX = reality['spiderX'] as String? ?? '';
+        // REALITY PQ verification (build 2057, audit F-M13).
+        profile.pqv = reality['mldsa65Verify'] as String? ?? '';
       }
       final ws = (stream['wsSettings'] as Map?)?.cast<String, dynamic>();
       if (ws != null) {
@@ -149,6 +167,16 @@ Profile? _outboundToProfile(Map<String, dynamic> config) {
       if (grpc != null) {
         profile.serviceName = grpc['serviceName'] as String? ?? '';
         profile.mode = (grpc['multiMode'] as bool? ?? false) ? 'multi' : 'gun';
+        // gRPC authority (build 2057, audit §6 codec drop).
+        profile.grpcAuthority = grpc['authority'] as String? ?? '';
+      }
+      // QUIC transport (build 2057, audit §6 codec drop): the
+      // core's quicSettings security/key land in host/path,
+      // where the builder reads them from.
+      final quic = (stream['quicSettings'] as Map?)?.cast<String, dynamic>();
+      if (quic != null && profile.network == 'quic') {
+        profile.host = quic['security'] as String? ?? profile.host;
+        profile.path = quic['key'] as String? ?? profile.path;
       }
       return profile;
     }
@@ -164,6 +192,15 @@ Profile? _outboundToProfile(Map<String, dynamic> config) {
         profile.port = (vnext['port'] as num?)?.toInt() ?? 443;
         profile.uuidOrPassword = user?['id'] as String? ?? '';
         profile.flow = user?['flow'] as String? ?? '';
+        // VLESS Encryption (build 2046): a raw core JSON carrying
+        // a valid encryption value keeps it; anything else reads
+        // as no encryption, as before.
+        final rawEncryption = user?['encryption'];
+        if (rawEncryption is String &&
+            rawEncryption != 'none' &&
+            isValidVlessEncryption(rawEncryption)) {
+          profile.vlessEncryption = rawEncryption;
+        }
         return profile;
       case 'trojan':
       case 'shadowsocks':
@@ -182,6 +219,18 @@ Profile? _outboundToProfile(Map<String, dynamic> config) {
         final profile = base(Protocol.socks);
         profile.address = server['address'] as String? ?? '';
         profile.port = (server['port'] as num?)?.toInt() ?? 1080;
+        final user = _firstMap(server['users']);
+        profile.username = user?['user'] as String? ?? '';
+        profile.uuidOrPassword = user?['pass'] as String? ?? '';
+        return profile;
+      case 'http':
+        // HTTP outbound (build 2057, audit §6 codec drop): the
+        // same server/user shape as SOCKS.
+        final server = _firstMap(settings['servers']);
+        if (server == null) continue;
+        final profile = base(Protocol.http);
+        profile.address = server['address'] as String? ?? '';
+        profile.port = (server['port'] as num?)?.toInt() ?? 8080;
         final user = _firstMap(server['users']);
         profile.username = user?['user'] as String? ?? '';
         profile.uuidOrPassword = user?['pass'] as String? ?? '';
@@ -228,14 +277,22 @@ _Authority? _authority(String link, String scheme) {
     final close = hostPort.indexOf(']');
     if (close < 0) return null;
     host = hostPort.substring(1, close);
-    port = hostPort.length > close + 1
-        ? int.tryParse(hostPort.substring(close + 2)) ?? 443
-        : 443;
+    // A path may follow the port (host]:8443/?…) — the port
+    // is the digit run up to it (build 2033).
+    final rest = hostPort.length > close + 1
+        ? hostPort.substring(close + 2).split('/').first
+        : '';
+    port = int.tryParse(rest) ?? 443;
   } else {
-    final colon = hostPort.lastIndexOf(':');
+    // Strip any path (host:8443/?…): several link families —
+    // AnyTLS conventionally, TUIC often — carry one, and the
+    // pre-2033 parse read "8443/" as the port and silently
+    // fell back to 443.
+    final authority = hostPort.split('/').first;
+    final colon = authority.lastIndexOf(':');
     if (colon < 0) return null;
-    host = hostPort.substring(0, colon);
-    port = int.tryParse(hostPort.substring(colon + 1)) ?? 443;
+    host = authority.substring(0, colon);
+    port = int.tryParse(authority.substring(colon + 1)) ?? 443;
   }
   return _Authority(
     host,
@@ -276,20 +333,71 @@ void _applyTransport(Profile p, Map<String, String> q) {
   p.path = q['path'] ?? p.path;
   p.serviceName = q['serviceName'] ?? p.serviceName;
   p.mode = q['mode'] ?? p.mode;
-  p.security = q['security'] ?? p.security;
-  if (p.security == 'none') p.security = '';
+  // For QUIC transport the `security` parameter is the QUIC
+  // security (none / aes-128-gcm / chacha20-poly1305), not the
+  // stream security — it is read into host/path below (build
+  // 2057, audit §6 codec drop), never into p.security.
+  if (p.network != 'quic') {
+    p.security = q['security'] ?? p.security;
+    if (p.security == 'none') p.security = '';
+  }
   p.sni = q['sni'] ?? q['peer'] ?? p.sni;
+  // The ECH config list (build 2033), under the parameter
+  // name Xray's own link import reads into the TLS settings.
+  p.echConfigList = q['ech'] ?? p.echConfigList;
   p.alpn = (q['alpn'] ?? '').replaceAll(r'\,', ',');
   if (p.alpn.isEmpty) p.alpn = q['alpn'] ?? p.alpn;
   p.fingerprint = q['fp'] ?? p.fingerprint;
+  p.cipherSuites = q['cs'] ?? p.cipherSuites;
+  // TLS certificate pin (build 2047): the `pinnedPeerCertSha256`
+  // link parameter carries the core's own field name. A valid
+  // value is kept verbatim; an invalid one is ignored — the
+  // profile still imports, exactly as it did before this build —
+  // because a bad link must never cost the user the whole profile.
+  final pin = q['pinnedPeerCertSha256'];
+  if (pin != null && isValidTlsCertPin(pin)) p.tlsCertPin = pin;
+  // Exact-text core fields (build 2030): copied as written —
+  // never trimmed or case-folded (PattNG's EXACT preset rule;
+  // the core reads them verbatim).
+  p.dialMode = q['dialMode'] ?? p.dialMode;
+  p.finalMask = q['fm'] ?? p.finalMask;
   p.publicKey = q['pbk'] ?? p.publicKey;
   p.shortId = q['sid'] ?? p.shortId;
   p.spiderX = q['spx'] ?? p.spiderX;
+  // REALITY post-quantum verification (build 2057, audit
+  // F-M13): the `pqv` parameter carries the ML-DSA-65 key the
+  // core verifies against — stored verbatim, emitted as
+  // `mldsa65Verify` by the builder.
+  p.pqv = q['pqv'] ?? p.pqv;
+  // gRPC authority (build 2057, audit §6 codec drop): the
+  // `:authority` for the handshake; '' = the core default.
+  p.grpcAuthority = q['authority'] ?? p.grpcAuthority;
+  // Anti-filter shaping (build 2057, audit §6 codec drop): the
+  // af* options ride Ember's own parameters so a shared profile
+  // keeps its shaping — a client that does not know them ignores
+  // the unknown parameters.
+  if (q['afUnfilter'] == '1') p.afUnfilter = true;
+  if (q['afEch'] == '1') p.afEch = true;
+  if (q['afMixedSni'] == '1') p.afMixedSni = true;
+  if (q['afTcpNoise'] == '1') p.afTcpNoise = true;
+  p.afFragment = q['afFragment'] ?? p.afFragment;
+  // QUIC transport (build 2057, audit §6 codec drop): the
+  // standard link parameters are `security` (the QUIC security:
+  // none / aes-128-gcm / chacha20-poly1305) and `key` — NOT the
+  // stream security. The old code read them from `host`/`path`
+  // via the builder and never from the query, so a standard
+  // encrypted-QUIC link built as `security: 'none', key: ''`.
+  // They land in host/path here because that is where the
+  // builder reads them from; the stream `security` stays ''.
+  if (p.network == 'quic') {
+    p.host = q['security'] ?? p.host;
+    p.path = q['key'] ?? p.path;
+  }
   p.flow = q['flow'] ?? p.flow;
-  p.allowInsecure = q['allowInsecure'] == '1' ||
-      q['allowInsecure'] == 'true' ||
-      q['insecure'] == '1' ||
-      q['insecure'] == 'true';
+  // allowInsecure / insecure parameters are ignored (build 2048):
+  // the core removed the feature and refuses the whole config
+  // when it is set, so a link carrying one must still import —
+  // pinning is the replacement.
 }
 
 Profile? _vless(String link) {
@@ -305,14 +413,30 @@ Profile? _vless(String link) {
   );
   _applyTransport(p, _queryParams(a.query));
   final q = _queryParams(a.query);
-  if (q['encryption'] != null && q['encryption'] != 'none') {
-    // Xray "encryption" values other than none are not interoperable
-    // here; keep the link rather than silently drop it.
+  // VLESS Encryption (build 2046): the `encryption` link parameter
+  // carries the mlkem768 string the bundled core runs. A valid
+  // value is kept verbatim; 'none' (or an absent parameter) means
+  // no encryption, as before. An invalid value is ignored — the
+  // profile still imports and connects unencrypted, exactly as it
+  // did before this build — because a bad link must never cost the
+  // user the whole profile.
+  final encryption = q['encryption'];
+  if (encryption != null &&
+      encryption != 'none' &&
+      isValidVlessEncryption(encryption)) {
+    p.vlessEncryption = encryption;
   }
-  if (p.security == 'reality' && p.fingerprint.isEmpty) {
-    p.fingerprint = 'chrome';
-  }
-  if (p.security == 'tls' && p.fingerprint.isEmpty) p.fingerprint = 'chrome';
+  // Build 2070 (review §4 row 7): NO default fingerprint fill.
+  // The parser used to manufacture 'chrome' here for tls/reality
+  // profiles whose link carried no fp — which made every imported
+  // profile read as user-pinned, so the shipped uTLS rotation
+  // (build 2065, which only fills an EMPTY field) could never
+  // apply to the bulk of real profiles. An absent fp now stays
+  // empty: empty already means core-default to the builder, the
+  // same shape a hand-created profile has always had, and it is
+  // exactly what rotation fills. Profiles stored by earlier
+  // builds are repaired once by the fingerprint migration in
+  // XraySettings/XrayController (clearParserDefaultFingerprints).
   return p;
 }
 
@@ -353,8 +477,61 @@ Profile? _hysteria2(String link) {
   p.obfsPassword = q['obfs-password'] ?? q['obfsPassword'] ?? '';
   p.upMbps = int.tryParse(q['up'] ?? '') ?? 0;
   p.downMbps = int.tryParse(q['down'] ?? '') ?? 0;
-  p.allowInsecure = q['insecure'] == '1' || q['insecure'] == 'true';
-  p.fingerprint = q['pinSHA256'] ?? '';
+  // q['insecure'] is ignored (build 2048) — see _applyTransport:
+  // the core removed the feature.
+  // The certificate pin (build 2053, audit F-H5): the link's
+  // `pinSHA256` parameter is the standard Hy2 name, but the
+  // core's only pin field is `pinnedPeerCertSha256` — and the
+  // profile's canonical pin field is tlsCertPin (build 2047),
+  // so the value lands there, validated, exactly like the TLS
+  // profiles' own parameter above. A valid value is kept
+  // verbatim; an invalid one is ignored (the profile still
+  // imports) because a bad link must never cost the user the
+  // whole profile. The pre-2053 storage (`fingerprint`) is NOT
+  // written anymore — the builder honours a legacy fingerprint
+  // pin at emit time, and the editor migrates it on the next
+  // edit — so the overloaded field stops growing new pins.
+  final hyPin = q['pinSHA256'] ?? q['pinnedPeerCertSha256'];
+  if (hyPin != null && isValidTlsCertPin(hyPin)) p.tlsCertPin = hyPin;
+  // ECH for the QUIC handshake (build 2033): the parameter
+  // carries the echConfigList text itself (a base64 list or a
+  // "domain+resolver" query form); stored verbatim and handed
+  // to the core's TLS settings by the builder.
+  p.echConfigList = q['ech'] ?? '';
+  // Congestion control (build 2036): Ember's own parameter —
+  // no standard hy2 link field exists for it — so an export
+  // round-trips the choice; other clients ignore the unknown
+  // parameter. Only the values the core honours are kept.
+  final cc = q['congestion'] ?? '';
+  p.hyCongestion = hyCongestionChoices.contains(cc) ? cc : '';
+  return p;
+}
+
+/// AnyTLS links (build 2033), the sing-box / mihomo shape:
+/// anytls://password@host:port/?security=tls&sni=…&fp=…#name.
+/// Parsed and stored like TUIC — the bundled Xray core has no
+/// AnyTLS outbound (verified in its source), so the profile is
+/// badged unsupported and refuses to connect rather than
+/// pretending. The userinfo is the password; there is no
+/// username in the standard form.
+Profile? _anytls(String link) {
+  final a = _authority(link, 'anytls');
+  if (a == null || a.host.isEmpty) return null;
+  final q = _queryParams(a.query);
+  final p = Profile(
+    id: newProfileId(),
+    protocol: Protocol.anytls,
+    name: a.name,
+    address: a.host,
+    port: a.port,
+    uuidOrPassword: a.userInfo,
+    security: 'tls',
+  );
+  p.sni = q['sni'] ?? q['peer'] ?? '';
+  p.alpn = (q['alpn'] ?? '').replaceAll(r'\,', ',');
+  p.fingerprint = q['fp'] ?? '';
+  // q['insecure'] / q['allowInsecure'] are ignored (build 2048)
+  // — see _applyTransport: the core removed it.
   return p;
 }
 
@@ -377,6 +554,27 @@ Profile? _wireguard(String link) {
   p.reserved = q['reserved'] ?? '';
   p.mtu = int.tryParse(q['mtu'] ?? '') ?? 1420;
   p.keepAlive = int.tryParse(q['keepalive'] ?? '') ?? 0;
+  // The .conf's split-tunnel list and DNS (build 2057, audit §6
+  // WG .conf divergences): the codec writes them back under
+  // Ember's own parameter names, so a shared WireGuard profile
+  // keeps them; the builder applies the AllowedIPs list.
+  p.wgAllowedIPs = q['allowedips'] ?? q['allowedIPs'] ?? '';
+  p.wgDns = q['dns'] ?? '';
+  // AmneziaWG parameters (build 2033): preserved verbatim so
+  // an export writes them back; since build 2040 they are
+  // APPLIED by the AmneziaWG engine when the profile connects
+  // through the fallback path — the pre-2040 comment claiming
+  // otherwise was stale and is corrected here (audit §7
+  // comment-claims class, build 2057).
+  p.awgJc = q['jc'] ?? '';
+  p.awgJmin = q['jmin'] ?? '';
+  p.awgJmax = q['jmax'] ?? '';
+  p.awgS1 = q['s1'] ?? '';
+  p.awgS2 = q['s2'] ?? '';
+  p.awgH1 = q['h1'] ?? '';
+  p.awgH2 = q['h2'] ?? '';
+  p.awgH3 = q['h3'] ?? '';
+  p.awgH4 = q['h4'] ?? '';
   return p;
 }
 
@@ -400,8 +598,79 @@ Profile? _tuic(String link) {
   p.udpRelayMode = q['udp_relay_mode'] ?? '';
   p.sni = q['sni'] ?? '';
   p.alpn = (q['alpn'] ?? '').replaceAll(r'\,', ',');
-  p.allowInsecure = q['allow_insecure'] == '1' || q['allow_insecure'] == 'true';
+  // q['allow_insecure'] is ignored (build 2048) — see
+  // _applyTransport: the core removed the feature.
   return p;
+}
+
+/// HTTP proxy links (build 2057, audit §6 codec drop):
+///   http://user:pass@host:port#name
+///   http://host:port#name
+/// A plain HTTP proxy — the form panels and subscription lists
+/// actually serve. `https://` is treated the same way: the
+/// scheme names the proxy protocol, not a TLS hop to the proxy.
+/// Parsed by hand like [_socks]: the no-auth form has no
+/// userinfo, which [_authority] insists on.
+Profile? _http(String link) {
+  final scheme = link.startsWith('https://') ? 'https' : 'http';
+  var main = link.substring(scheme.length + 3);
+  var name = '';
+  final hash = main.indexOf('#');
+  if (hash >= 0) {
+    name = _percentDecode(main.substring(hash + 1));
+    main = main.substring(0, hash);
+  }
+  final q = main.indexOf('?');
+  if (q >= 0) main = main.substring(0, q);
+  if (main.endsWith('/')) main = main.substring(0, main.length - 1);
+  if (main.isEmpty) return null;
+
+  var user = '';
+  var pass = '';
+  var hostPort = main;
+  final at = main.lastIndexOf('@');
+  if (at >= 0) {
+    final cred = _percentDecode(main.substring(0, at));
+    hostPort = main.substring(at + 1);
+    final colon = cred.indexOf(':');
+    if (colon >= 0) {
+      user = cred.substring(0, colon);
+      pass = cred.substring(colon + 1);
+    } else {
+      user = cred;
+    }
+  }
+
+  String host;
+  int port;
+  if (hostPort.startsWith('[')) {
+    final close = hostPort.indexOf(']');
+    if (close < 0) return null;
+    host = hostPort.substring(1, close);
+    // A proxy link without an explicit port is not a proxy
+    // link — a bare http(s) URL in a subscription body must
+    // stay skipped, not become a profile pointed at port 8080.
+    if (hostPort.length <= close + 1 ||
+        !hostPort.substring(close + 1).startsWith(':')) {
+      return null;
+    }
+    port = int.tryParse(hostPort.substring(close + 2).split('/').first) ?? 8080;
+  } else {
+    final colon = hostPort.lastIndexOf(':');
+    if (colon < 0) return null;
+    host = hostPort.substring(0, colon);
+    port = int.tryParse(hostPort.substring(colon + 1).split('/').first) ?? 8080;
+  }
+  if (host.isEmpty) return null;
+  return Profile(
+    id: newProfileId(),
+    protocol: Protocol.http,
+    name: name,
+    address: host,
+    port: port,
+    username: user,
+    uuidOrPassword: pass,
+  );
 }
 
 /// SOCKS share links, in the forms the wild uses:
@@ -510,12 +779,43 @@ Profile? _vmess(String link) {
       sni: j['sni'] as String? ?? '',
       alpn: j['alpn'] as String? ?? '',
       fingerprint: j['fp'] as String? ?? '',
+      cipherSuites: j['cs'] as String? ?? '',
+      dialMode: j['dialMode'] as String? ?? '',
+      finalMask: j['fm'] as String? ?? '',
+      // VMess aid/scy/ech (build 2057, audit §6 codec drops):
+      // the JSON's own fields — `aid` may be a number or a
+      // string in the wild, and an absent one is 0, NOT the
+      // port default `_vmessInt` carries. `scy` defaults to
+      // 'auto' at build time, so an absent value reads as ''
+      // here.
+      aid: j['aid'] is num
+          ? (j['aid'] as num).toInt()
+          : int.tryParse('${j['aid'] ?? ''}') ?? 0,
+      scy: j['scy'] as String? ?? '',
+      echConfigList: j['ech'] as String? ?? '',
     );
     if (p.network == 'grpc') {
       p.serviceName = p.path;
       p.mode = j['mode'] as String? ?? '';
     }
-    p.allowInsecure = j['allowInsecure'] == true || j['insecure'] == 1;
+    // j['allowInsecure'] / j['insecure'] are ignored (build
+    // 2048): the core removed the feature — a vmess JSON carrying
+    // them must still import.
+    // TLS certificate pin (build 2047): the vmess JSON carries
+    // the core's own field name; a valid value is kept, anything
+    // else reads as no pin, as before.
+    final rawPin = j['pinnedPeerCertSha256'];
+    if (rawPin is String && isValidTlsCertPin(rawPin)) {
+      p.tlsCertPin = rawPin;
+    }
+    // Anti-filter shaping (build 2057, audit §6 codec drop):
+    // the codec writes the af* options into this same JSON, so
+    // a shared VMess profile keeps them.
+    p.afUnfilter = j['afUnfilter'] == true;
+    p.afEch = j['afEch'] == true;
+    p.afMixedSni = j['afMixedSni'] == true;
+    p.afTcpNoise = j['afTcpNoise'] == true;
+    p.afFragment = j['afFragment'] as String? ?? '';
     return p.address.isEmpty ? null : p;
   } catch (_) {
     return null;

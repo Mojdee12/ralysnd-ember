@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../atomic_json_store.dart';
 import 'models.dart';
 
 /// Where the core's API listens and the local token that authorizes the
@@ -156,6 +157,11 @@ abstract final class CoreLocator {
   /// Moves the core's API to [listen] in config.json while the core is not
   /// running (it could not start on the old address). Every other field is
   /// kept as it is.
+  ///
+  /// Build 2054 (audit F-M18): the write is atomic (tmp + flush +
+  /// rename, via AtomicJsonStore) — the old plain writeAsString
+  /// could tear the file mid-write, and Go's recoverCorrupt
+  /// would then reset ALL core settings to defaults.
   static Future<void> setDashboardListen(String dataDir, String listen) async {
     final config = await _readConfig(dataDir) ?? <String, Object?>{};
     final dashboard = switch (config['dashboard']) {
@@ -165,7 +171,8 @@ abstract final class CoreLocator {
     dashboard['listen'] = listen;
     final file = File('$dataDir${Platform.pathSeparator}$configFile');
     await file.parent.create(recursive: true);
-    await file.writeAsString(
+    await AtomicJsonStore.writeText(
+      file,
       const JsonEncoder.withIndent('  ').convert(config),
     );
   }
@@ -240,10 +247,61 @@ class CoreApi {
 
   /// Signs an account in again with its stored password; 409 when the core
   /// has none, and the user must type it.
+  /// Starts a browser sign-in (build 2033): the session
+  /// waits at need_browser with the authorize URL in
+  /// [SignInState.authUrl]; the WebView's intercepted code
+  /// goes back through [answerBrowserSignIn].
+  Future<SignInState> startBrowserSignIn() async => SignInState.fromJson(
+    await _json('POST', '/api/signin', {'browser': true}),
+  );
+
+  Future<SignInState> answerBrowserSignIn(
+    String id,
+    String code,
+    String state, {
+    String error = '',
+  }) async => SignInState.fromJson(
+    await _json('POST', '/api/signin/${_seg(id)}/browser', {
+      'code': code,
+      'state': state,
+      if (error.isNotEmpty) 'error': error,
+    }),
+  );
+
   Future<SignInState> startSignInAgain(String accountId) async =>
       SignInState.fromJson(
         await _json('POST', '/api/signin', {'account_id': accountId}),
       );
+
+  /// Runs the bootstrap prepare handoff through a donor engine's
+  /// loopback SOCKS (build 2034): the core refreshes the server
+  /// list and fetches a fresh Guardian pass through that egress
+  /// and persists it. Returns the stored pass's expiry (unix
+  /// seconds). The caller keeps the donor running for the call
+  /// and stops it afterwards.
+  Future<int> prepareBootstrapSocks(String socksAddress) async {
+    final view = await _json('POST', '/api/bootstrap/prepare', {
+      'socks': socksAddress,
+    }, _slow);
+    return (view['pass_expires_at'] as num?)?.toInt() ?? 0;
+  }
+
+  /// The same prepare handoff through the saved Worker relay
+  /// (build 2034). Relay credentials must be saved first with
+  /// [saveBootstrapRelay].
+  Future<int> prepareBootstrapRelay() async {
+    final view = await _json('POST', '/api/bootstrap/prepare', {
+      'relay': true,
+    }, _slow);
+    return (view['pass_expires_at'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Saves (or, with both empty, clears) the Worker relay pair as
+  /// a bootstrap egress. The key goes only to the core on
+  /// loopback; the core stores it in its owner-only config and
+  /// never reports it back.
+  Future<void> saveBootstrapRelay(String url, String key) =>
+      _json('POST', '/api/bootstrap/relay', {'url': url, 'key': key});
 
   Future<SignInState> signInState(String id) async =>
       SignInState.fromJson(await _json('GET', '/api/signin/${_seg(id)}'));

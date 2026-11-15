@@ -8,432 +8,733 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.net.IpPrefix
+import android.net.ConnectivityManager
 import android.net.LocalServerSocket
 import android.net.LocalSocket
+import android.net.NetworkCapabilities
+import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.io.BufferedWriter
 import java.io.File
-import java.net.InetAddress
+import java.io.FileOutputStream
+import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.Socket
-import java.util.Locale
-import java.util.TimeZone
-import java.util.UUID
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SNIHostName
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.X509TrustManager
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import lantern.io.libbox.Notification as LibboxNotification
-import lantern.io.libbox.TunOptions
-import lantern.io.mobile.Mobile
-import lantern.io.utils.FlutterEvent
-import lantern.io.utils.FlutterEventEmitter
-import lantern.io.utils.Opts
 
 /**
- * The Lantern engine's service. The core is Lantern v10's Radiance
- * stack (radiance + its sing-box fork), shipped as a gomobile AAR
- * (libs/lantern.aar, built from the getlantern/lantern monorepo's
- * own recipe) and bound with the core's `novpn` tag: the box has no
- * TUN inbound, only the mixed SOCKS/HTTP inbound on 127.0.0.1:1080.
- * So — exactly like the Xray and Psiphon engines — this service
- * builds the TUN itself and bridges it to the core's SOCKS with the
- * shared libtunlink helper, while the core runs in this process and
- * calls back into the platform half in LanternPlatform.kt (the
- * libbox PlatformInterface: interface monitor, local DNS, socket
- * protection).
+ * The Lantern engine host (build 2024): the lanternproxy binary
+ * (radiance, `novpn` build) as a SUBPROCESS, never an in-process
+ * library — two gomobile Go runtimes in one process are
+ * unsupported upstream, which is what killed the 2009–2018 AAR
+ * route.
  *
- * Free plan only: no account, no user config, the core picks the
- * server. Radiance is set up once per process (its own contract);
- * later starts reuse it.
+ * [LanternCore] owns the process and its stdout contract (the
+ * shape MLM's published driver speaks); stdout and stderr are
+ * drained on SEPARATE threads into separate logs — readiness is
+ * judged only from the stdout contract and the SOCKS port, so a
+ * healthy core is never killed for stderr noise or stdout
+ * silence between contract events.
  *
- * 2012: the start path is self-diagnosing after the 2011 build
- * failed on-device leaving only session headers in this service's
- * log. Every setup phase logs begin/ok, a watchdog heartbeats the
- * current phase every 5s while a blocking native call is in
- * flight, the previous run's core crash log is folded into this
- * log at session start, an uncaught-exception handler records
- * deaths on foreign threads, and all failure branches log a
- * concrete reason (see BUILD-LOG-2.md, build 2012).
- *
- * 2015: this service runs in its own process (:lantern) — the
- * 2014 build still died inside Opts()/native init with the whole
- * process vanishing, and three Go runtimes (Mozilla, Psiphon,
- * Lantern) shared the main process. Consequences, all handled
- * below: state is published to lantern-state.json for the UI
- * process to read (the statics stay, but only this process reads
- * them now), a pending-start marker lets the next start name a
- * previous silent process death in the log, a stop in a process
- * that never loaded the core no longer touches the binding, and
- * the core itself was rebound against the same x/mobile version
- * as the proven Mozilla core (see BUILD-LOG-2.md, build 2015).
- *
- * Per-app routing reuses the Mozilla service's stored choice
- * (CoreService's prefs), so one app-routing setting governs all
- * four engines.
+ * The VPN half mirrors XrayVpnService: the TUN fd is handed to
+ * libtunlink.so (tun2socks) over a unix socket the service
+ * listens on; the bridge's exit is the core's local SOCKS5
+ * (127.0.0.1:20840). Loop prevention is the shared per-app
+ * routing ([applyApps]): Ember's own package stays out of its
+ * own TUN, so the core's direct sockets (config fetch, server
+ * dials) never re-enter the tunnel.
  */
-class LanternVpnService : VpnService(), LanternPlatformImpl {
+object LanternCore {
+    const val SOCKS_PORT = 20840
+    const val HTTP_PORT = 20841
 
-    override val platformContext: Context get() = this
+    /**
+     * Build 2052 (diagnosis Causes 1 + 5): ralysnd's Lantern
+     * budgets, ported verbatim. A kept list listens in seconds
+     * (20 s is for the one slow case — the Iran rule-set
+     * download); a first list gets 20 s direct, then the WARP
+     * leg on the running core's stdin, 240 s total, and the
+     * data-path proof gets 45 s before the TUN goes up. The old
+     * 45 s kill-everything budget strangled every cold start
+     * before the first fetch could land.
+     */
+    const val WARM_LISTEN_MS = 20_000L
+    const val COLD_DIRECT_MS = 20_000L
+    const val COLD_GIVEUP_MS = 240_000L
+    const val DATA_TIMEOUT_MS = 45_000L
 
+    /** idle | starting | fetching | up | error */
+    @Volatile var stage: String = "idle"
+        private set
+    @Volatile var servers: Int = -1
+        private set
+    @Volatile var exitCity: String = ""
+        private set
+    @Volatile var exitCountry: String = ""
+        private set
+    @Volatile var exitCode: String = ""
+        private set
+    @Volatile var exhausted: Boolean = false
+        private set
+    @Volatile var lastError: String? = null
+        private set
+    @Volatile var listening: Boolean = false
+        private set
+
+    /** Fired (from the waiter thread) when the process dies on its own. */
+    @Volatile var onCoreExit: ((Int) -> Unit)? = null
+
+    private var process: Process? = null
+    private var stdin: BufferedWriter? = null
+    private var stopping = false
+    private val stdoutTail = ArrayDeque<String>()
+    private val stderrTail = ArrayDeque<String>()
+
+    fun workDir(context: Context): File = File(context.filesDir, "lantern")
+
+    fun dataDir(context: Context): File = File(workDir(context), "v10")
+
+    fun binary(context: Context): File =
+        File(context.applicationInfo.nativeLibraryDir, "liblantern.so")
+
+    fun isAlive(): Boolean = process?.isAlive == true
+
+    fun stdoutTail(): List<String> = synchronized(stdoutTail) { stdoutTail.toList() }
+
+    fun stderrTail(): List<String> = synchronized(stderrTail) { stderrTail.toList() }
+
+    @Synchronized
+    fun start(
+        context: Context,
+        smart: Boolean = false,
+    ) {
+        if (isAlive()) return
+        val bin = binary(context)
+        check(bin.exists()) { "liblantern.so missing from nativeLibraryDir" }
+        val data = dataDir(context).apply { mkdirs() }
+        val tmp = File(context.cacheDir, "lantern-tmp").apply { mkdirs() }
+        val dns = systemDns(context)
+        val args = mutableListOf(
+            bin.absolutePath,
+            "-socks", "127.0.0.1:$SOCKS_PORT",
+            "-http", "127.0.0.1:$HTTP_PORT",
+            "-configdir", data.absolutePath,
+            "-control",
+            // Build 2064: NO -version flag, ever. Ember used to
+            // pass its OWN app version (2.2.0-<build>) here; the
+            // core adopts it as its reported client version, and
+            // Lantern's config service rejects it as a too-old
+            // client (HTTP 400 "bad client factors: version
+            // 2.2.0-2061 too old", owner's device log 2026-11-14)
+            // — no config, no connect. ralysnd's working
+            // LanternProcess passes no version at all, so the
+            // core reports its own built-in Lantern version and
+            // is accepted.
+            "-sysdns", dns.joinToString(","),
+        )
+        // Build 2032: ralysnd's start flags — smart routing, the
+        // core's own smart server choice. Build 2052 (diagnosis
+        // Cause 2): the fetchvia/clientip start-flag bootstrap is
+        // DELETED — it was never device-proven (ralysnd never
+        // relies on it) and it cost a core restart per attempt.
+        // The bootstrap leg now rides the RUNNING core's stdin
+        // (`via HOST:PORT`, see sendVia), one process throughout.
+        if (smart) args += "-smart"
+        // The resolver for what the rules send direct — the
+        // first non-bracketed (IPv4) entry when there is one,
+        // ralysnd's rule.
+        dns.firstOrNull { !it.startsWith("[") }?.let { args += listOf("-localdns", it) }
+            ?: dns.firstOrNull()?.let { args += listOf("-localdns", it) }
+        stage = "starting"
+        servers = -1
+        exitCity = ""; exitCountry = ""; exitCode = ""
+        exhausted = false
+        lastError = null
+        listening = false
+        stopping = false
+        synchronized(stdoutTail) { stdoutTail.clear() }
+        synchronized(stderrTail) { stderrTail.clear() }
+        val stdoutLog = File(workDir(context), "lantern-stdout.log")
+        val stderrLog = File(workDir(context), "lantern-stderr.log")
+        val pb = ProcessBuilder(args)
+            .directory(data)
+            .redirectErrorStream(false)
+        pb.environment()["TMPDIR"] = tmp.absolutePath
+        // Radiance anchors a few relative paths at HOME; ralysnd
+        // points it at the config dir's parent (filesDir/lantern),
+        // not filesDir — one line, removes a class of
+        // relative-path surprises (diagnosis minor item).
+        pb.environment()["HOME"] = workDir(context).absolutePath
+        val p = pb.start()
+        process = p
+        stdin = BufferedWriter(OutputStreamWriter(p.outputStream))
+        Thread { drain(p.inputStream.bufferedReader(), stdoutLog, isStdout = true) }
+            .apply { isDaemon = true; name = "lantern-stdout" }.start()
+        Thread { drain(p.errorStream.bufferedReader(), stderrLog, isStdout = false) }
+            .apply { isDaemon = true; name = "lantern-stderr" }.start()
+        Thread {
+            val code = runCatching { p.waitFor() }.getOrDefault(-1)
+            val unexpected = synchronized(this@LanternCore) {
+                val wasStopping = stopping
+                if (process === p) {
+                    process = null
+                    stdin = null
+                }
+                !wasStopping
+            }
+            if (unexpected) {
+                if (stage != "error") {
+                    stage = "error"
+                    lastError = "Lantern core exited (code $code)"
+                }
+                onCoreExit?.invoke(code)
+            }
+        }.apply { isDaemon = true; name = "lantern-waiter" }.start()
+    }
+
+    private fun drain(
+        reader: java.io.BufferedReader,
+        logFile: File,
+        isStdout: Boolean,
+    ) {
+        val out = runCatching {
+            if (logFile.length() > 512 * 1024) logFile.delete()
+            FileOutputStream(logFile, true).bufferedWriter()
+        }.getOrNull()
+        // Build 2055 (audit B-M4): one buffered writer, flushed
+        // on a 2 s timer or 8 KB — never per line. A flush-per-
+        // line turned every core log line into a disk sync for
+        // the whole session; the in-memory tails above are the
+        // live view, the file is evidence, and 2 s of staleness
+        // on a crash is the accepted trade.
+        var lastFlushMs = System.currentTimeMillis()
+        var bytesSinceFlush = 0
+        try {
+            while (true) {
+                val line = reader.readLine() ?: break
+                out?.let {
+                    runCatching {
+                        it.write(line)
+                        it.newLine()
+                        bytesSinceFlush += line.length + 1
+                        val now = System.currentTimeMillis()
+                        if (bytesSinceFlush >= 8192 ||
+                            now - lastFlushMs >= 2000
+                        ) {
+                            it.flush()
+                            bytesSinceFlush = 0
+                            lastFlushMs = now
+                        }
+                    }
+                }
+                if (isStdout) {
+                    synchronized(stdoutTail) {
+                        stdoutTail.addLast(line)
+                        while (stdoutTail.size > 40) stdoutTail.removeFirst()
+                    }
+                    handleContract(line)
+                } else {
+                    synchronized(stderrTail) {
+                        stderrTail.addLast(line)
+                        while (stderrTail.size > 40) stderrTail.removeFirst()
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Stream closed by stop(); the waiter thread owns the
+            // exit bookkeeping.
+        } finally {
+            runCatching { out?.close() }
+        }
+    }
+
+    private fun handleContract(line: String) {
+        if (!line.startsWith("[lantern] ")) return
+        val body = line.removePrefix("[lantern] ").trim()
+        when {
+            // Build 2052 (diagnosis Cause 4): prefix match, as
+            // ralysnd — the shipped binary's line may carry a
+            // suffix, and exact equality never matched it.
+            body.startsWith("listening") -> listening = true
+            body.startsWith("config cached") || body.startsWith("config fetched") -> {
+                Regex("""servers=(\d+)""").find(body)?.let {
+                    servers = it.groupValues[1].toIntOrNull() ?: servers
+                }
+                if (stage == "starting") stage = "fetching"
+            }
+            body == "proxy ok" -> stage = "up"
+            body.startsWith("exit ") -> {
+                val parts = body.removePrefix("exit ").split("|")
+                if (parts.size == 3) {
+                    exitCity = parts[0].trim()
+                    exitCountry = parts[1].trim()
+                    exitCode = parts[2].trim()
+                }
+            }
+            body == "exhausted" -> exhausted = true
+            body.startsWith("error ") -> {
+                lastError = body.removePrefix("error ")
+                if (stage == "starting" || stage == "fetching") stage = "error"
+            }
+            // Build 2052: log unmatched contract lines verbatim at
+            // debug level, so the shipped binary's real vocabulary
+            // stays visible instead of silently dropped.
+            else -> Log.d("LanternCore", "unmatched contract line: $body")
+        }
+    }
+
+    /** One stdin control line ("fetch"). False when no core runs. */
+    @Synchronized
+    fun command(line: String): Boolean {
+        val w = stdin ?: return false
+        if (!isAlive()) return false
+        return runCatching {
+            w.write(line)
+            w.newLine()
+            w.flush()
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Build 2052 (diagnosis Cause 2): the bootstrap leg rides the
+     * RUNNING core's stdin — `via HOST:PORT` reroutes only the
+     * control plane (the config fetch) through the leg; server
+     * traffic itself is always dialled direct. `via direct`
+     * returns the control plane to direct before the leg goes
+     * down, so later refreshes never point at a dead port. The
+     * shipped binary implements exactly this contract (its stdin
+     * `via` strings are in the binary); the old restart-with-a-
+     * start-flag path never invoked it.
+     */
+    fun sendVia(port: Int): Boolean = command("via 127.0.0.1:$port")
+
+    fun sendViaDirect(): Boolean = command("via direct")
+
+    /**
+     * Build 2052 (diagnosis Cause 5): the data-plane proof,
+     * ported from ralysnd's LanternEngine.carriesWarm — a
+     * listener is not a connection, and a SOCKS reply is not
+     * one either. A FULL TLS handshake through the SOCKS port to
+     * two Iran-poisoned hosts (resolved locally each is a
+     * sinkhole, so a completed handshake proves the name
+     * travelled to the exit and the exit carried it); the second
+     * host must answer inside 9 s. The certificate chain is
+     * deliberately not validated here — reachability is being
+     * tested, not the chain (ralysnd's trust-all probe socket).
+     */
+    fun carriesWarm(port: Int, budgetMs: Long, cancelled: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + budgetMs
+        while (System.currentTimeMillis() < deadline) {
+            if (cancelled() || !isAlive()) return false
+            val left = deadline - System.currentTimeMillis()
+            if (!carriesStream(port, "www.youtube.com", minOf(left, 20_000L), cancelled)) continue
+            if (cancelled() || !isAlive()) return false
+            val second = minOf(9_000L, maxOf(2_000L, deadline - System.currentTimeMillis()))
+            if (carriesStream(port, "www.instagram.com", second, cancelled)) return true
+        }
+        return false
+    }
+
+    private fun carriesStream(port: Int, host: String, timeoutMs: Long, cancelled: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (cancelled()) return false
+            if (handshake(port, host, (deadline - System.currentTimeMillis()).coerceIn(1_000L, 12_000L).toInt())) return true
+            if (System.currentTimeMillis() + 1_500 >= deadline) break
+            try {
+                Thread.sleep(1_500)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        return false
+    }
+
+    private val probeTrustAll = object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+    }
+
+    private val probeTls by lazy {
+        SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf(probeTrustAll), SecureRandom())
+        }.socketFactory
+    }
+
+    private fun handshake(port: Int, host: String, timeoutMs: Int): Boolean = try {
+        Socket(Proxy.NO_PROXY).use { s ->
+            s.connect(InetSocketAddress("127.0.0.1", port), 3_000)
+            s.soTimeout = timeoutMs
+            val o = s.getOutputStream()
+            val i = s.getInputStream()
+            o.write(byteArrayOf(5, 1, 0)); o.flush()
+            if (i.read() != 5 || i.read() != 0) return false
+            val h = host.toByteArray(Charsets.US_ASCII)
+            o.write(byteArrayOf(5, 1, 0, 3, h.size.toByte()) + h + byteArrayOf(0x01, 0xBB.toByte())); o.flush()
+            if (i.read() != 5 || i.read() != 0) return false
+            i.read()
+            val skip = when (i.read()) { 1 -> 4; 4 -> 16; 3 -> i.read(); else -> return false }
+            repeat(skip + 2) { if (i.read() < 0) return false }
+            (probeTls.createSocket(s, host, 443, true) as SSLSocket).use { t ->
+                t.sslParameters = t.sslParameters.apply { serverNames = listOf(SNIHostName(host)) }
+                t.startHandshake()
+                true
+            }
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * MLM's stop discipline: closing stdin makes the core exit on
+     * its own; escalate only if it lingers (1.5 s graceful, then
+     * destroy, 1 s, then destroyForcibly — with a bounded wait
+     * confirming the death, build 2054 audit F-M1).
+     */
+    @Synchronized
+    fun stop() {
+        val p = process ?: return
+        stopping = true
+        runCatching { stdin?.close() }
+        if (!waitExit(p, 1500)) {
+            ProcessKill.kill(p, destroyGraceMs = 1000, forcibleWaitMs = 2500)
+        }
+        if (process === p) {
+            process = null
+            stdin = null
+        }
+        listening = false
+        if (stage != "error") stage = "idle"
+    }
+
+    private fun waitExit(p: Process, ms: Long): Boolean =
+        runCatching { p.waitFor(ms, TimeUnit.MILLISECONDS) }.getOrDefault(false)
+
+    /**
+     * Fresh server list: forget the cached config so the next
+     * start refetches. The device id and secrets are kept (a new
+     * identity is not needed to get a new list). Only while the
+     * core is stopped. Returns the number of files deleted, or
+     * -1 when the core is running.
+     */
+    fun rotate(context: Context): Int {
+        if (isAlive()) return -1
+        var deleted = 0
+        for (name in listOf("config.json", "config_raw.json", "servers.json", "settings.json")) {
+            val f = File(dataDir(context), name)
+            if (f.exists() && f.delete()) deleted++
+        }
+        return deleted
+    }
+
+    /**
+     * The kept config's contents (build 2052, diagnosis Cause 3):
+     * radiance writes the server list under `options` →
+     * `outbounds` (fronted) / `endpoints` (masque) — the old code
+     * read root-level "servers"/"masque", keys radiance never
+     * writes there, so the kept list was always invisible and the
+     * host could never tell warm from cold. Ported from ralysnd's
+     * LanternEngine.cachedServerCount: an entry counts when it
+     * has a non-blank tag AND a server address or a peer with one.
+     * Returns (fronted, masque); -1/-1 when there is no readable
+     * kept config.
+     */
+    fun keptConfig(context: Context): Pair<Int, Int> {
+        val file = File(dataDir(context), "config.json")
+        if (!file.isFile || file.length() == 0L) return -1 to -1
+        return try {
+            val options = org.json.JSONObject(file.readText()).optJSONObject("options")
+                ?: return -1 to -1
+            fun count(key: String): Int {
+                val a = options.optJSONArray(key) ?: return 0
+                var n = 0
+                for (i in 0 until a.length()) {
+                    val x = a.optJSONObject(i) ?: continue
+                    if (x.optString("tag").isBlank()) continue
+                    val peers = x.optJSONArray("peers")
+                    val hasPeer = peers != null && (0 until peers.length()).any {
+                        peers.optJSONObject(it)?.optString("address")?.isNotBlank() == true
+                    }
+                    if (x.optString("server").isNotBlank() || hasPeer) n++
+                }
+                return n
+            }
+            count("outbounds") to count("endpoints")
+        } catch (_: Exception) {
+            -1 to -1
+        }
+    }
+
+    /**
+     * The phone's current DNS servers on the network the phone is
+     * really on — never a VPN's, which is what the active network
+     * is while a tunnel is up. Ported from ralysnd's
+     * LanternEngine.systemDns (build 2052, diagnosis minor item):
+     * only networks with NET_CAPABILITY_INTERNET, link-local IPv6
+     * resolvers left out (Go cannot be given a zone), IPv6
+     * formatted as `[ip]:53`, and the first network that yields
+     * resolvers wins.
+     */
+    fun systemDns(context: Context): List<String> {
+        val out = LinkedHashSet<String>()
+        try {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            val nets = runCatching {
+                (listOfNotNull(cm.activeNetwork) + cm.allNetworks.toList()).distinct().filter { n ->
+                    val caps = cm.getNetworkCapabilities(n) ?: return@filter false
+                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                }
+            }.getOrDefault(emptyList())
+            for (n in nets) {
+                val props = runCatching { cm.getLinkProperties(n) }.getOrNull() ?: continue
+                for (addr in props.dnsServers) {
+                    when (addr) {
+                        is java.net.Inet4Address -> addr.hostAddress?.let { out += it }
+                        is java.net.Inet6Address ->
+                            if (!addr.isLinkLocalAddress && addr.scopeId == 0) {
+                                addr.hostAddress?.substringBefore('%')?.let { out += "[$it]:53" }
+                            }
+                    }
+                }
+                if (out.isNotEmpty()) break
+            }
+        } catch (_: Exception) {
+        }
+        if (out.isEmpty()) {
+            out += "8.8.8.8"
+            out += "1.1.1.1"
+        }
+        return out.toList()
+    }
+}
+
+class LanternVpnService : VpnService() {
     private val worker = Executors.newSingleThreadExecutor()
-    private val stopper = Executors.newSingleThreadExecutor()
-
-    /** The state/helper watch loops live on their own thread: they
-     * run for the whole session and must never starve [worker]
-     * (which carries starts and core-requested restarts). */
-    private val watcher = Executors.newSingleThreadExecutor()
     private val stopping = AtomicBoolean(false)
-
-    private var tunProcess: Process? = null
     private var tunPfd: ParcelFileDescriptor? = null
+    private var tunProcess: Process? = null
     private var serverSocket: LocalServerSocket? = null
 
-    /** The TUN the core asked for via openTun, if it ever does (the
-     * novpn box never does; kept so the callback stays honest). */
-    private var coreTunPfd: ParcelFileDescriptor? = null
-
-    private val logLock = Any()
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Build 2068: the start net, same shape as the other
+        // engines' — the whole command body runs in
+        // onStartCommandGuarded below; a Throwable escaping it
+        // (startInForeground above all: it runs on the main
+        // thread before any core process exists) is recorded in
+        // crash.log and the service stops gracefully, instead of
+        // an uncaught main-thread death. crash.log only: this
+        // service owns no session log file at onStartCommand
+        // time (its workDir files are the core's, written once
+        // the core starts), so there is no honest second file
+        // to append to here.
+        return try {
+            onStartCommandGuarded(intent, flags, startId)
+        } catch (e: Throwable) {
+            CrashLog.append(this, "LanternVpnService.onStartCommand", e)
+            stopSelf()
+            START_NOT_STICKY
+        }
+    }
+
+    private fun onStartCommandGuarded(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopper.execute { stopTunnel() }
+                stopTunnel()
                 return START_NOT_STICKY
             }
             ACTION_START -> {
-                val dns = intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1"
                 startInForeground()
-                worker.execute { startTunnel(dns) }
+                if (running) return START_STICKY
+                stopping.set(false)
+                val ipv6 = intent.getBooleanExtra(EXTRA_IPV6, true)
+                val smart = intent.getBooleanExtra(EXTRA_SMART, false)
+                val mtu = clampMtu(intent.getIntExtra(EXTRA_MTU, MTU))
+                // The tunnel DNS (build 2057, audit §6 engine
+                // low): the Xray settings value via Dart, not the
+                // old hardcoded 1.1.1.1 the service used while
+                // Settings offered a DNS the tunnel ignored.
+                val dns = intent.getStringExtra(EXTRA_DNS)
+                    ?.takeIf { it.isNotBlank() } ?: "1.1.1.1"
+                worker.execute {
+                    try {
+                        startTunnel(ipv6, smart, mtu, dns)
+                    } catch (e: Throwable) {
+                        // Build 2070 (review §5.1): Throwable +
+                        // crash.log (was Exception + logcat). The
+                        // start runs here, on the worker, after
+                        // onStartCommand's own net (build 2068) has
+                        // returned — an Error escaping this body
+                        // (a class-init failure in the core/bridge
+                        // classes above all) was an uncaught worker
+                        // death. The recorded failure takes the
+                        // same serviceError + fail() path the
+                        // Exception always took.
+                        CrashLog.append(
+                            this,
+                            "LanternVpnService.startTunnel",
+                            e,
+                        )
+                        Log.e(TAG, "the Lantern tunnel did not start", e)
+                        if (serviceError == null) {
+                            serviceError = e.message ?: e.toString()
+                        }
+                        fail()
+                    }
+                }
                 return START_STICKY
             }
-            else -> {
-                // Restarted by the system without an intent: there is
-                // no run state to resume, so do not linger.
-                stopSelf()
-                return START_NOT_STICKY
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun startTunnel(
+        ipv6: Boolean,
+        smart: Boolean = false,
+        mtu: Int,
+        dns: String = "1.1.1.1",
+    ) {
+        serviceError = null
+        val dir = LanternCore.workDir(this).apply { mkdirs() }
+        LanternCore.onCoreExit = { _ ->
+            if (running) {
+                if (serviceError == null) serviceError = LanternCore.lastError
+                stopTunnel()
             }
         }
-    }
 
-    override fun onRevoke() {
-        stopper.execute { stopTunnel() }
-    }
+        // 1. Warm/cold split BEFORE starting (build 2052,
+        //    diagnosis Cause 3): a kept list means the core
+        //    listens in seconds; without one the first fetch is
+        //    the slow step. The core subprocess.
+        val kept = LanternCore.keptConfig(this)
+        val warm = kept.first > 0 || kept.second > 0
+        LanternCore.start(this, smart)
 
-    override fun onDestroy() {
-        stopProcesses()
-        super.onDestroy()
-    }
-
-    // ---- core lifecycle -------------------------------------------------
-
-    /** Which start phase is currently running (2012 diagnostics):
-     * written into the log by the phase markers and the watchdog,
-     * so a start that dies or wedges names the phase it died in. */
-    @Volatile
-    private var startPhase = "idle"
-
-    private val watchdogActive = AtomicBoolean(false)
-
-    /** A heartbeat for the start sequence: the native start calls
-     * are blocking JNI calls that cannot be interrupted, so while
-     * one is in flight this writes a line every 5s naming the phase
-     * and the elapsed time. If the lines keep coming, the process
-     * is alive and the named phase is stuck; if they stop mid-phase
-     * and the next session begins, the process died in that phase. */
-    private fun startWatchdog() {
-        if (!watchdogActive.compareAndSet(false, true)) return
-        val began = System.currentTimeMillis()
-        val t = Thread {
-            while (watchdogActive.get()) {
-                try {
-                    Thread.sleep(5000)
-                } catch (e: InterruptedException) {
-                    return@Thread
-                }
-                if (!watchdogActive.get()) break
-                val elapsed = (System.currentTimeMillis() - began) / 1000
-                logLine("still starting: phase=$startPhase, ${elapsed}s elapsed")
-            }
-        }
-        t.isDaemon = true
-        t.name = "lantern-start-watchdog"
-        t.start()
-    }
-
-    private fun startTunnel(dns: String) {
-        stopping.set(false)
-        failed = false
-        failureMessage = ""
-        startPhase = "begin"
-        // Platform-callback diagnostics land in the same service log.
-        lanternPlatformLog = { line -> logLine("platform: $line") }
-        try {
-            val dir = workDir(this)
-            dir.mkdirs()
-            openLog(dir)
-            logLine("start: log open")
-            installUncaughtLogger()
-
-            running = true
-            connected = false
-            startedAtMs = System.currentTimeMillis()
-            serverJson = ""
-            dataCapJson = ""
-            publishState(this)
-
-            startWatchdog()
-            logLine("start: entering core setup")
-            setupCore(dir)
-            logLine("lantern core setup done; starting VPN")
-
-            // Blocking: the core fetches its config and brings the
-            // tunnel up before this returns (or throws). On a
-            // censored network the bootstrap can take a while.
-            startPhase = "startVPN"
-            val vpnBegan = System.currentTimeMillis()
-            Mobile.startVPN()
-            logLine(
-                "startVPN returned after " +
-                    "${(System.currentTimeMillis() - vpnBegan) / 1000}s; " +
-                    "connected=${try { Mobile.isVPNConnected() } catch (t: Throwable) { "?" }}",
+        // 2. Wait for its SOCKS listener before raising the TUN —
+        //    bridging into a dead port would blackhole traffic.
+        //    Judged from the stdout contract or the port itself,
+        //    never from stderr. The budget is ralysnd's ladder:
+        //    warm 20 s, cold 240 s total — ONE process, never
+        //    killed while its first fetch is still in flight
+        //    (diagnosis Cause 1). The Dart side raises the WARP
+        //    leg after 20 s of a cold start and reroutes the
+        //    control plane through the running core's stdin
+        //    (Cause 2); this wait simply outlives that.
+        val budgetMs = if (warm) LanternCore.WARM_LISTEN_MS else LanternCore.COLD_GIVEUP_MS
+        if (!waitForCore(budgetMs)) {
+            throw IllegalStateException(
+                LanternCore.lastError
+                    ?: if (warm) {
+                        "Lantern core did not open 127.0.0.1:${LanternCore.SOCKS_PORT} in 20 s with a kept server list"
+                    } else {
+                        "Lantern core did not open 127.0.0.1:${LanternCore.SOCKS_PORT} in 240 s — the first server list never arrived"
+                    },
             )
-            if (stopping.get()) {
-                watchdogActive.set(false)
-                return
-            }
+        }
 
-            // The box's mixed inbound is the bridge's target; wait
-            // for it before bridging the TUN to it.
-            startPhase = "socksWait"
-            if (!waitForPort(SOCKS_PORT, 30000)) {
-                Log.e(TAG, "lantern did not open its SOCKS port")
-                logLine("start failed in phase socksWait: core did not open its local proxy port within 30s")
-                fail("core did not open its local proxy port")
-                return
-            }
-            logLine("lantern SOCKS proxy is up on $SOCKS_PORT")
-            startPhase = "tunBridge"
-
-            if (prepare(this) != null) {
-                Log.w(TAG, "the VPN has no permission")
-                fail("the VPN has no permission")
-                return
-            }
-            val builder = Builder()
-                .setSession(getString(R.string.app_name))
-                .setMtu(MTU)
-                .addAddress("10.10.15.1", 30)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer(dns)
-                .addAddress("fdfe:dcba:9876::1", 126)
-                .addRoute("::", 0)
-            applyApps(builder)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
-            val pfd = builder.establish()
-            if (pfd == null) {
-                Log.e(TAG, "establish() returned null")
-                fail("establish() returned null")
-                return
-            }
-            tunPfd = pfd
-
-            // The fd listener the helper connects to. Same agreement
-            // as the other engines: the listener binds the abstract
-            // namespace under this path string, and the helper dials
-            // the abstract name with retries.
-            val socketFile = File(dir, "tun.sock")
-            socketFile.delete()
-            val server = LocalServerSocket(socketFile.absolutePath)
-            serverSocket = server
-
-            val tunLog = File(dir, "tunlink.log")
-            tunProcess = ProcessBuilder(
-                libPath("libtunlink.so"),
-                "-socket", socketFile.absolutePath,
-                "-proxy", "socks5://127.0.0.1:$SOCKS_PORT",
-                "-mtu", MTU.toString(),
-                "-loglevel", "warn",
+        // 2b. The data path decides (build 2052, diagnosis
+        //      Cause 5): a listener is not a connection. Only
+        //      after a TLS handshake through the SOCKS to two
+        //      hosts does the TUN go up; a core whose servers are
+        //      all unreachable on this line fails here with its
+        //      own words instead of a false "connected".
+        if (!LanternCore.carriesWarm(LanternCore.SOCKS_PORT, LanternCore.DATA_TIMEOUT_MS) { stopping.get() }) {
+            throw IllegalStateException(
+                if (LanternCore.exhausted) {
+                    val n = LanternCore.servers
+                    if (n > 0) {
+                        "None of the $n servers on Lantern's current list answered from your internet. The core fetches a new list by itself; tap \u201CFresh server list\u201D for a new one now."
+                    } else {
+                        "None of the servers on Lantern's current list answered from your internet. The core fetches a new list by itself; tap \u201CFresh server list\u201D for a new one now."
+                    }
+                } else {
+                    "Lantern core came up but no server carried any traffic in 45 s. Connect again, or tap \u201CFresh server list\u201D."
+                },
             )
-                .directory(dir)
-                .redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(tunLog))
-                .start()
-
-            val accepted = acceptWithTimeout(server, 15000)
-            if (accepted == null) {
-                Log.e(TAG, "the helper did not connect for the TUN fd")
-                fail("the TUN bridge did not connect")
-                return
-            }
-            accepted.use { socket ->
-                socket.setFileDescriptorsForSend(arrayOf(pfd.fileDescriptor))
-                socket.outputStream.write(1)
-                socket.outputStream.flush()
-            }
-            server.close()
-            serverSocket = null
-            startPhase = "up"
-            watchdogActive.set(false)
-            updateNotification()
-            // The start concluded: clear the pending-start marker
-            // (2015) so a later start does not mistake this session
-            // for a process that died mid-init.
-            clearPendingStart(this)
-            publishState(this)
-            watchLoops()
-        } catch (e: Throwable) {
-            // Throwable, not Exception (2012): an Error escaping a
-            // gomobile call must still be named in the log instead
-            // of taking the start down silently.
-            Log.e(TAG, "the Lantern tunnel did not start", e)
-            logLine("start failed in phase $startPhase: ${e.javaClass.name}: ${e.message}")
-            try {
-                logLine(Log.getStackTraceString(e).take(3000))
-            } catch (t: Throwable) {
-                // Logging must never break the failure path.
-            }
-            watchdogActive.set(false)
-            fail(e.message ?: "start failed")
         }
-    }
 
-    /** One-time-per-process core setup, in the official client's
-     * order: logging, the IPC server (which builds the backend),
-     * then Radiance itself. Each call is bracketed with begin/ok
-     * lines (2012): the 2011 build died somewhere inside this
-     * sequence leaving only the session header, so the phases now
-     * name themselves in lantern-service.log. */
-    private fun setupCore(dir: File) {
-        synchronized(coreLock) {
-            if (coreReady) {
-                logLine("core setup: already initialized in this process")
-                return
-            }
-            logLine("core setup: buildOpts begin")
-            coreLoaded = true
-            val opts = buildOpts(dir)
-            logLine("core setup: buildOpts ok")
-            setupPhase("initLogging") {
-                Mobile.initLogging(dir.absolutePath, dir.absolutePath, "info")
-            }
-            setupPhase("startIPCServer") {
-                Mobile.startIPCServer(this, opts)
-            }
-            setupPhase("setupRadiance") {
-                Mobile.setupRadiance(opts, eventEmitter)
-            }
-            coreReady = true
-            logLine("core setup: all phases ok")
+        // 3. The VPN interface.
+        if (prepare(this) != null) {
+            throw IllegalStateException("the VPN has no permission")
         }
-    }
-
-    private fun setupPhase(name: String, block: () -> Unit) {
-        startPhase = "setup:$name"
-        logLine("core setup: $name begin")
-        val began = System.currentTimeMillis()
-        block()
-        logLine("core setup: $name ok (${System.currentTimeMillis() - began} ms)")
-    }
-
-    private fun buildOpts(dir: File): Opts {
-        val opts = Opts()
-        logLine("core setup: Opts constructed")
-        opts.dataDir = dir.absolutePath
-        opts.logDir = dir.absolutePath
-        opts.logLevel = "info"
-        opts.deviceid = deviceId()
-        opts.appVersion = try {
-            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
-        } catch (e: Exception) {
-            ""
+        val builder = Builder()
+            .setSession(getString(R.string.app_name))
+            .setMtu(mtu)
+            .addAddress("10.10.16.1", 30)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer(dns)
+        if (ipv6) {
+            builder.addAddress("fdfe:dcba:9876::1", 126)
+            builder.addRoute("::", 0)
         }
-        opts.locale = Locale.getDefault().language
-        opts.timeZone = TimeZone.getDefault().id
-        // Ember does not phone home for a VPN engine the user picked
-        // for privacy; the official client defaults its own way.
-        opts.telemetryConsent = false
-        // The official client passes "prod" here (its
-        // getRadianceEnv()); "" only means "not staging" to the
-        // core, but 2012 matches the known-good client exactly.
-        opts.env = "prod"
-        opts.platform = this
-        return opts
-    }
+        applyApps(builder)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
+        val pfd = builder.establish()
+            ?: throw IllegalStateException("establish() returned null")
+        tunPfd = pfd
 
-    /** A stable anonymous device id for the core's free-plan user,
-     * minted once and kept in prefs. */
-    private fun deviceId(): String {
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.getString(KEY_DEVICE_ID, null)?.let { return it }
-        val id = UUID.randomUUID().toString()
-        prefs.edit().putString(KEY_DEVICE_ID, id).apply()
-        return id
-    }
+        // 4. The fd listener the helper connects to (see
+        //    XrayVpnService.createFdListener for the namespace both
+        //    sides agree on: the absolute path string, abstract).
+        val socketFile = File(dir, "tun.sock")
+        socketFile.delete()
+        val server = LocalServerSocket(socketFile.absolutePath)
+        serverSocket = server
 
-    private val eventEmitter = object : FlutterEventEmitter {
-        override fun sendEvent(event: FlutterEvent?) {
-            // SendEvent has no error return on the Go side: nothing
-            // may throw out of here (see LanternPlatform.kt header).
-            try {
-                if (event == null) return
-                logLine("core event [${event.type}] ${event.message}")
-            } catch (t: Throwable) {
-                // Swallow: an event we couldn't log is not worth
-                // the process.
-            }
+        // 5. The tun2socks helper subprocess. Build 2067 (log
+        // hygiene): the bridge log rotates per session, like
+        // Xray's — the previous session becomes tunlink.log.old.
+        val tunLog = File(dir, "tunlink.log")
+        rotateLogPerSession(tunLog)
+        tunProcess = ProcessBuilder(
+            libPath("libtunlink.so"),
+            "-socket", socketFile.absolutePath,
+            "-proxy", "socks5://127.0.0.1:${LanternCore.SOCKS_PORT}",
+            "-mtu", mtu.toString(),
+            "-loglevel", "warn",
+        )
+            .directory(dir)
+            .redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.appendTo(tunLog))
+            .start()
+
+        // 6. Hand the TUN fd over.
+        val accepted = acceptWithTimeout(server, 15000)
+            ?: throw IllegalStateException("the helper did not connect for the TUN fd")
+        accepted.use { socket ->
+            socket.setFileDescriptorsForSend(arrayOf(pfd.fileDescriptor))
+            socket.outputStream.write(1)
+            socket.outputStream.flush()
         }
+        server.close()
+        serverSocket = null
+
+        running = true
+        startedAtMs = System.currentTimeMillis()
+        val uid = android.os.Process.myUid()
+        baseTx = TrafficStats.getUidTxBytes(uid)
+        baseRx = TrafficStats.getUidRxBytes(uid)
+        updateNotification()
+        watchProcesses()
     }
 
-    /** Keeps the published state in step with the core (its tunnel
-     * state, the server it landed on, the free plan's data cap) and
-     * ends the tunnel if the TUN bridge dies on its own. */
-    private fun watchLoops() {
-        watcher.execute {
-            var tick = 0
-            while (!stopping.get() && running) {
-                val t = tunProcess
-                if (t != null && !t.isAlive) {
-                    Log.e(TAG, "tunlink exited (${t.exitValue()})")
-                    stopper.execute { stopTunnel() }
-                    return@execute
-                }
-                if (tick % 2 == 0) {
-                    try {
-                        connected = Mobile.isVPNConnected()
-                    } catch (e: Throwable) {
-                        // A core mid-restart; the next tick retries.
-                    }
-                    // Also the published-state heartbeat (2015):
-                    // its updatedAtMs is how the UI process tells a
-                    // live session from a dead service process.
-                    publishState(this)
-                }
-                if (tick % 16 == 0) {
-                    serverJson = try {
-                        Mobile.getSelectedServerJSON() ?: ""
-                    } catch (e: Throwable) {
-                        serverJson
-                    }
-                    dataCapJson = try {
-                        Mobile.getDataCapInfo() ?: ""
-                    } catch (e: Throwable) {
-                        dataCapJson
-                    }
-                    updateNotification()
-                }
-                tick++
-                try {
-                    Thread.sleep(1000)
-                } catch (e: InterruptedException) {
-                    return@execute
-                }
-            }
-        }
-    }
-
-    /** Which apps use the VPN: the same stored choice as the other engines. */
+    /** Which apps use the VPN: the same stored choice as the other engines'. */
     private fun applyApps(builder: Builder) {
         fun each(packages: Set<String>, add: (String) -> Unit) {
             for (pkg in packages) {
@@ -458,13 +759,64 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
         }
     }
 
+    private fun waitForCore(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!LanternCore.isAlive()) return false
+            if (LanternCore.listening) return true
+            try {
+                Socket().use { s ->
+                    s.connect(InetSocketAddress("127.0.0.1", LanternCore.SOCKS_PORT), 300)
+                    return true
+                }
+            } catch (e: Exception) {
+                try {
+                    Thread.sleep(150)
+                } catch (ie: InterruptedException) {
+                    return false
+                }
+            }
+        }
+        return LanternCore.listening
+    }
+
+    /** Ends the tunnel when either subprocess dies on its own. */
+    private fun watchProcesses() {
+        worker.execute {
+            while (!stopping.get() && running) {
+                if (!LanternCore.isAlive()) {
+                    Log.e(TAG, "lantern core exited")
+                    if (serviceError == null) {
+                        serviceError = LanternCore.lastError ?: "Lantern core exited"
+                    }
+                    stopTunnel()
+                    return@execute
+                }
+                val t = tunProcess
+                if (t != null && !t.isAlive) {
+                    Log.e(TAG, "tunlink exited (${t.exitValue()})")
+                    stopTunnel()
+                    return@execute
+                }
+                try {
+                    // Build 2055 (audit B-H5): 5 s, not 1 s — the
+                    // only work here is a liveness check; the core
+                    // has its own exit callback for the fast path.
+                    Thread.sleep(5000)
+                } catch (e: InterruptedException) {
+                    return@execute
+                }
+            }
+        }
+    }
+
     private fun acceptWithTimeout(server: LocalServerSocket, timeoutMs: Long): LocalSocket? {
         var result: LocalSocket? = null
         val t = Thread {
             try {
                 result = server.accept()
             } catch (e: Exception) {
-                // Closed by the timeout below.
+                // Closed by the timeout path below.
             }
         }
         t.start()
@@ -481,76 +833,17 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
         return result
     }
 
-    private fun waitForPort(port: Int, timeoutMs: Long): Boolean {
-        val began = System.currentTimeMillis()
-        val deadline = began + timeoutMs
-        var lastLog = began
-        while (System.currentTimeMillis() < deadline) {
-            if (stopping.get()) return false
-            try {
-                Socket().use { s ->
-                    s.connect(InetSocketAddress("127.0.0.1", port), 300)
-                    return true
-                }
-            } catch (e: Exception) {
-                val now = System.currentTimeMillis()
-                if (now - lastLog >= 5000) {
-                    lastLog = now
-                    logLine("waiting for the core SOCKS port: ${(now - began) / 1000}s")
-                }
-                try {
-                    Thread.sleep(120)
-                } catch (ie: InterruptedException) {
-                    return false
-                }
-            }
-        }
-        return false
-    }
-
-    private fun fail(message: String) {
-        watchdogActive.set(false)
-        failed = true
-        failureMessage = message
-        if (coreLoaded) {
-            try {
-                Mobile.stopVPN()
-            } catch (e: Throwable) {
-                // Already stopped.
-            }
-        }
+    private fun fail() {
         stopProcesses()
         running = false
-        connected = false
-        clearPendingStart(this)
-        publishState(this)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     private fun stopTunnel() {
-        watchdogActive.set(false)
-        if (!stopping.compareAndSet(false, true)) {
-            // A stop is already under way; still make sure the
-            // published state lands.
-            running = false
-            connected = false
-            clearPendingStart(this)
-            publishState(this)
-            return
-        }
-        if (coreLoaded) {
-            try {
-                Mobile.stopVPN()
-            } catch (e: Throwable) {
-                // Already stopped.
-            }
-        }
+        stopping.set(true)
         stopProcesses()
         running = false
-        connected = false
-        clearPendingStart(this)
-        publishState(this)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -563,267 +856,58 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
             // Already closed.
         }
         serverSocket = null
-        try {
-            File(workDir(this), "tun.sock").delete()
-        } catch (e: Exception) {
-            // Best effort only.
-        }
-        tunProcess?.let { p ->
-            try {
-                p.destroy()
-                val deadline = System.currentTimeMillis() + 400
-                while (p.isAlive && System.currentTimeMillis() < deadline) Thread.sleep(30)
-                if (p.isAlive) p.destroyForcibly()
-            } catch (e: Exception) {
-                // Already gone.
-            }
-        }
+        runCatching { File(LanternCore.workDir(this), "tun.sock").delete() }
+        // The bridge first, so no new flows start while the core goes.
+        // Build 2054 (audit F-M1): the shared kill — the old
+        // destroy + 400 ms + forcibly with NO post-forcible wait
+        // could return while the helper still held its port.
+        tunProcess?.let { ProcessKill.kill(it) }
         tunProcess = null
+        LanternCore.stop()
         try {
             tunPfd?.close()
         } catch (e: Exception) {
             // Already closed.
         }
         tunPfd = null
+    }
+
+    /**
+     * Build 2067 (log hygiene): rotate [file] at every session
+     * start — the previous file becomes <name>.old — so a log
+     * viewer can never present a previous session's flood as the
+     * current session's (the psiphon.log lesson of the 2066
+     * device report). Same helper as XrayVpnService's.
+     */
+    private fun rotateLogPerSession(file: File) {
         try {
-            coreTunPfd?.close()
+            if (file.exists()) {
+                val old = File(file.parentFile, "${file.name}.old")
+                if (old.exists()) old.delete()
+                file.renameTo(old)
+            }
         } catch (e: Exception) {
-            // Already closed.
+            // Logging must never break the tunnel.
         }
-        coreTunPfd = null
     }
 
     private fun libPath(name: String): String =
         File(applicationInfo.nativeLibraryDir, name).absolutePath
 
-    // ---- the service's own log ------------------------------------------
-    // The core writes its own log to lantern.log in the same dir
-    // (its logDir); the service's lines and the core's events go to
-    // lantern-service.log beside it.
-
-    private fun openLog(dir: File) {
-        synchronized(logLock) {
-            try {
-                val f = File(dir, "lantern-service.log")
-                if (f.length() > 512 * 1024) {
-                    f.renameTo(File(dir, "lantern-service.log.old"))
-                }
-                f.appendText("\n==== lantern session ${System.currentTimeMillis()} ====\n")
-                val versionCode = try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        packageManager.getPackageInfo(packageName, 0).longVersionCode
-                    } else {
-                        @Suppress("DEPRECATION")
-                        packageManager.getPackageInfo(packageName, 0).versionCode.toLong()
-                    }
-                } catch (e: Exception) {
-                    -1L
-                }
-                f.appendText(
-                    "device: ${Build.MANUFACTURER} ${Build.MODEL}, " +
-                        "sdk ${Build.VERSION.SDK_INT}, app build $versionCode\n",
-                )
-                // The core's own crash file (radiance installs it as
-                // Go's crash output at InitLogging): a Go panic in a
-                // detached goroutine lands there and nowhere else.
-                // The 2011 log viewer never showed this file, so a
-                // crash there was invisible; copy its tail into this
-                // log at the next session start, then clear it so it
-                // is not copied twice. (Deleting is safe: the core
-                // re-opens it at its next InitLogging, and an open
-                // handle in a surviving process keeps its own inode.)
-                val crash = File(dir, "lantern-crash.log")
-                if (crash.exists() && crash.length() > 0) {
-                    val bytes = crash.readBytes()
-                    val tail = if (bytes.size > 8192) {
-                        bytes.copyOfRange(bytes.size - 8192, bytes.size)
-                    } else {
-                        bytes
-                    }
-                    f.appendText("---- previous core crash log (lantern-crash.log) ----\n")
-                    f.appendText(String(tail, Charsets.UTF_8))
-                    f.appendText("\n---- end previous core crash log ----\n")
-                    crash.delete()
-                }
-            } catch (e: Exception) {
-                // Logging must never break the tunnel.
-            }
-        }
+    override fun onRevoke() {
+        stopTunnel()
+        super.onRevoke()
     }
 
-    /** A process-wide uncaught-exception logger (2012): an
-     * exception on a thread startTunnel doesn't own — the main
-     * thread delivering a ConnectivityManager callback is the
-     * classic case — otherwise kills the process with no trace in
-     * any log we control. The handler appends the stack to
-     * lantern-service.log, then delegates so the process still dies
-     * the way the system expects. */
-    private fun installUncaughtLogger() {
-        if (uncaughtInstalled) return
-        uncaughtInstalled = true
-        val previous = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            try {
-                logLine(
-                    "UNCAUGHT on thread ${thread.name}: " +
-                        "${error.javaClass.name}: ${error.message}",
-                )
-                logLine(Log.getStackTraceString(error).take(4000))
-            } catch (t: Throwable) {
-                // The process is dying; nothing more to protect.
-            }
-            previous?.uncaughtException(thread, error)
-        }
+    override fun onDestroy() {
+        stopping.set(true)
+        stopProcesses()
+        running = false
+        worker.shutdownNow()
+        super.onDestroy()
     }
 
-    private fun logLine(line: String) {
-        synchronized(logLock) {
-            try {
-                File(workDir(this), "lantern-service.log").appendText(line + "\n")
-            } catch (e: Exception) {
-                // As above.
-            }
-        }
-    }
-
-    // ---- libbox PlatformInterface: the service-side half ----------------
-    // (LanternPlatform.kt carries the rest.)
-
-    override fun autoDetectInterfaceControl(fd: Int) {
-        // A gomobile callback: protect() must not throw out of it.
-        try {
-            protect(fd)
-        } catch (t: Throwable) {
-            logLine("platform: autoDetectInterfaceControl failed: $t")
-        }
-    }
-
-    /**
-     * The novpn box has no TUN inbound, so this is never called
-     * with the shipped core. It stays a real implementation —
-     * the official client's translation of TunOptions into a
-     * Builder — rather than a stub that would fail mysteriously
-     * if a future core asked.
-     */
-    override fun openTun(options: TunOptions): Int {
-        val builder = Builder()
-            .setSession(getString(R.string.app_name))
-            .setMtu(options.mtu)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setMetered(false)
-        }
-        val inet4Address = options.inet4Address
-        while (inet4Address.hasNext()) {
-            val address = inet4Address.next()
-            builder.addAddress(address.address(), address.prefix())
-        }
-        val inet6Address = options.inet6Address
-        while (inet6Address.hasNext()) {
-            val address = inet6Address.next()
-            builder.addAddress(address.address(), address.prefix())
-        }
-        builder.addDisallowedApplication(packageName)
-        if (options.autoRoute) {
-            builder.addDnsServer(options.dnsServerAddress.value)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val inet4RouteAddress = options.inet4RouteAddress
-                if (inet4RouteAddress.hasNext()) {
-                    while (inet4RouteAddress.hasNext()) {
-                        builder.addRoute(inet4RouteAddress.next().toIpPrefix())
-                    }
-                } else if (options.inet4Address.hasNext()) {
-                    builder.addRoute("0.0.0.0", 0)
-                }
-                val inet6RouteAddress = options.inet6RouteAddress
-                if (inet6RouteAddress.hasNext()) {
-                    while (inet6RouteAddress.hasNext()) {
-                        builder.addRoute(inet6RouteAddress.next().toIpPrefix())
-                    }
-                } else if (options.inet6Address.hasNext()) {
-                    builder.addRoute("::", 0)
-                }
-                val inet4RouteExcludeAddress = options.inet4RouteExcludeAddress
-                while (inet4RouteExcludeAddress.hasNext()) {
-                    builder.excludeRoute(inet4RouteExcludeAddress.next().toIpPrefix())
-                }
-                val inet6RouteExcludeAddress = options.inet6RouteExcludeAddress
-                while (inet6RouteExcludeAddress.hasNext()) {
-                    builder.excludeRoute(inet6RouteExcludeAddress.next().toIpPrefix())
-                }
-            } else {
-                val inet4RouteAddress = options.inet4RouteRange
-                if (inet4RouteAddress.hasNext()) {
-                    while (inet4RouteAddress.hasNext()) {
-                        val address = inet4RouteAddress.next()
-                        builder.addRoute(address.address(), address.prefix())
-                    }
-                }
-                val inet6RouteAddress = options.inet6RouteRange
-                if (inet6RouteAddress.hasNext()) {
-                    while (inet6RouteAddress.hasNext()) {
-                        val address = inet6RouteAddress.next()
-                        builder.addRoute(address.address(), address.prefix())
-                    }
-                }
-            }
-        }
-        try {
-            coreTunPfd?.close()
-        } catch (e: Exception) {
-            // Already closed.
-        }
-        val pfd = builder.establish()
-            ?: error("android: the application is not prepared or is revoked")
-        coreTunPfd = pfd
-        return pfd.fd
-    }
-
-    override fun sendNotification(notification: LibboxNotification?) {
-        // The foreground notification below carries the status; the
-        // box's own notifications are informational only here.
-        try {
-            if (notification != null) {
-                logLine("core notification: ${notification.title} ${notification.body}")
-            }
-        } catch (t: Throwable) {
-            // A gomobile callback: never throw (see LanternPlatform.kt).
-        }
-    }
-
-    // ---- utils.PlatformInterface extras ----------------------------------
-
-    override fun restartService() {
-        // Radiance asks for a tunnel restart (e.g. after a network
-        // change): cycle the box; the TUN bridge stays up because
-        // the SOCKS port returns with the box.
-        worker.execute {
-            try {
-                Mobile.stopVPN()
-                if (!stopping.get() && running) {
-                    Mobile.startVPN()
-                }
-            } catch (e: Throwable) {
-                Log.e(TAG, "restartService failed", e)
-                logLine("restart failed: ${e.message}")
-            }
-        }
-    }
-
-    override fun postServiceClose() {
-        // The box closed under us: the bridge has nothing to talk
-        // to, so take the tunnel down. No error return on the Go
-        // side: nothing may throw out of here.
-        try {
-            logLine("postServiceClose: core closed the box")
-            if (!stopping.get()) {
-                stopper.execute { stopTunnel() }
-            }
-        } catch (t: Throwable) {
-            // Swallow (see above).
-        }
-    }
-
-    // ---- notification ------------------------------------------------------
+    // Notifications.
 
     private fun startInForeground() {
         val manager = getSystemService(NotificationManager::class.java)
@@ -842,11 +926,7 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
     }
 
     private fun updateNotification() {
-        try {
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
-        } catch (e: Exception) {
-            // Not in the foreground (yet).
-        }
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
     }
 
     private fun notification(): Notification {
@@ -858,6 +938,17 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
             this, 41, Intent(this, LanternVpnService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        val exit = when {
+            LanternCore.exitCity.isNotEmpty() && LanternCore.exitCountry.isNotEmpty() ->
+                "${LanternCore.exitCity}, ${LanternCore.exitCountry}"
+            LanternCore.exitCountry.isNotEmpty() -> LanternCore.exitCountry
+            else -> ""
+        }
+        val text = when {
+            running && LanternCore.stage == "up" && exit.isNotEmpty() -> "Lantern · $exit"
+            running && LanternCore.stage == "up" -> "Lantern"
+            else -> getString(R.string.notification_connecting)
+        }
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL)
         } else {
@@ -867,7 +958,7 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
         return builder
             .setSmallIcon(R.drawable.ic_stat_logo)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(if (connected) "Lantern · connected" else "Lantern")
+            .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -878,186 +969,63 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
     companion object {
         const val ACTION_START = "com.ralysnd.ember.LANTERN_START"
         const val ACTION_STOP = "com.ralysnd.ember.LANTERN_STOP"
+        private const val EXTRA_IPV6 = "ipv6"
+        private const val EXTRA_SMART = "smart"
+        private const val EXTRA_MTU = "mtu"
         private const val EXTRA_DNS = "dns"
 
         private const val CHANNEL = "lantern_status"
         private const val NOTIFICATION_ID = 4
         private const val TAG = "LanternVpnService"
         private const val MTU = 1500
-        private const val PREFS = "lantern"
-        private const val KEY_DEVICE_ID = "device_id"
 
-        /** The novpn core's mixed SOCKS/HTTP inbound port (radiance
-         * boxoptions_novpn.go's defaultSocksAddress). */
-        const val SOCKS_PORT = 1080
-
-        private val coreLock = Any()
-
-        @Volatile
-        private var coreReady = false
-
-        /** True once this process has touched the binding (setupCore
-         * entry). A stop that arrives in a process that never set
-         * the core up must not call into Mobile: merely loading the
-         * library is the expensive, fragile step (2015). */
-        @Volatile
-        private var coreLoaded = false
-
-        @Volatile
-        private var uncaughtInstalled = false
+        /** Clamps a tunnel MTU to the offered range (build 2038,
+         *  queue 2f): 1280 is the IPv6 minimum MTU (the floor),
+         *  1500 the default ceiling. A corrupt or out-of-range
+         *  value clamps instead of breaking a connect. */
+        private fun clampMtu(mtu: Int) = mtu.coerceIn(1280, 1500)
 
         @Volatile
         var running = false
             private set
 
         @Volatile
-        var connected = false
-            private set
-
-        @Volatile
-        var failed = false
-            private set
-
-        @Volatile
-        var failureMessage = ""
-            private set
-
-        @Volatile
         var startedAtMs = 0L
             private set
 
+        /** Why the last start/stop cycle failed, if it did. */
         @Volatile
-        var serverJson = ""
-            private set
+        var serviceError: String? = null
 
         @Volatile
-        var dataCapJson = ""
-            private set
+        private var baseTx = -1L
 
-        /** The Lantern mode's files: core data root and logs. */
-        fun workDir(context: Context): File = File(context.filesDir, "lantern")
+        @Volatile
+        private var baseRx = -1L
 
-        // ---- cross-process state (2015) ------------------------------
-        // The service runs in its own process (:lantern, see the
-        // manifest), so the UI process cannot read the statics above
-        // any more — separate heaps. The service publishes every
-        // state change (and a 2s heartbeat while running) to a small
-        // JSON file in the shared work dir; MainActivity's
-        // lanternState handler reads it back with readPublishedState.
-
-        private const val STATE_FILE = "lantern-state.json"
-        private const val PENDING_FILE = "lantern-start-pending.txt"
-
-        /** Snapshot the published state to the state file,
-         * atomically (tmp + rename) so a reader never sees a torn
-         * file. Best-effort: state publishing must never break the
-         * tunnel. */
-        fun publishState(context: Context) {
-            try {
-                val dir = workDir(context)
-                dir.mkdirs()
-                val json = org.json.JSONObject()
-                    .put("running", running)
-                    .put("connected", connected)
-                    .put("failed", failed)
-                    .put("failure", failureMessage)
-                    .put("sinceMs", startedAtMs)
-                    .put("server", serverJson)
-                    .put("dataCap", dataCapJson)
-                    .put("updatedAtMs", System.currentTimeMillis())
-                    .toString()
-                val tmp = File(dir, "$STATE_FILE.tmp")
-                tmp.writeText(json)
-                tmp.renameTo(File(dir, STATE_FILE))
-            } catch (e: Exception) {
-                // As above.
-            }
+        /** Session traffic of this app's UID since the tunnel started (approximate). */
+        fun sessionTraffic(): Pair<Long, Long> {
+            if (!running) return 0L to 0L
+            val uid = android.os.Process.myUid()
+            val tx = TrafficStats.getUidTxBytes(uid)
+            val rx = TrafficStats.getUidRxBytes(uid)
+            val up = if (tx < 0 || baseTx < 0) 0 else (tx - baseTx).coerceAtLeast(0)
+            val down = if (rx < 0 || baseRx < 0) 0 else (rx - baseRx).coerceAtLeast(0)
+            return up to down
         }
 
-        /** The state as the UI process reports it: the published
-         * file's contents, or the defaults when no file exists. A
-         * file that claims a running session but whose heartbeat
-         * (updatedAtMs) is stale means the service process is gone
-         * (killed, or died mid-start) — report stopped rather than
-         * a phantom session. */
-        fun readPublishedState(context: Context): Map<String, Any> {
-            var running = false
-            var connected = false
-            var failed = false
-            var failure = ""
-            var sinceMs = 0L
-            var server = ""
-            var dataCap = ""
-            try {
-                val f = File(workDir(context), STATE_FILE)
-                if (f.exists()) {
-                    val j = org.json.JSONObject(f.readText())
-                    running = j.optBoolean("running")
-                    connected = j.optBoolean("connected")
-                    failed = j.optBoolean("failed")
-                    failure = j.optString("failure")
-                    sinceMs = j.optLong("sinceMs")
-                    server = j.optString("server")
-                    dataCap = j.optString("dataCap")
-                    val updatedAt = j.optLong("updatedAtMs")
-                    if (running && updatedAt > 0 &&
-                        System.currentTimeMillis() - updatedAt > 10_000
-                    ) {
-                        running = false
-                        connected = false
-                    }
-                }
-            } catch (e: Exception) {
-                // Corrupt or unreadable state: report the defaults.
-            }
-            return mapOf(
-                "running" to running,
-                "connected" to connected,
-                "failed" to failed,
-                "failure" to failure,
-                "sinceMs" to sinceMs,
-                "server" to server,
-                "dataCap" to dataCap,
-            )
-        }
-
-        /** The start concluded (up, failed, or stopped): the
-         * pending-start marker's job is done. */
-        fun clearPendingStart(context: Context) {
-            try {
-                File(workDir(context), PENDING_FILE).delete()
-            } catch (e: Exception) {
-                // Diagnostics only.
-            }
-        }
-
-        fun start(context: Context, dns: String) {
-            val dir = workDir(context)
-            // Parent-side liveness note (2015): a pending-start
-            // marker still on disk means the previous start's
-            // service process never concluded — every conclusion
-            // path (up, fail, stop) deletes it, so what remains is
-            // a process that died silently, in this engine's case
-            // inside native init before any logging existed. Name
-            // it in the service log before this attempt overwrites
-            // the marker.
-            try {
-                val pending = File(dir, PENDING_FILE)
-                if (pending.exists()) {
-                    dir.mkdirs()
-                    File(dir, "lantern-service.log").appendText(
-                        "previous lantern start: core process died " +
-                            "during native init (no completion marker)\n",
-                    )
-                    pending.delete()
-                }
-                dir.mkdirs()
-                pending.writeText(System.currentTimeMillis().toString())
-            } catch (e: Exception) {
-                // Diagnostics only; never block a start.
-            }
+        fun start(
+            context: Context,
+            ipv6: Boolean,
+            smart: Boolean = false,
+            mtu: Int = 1500,
+            dns: String = "1.1.1.1",
+        ) {
             val intent = Intent(context, LanternVpnService::class.java).apply {
                 action = ACTION_START
+                putExtra(EXTRA_IPV6, ipv6)
+                putExtra(EXTRA_SMART, smart)
+                putExtra(EXTRA_MTU, clampMtu(mtu))
                 putExtra(EXTRA_DNS, dns)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1068,16 +1036,9 @@ class LanternVpnService : VpnService(), LanternPlatformImpl {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, LanternVpnService::class.java).setAction(ACTION_STOP)
-            try {
-                context.startService(intent)
-            } catch (e: Exception) {
-                context.stopService(Intent(context, LanternVpnService::class.java))
-            }
+            context.startService(
+                Intent(context, LanternVpnService::class.java).apply { action = ACTION_STOP },
+            )
         }
     }
 }
-
-/** A RoutePrefix from the core as an Android IpPrefix. */
-private fun lantern.io.libbox.RoutePrefix.toIpPrefix(): IpPrefix =
-    IpPrefix(InetAddress.getByName(address()), prefix())

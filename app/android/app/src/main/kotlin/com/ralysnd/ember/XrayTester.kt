@@ -3,9 +3,12 @@ package com.ralysnd.ember
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.net.Authenticator
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.PasswordAuthentication
 import java.net.Proxy
+import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
 
@@ -23,12 +26,88 @@ object XrayTester {
     @Volatile
     private var nextPort = 11080
 
+    /**
+     * LAN sharing (build 2062, feature queue #2): the SOCKS
+     * username/password auth for the live tunnel's
+     * password-protected inbound. `java.net` asks the default
+     * [Authenticator] when a SOCKS5 proxy demands auth, so one
+     * installed authenticator serves every probe — but it
+     * answers ONLY for the exact loopback host + the stored
+     * port, and only while credentials are set, so it can
+     * never leak the password to another host or a test core.
+     * Installed once; empty credentials clear the fields.
+     */
+    private object SocksAuth : Authenticator() {
+        @Volatile var user = ""
+        @Volatile var pass = ""
+        @Volatile var port = 0
+
+        override fun getPasswordAuthentication(): PasswordAuthentication? {
+            if (requestingHost != "127.0.0.1" || requestingPort != port) {
+                return null
+            }
+            if (user.isEmpty() || pass.isEmpty()) return null
+            return PasswordAuthentication(user, pass.toCharArray())
+        }
+    }
+
+    @Volatile
+    private var socksAuthInstalled = false
+
+    /** Sets (or clears, when empty) the SOCKS credentials for [port]. */
+    private fun setSocksAuth(user: String, pass: String, port: Int) {
+        if (!socksAuthInstalled) {
+            Authenticator.setDefault(SocksAuth)
+            socksAuthInstalled = true
+        }
+        SocksAuth.user = user
+        SocksAuth.pass = pass
+        SocksAuth.port = port
+    }
+
+    /**
+     * Build 2057 (audit F-M7): the test log's 1 MB rotation — the
+     * same rule as XrayVpnService.rotateLogIfLarge, kept local
+     * because the tester is a standalone object, not a service.
+     */
+    private fun rotateLogIfLarge(file: File) {
+        try {
+            if (file.exists() && file.length() > 1024 * 1024) {
+                file.renameTo(File(file.parentFile, "${file.name}.old"))
+            }
+        } catch (e: Exception) {
+            // Logging must never break the test.
+        }
+    }
+
     @Synchronized
     private fun takePort(): Int {
         val p = nextPort
         nextPort += 2
         if (nextPort > 11260) nextPort = 11080
         return p
+    }
+
+    /**
+     * A port from the test range that nothing holds right now
+     * (build 2061, feature queue #1): the rotation is only a
+     * candidate list — a stale test core that outlived its kill
+     * would otherwise hand the next test a port whose SOCKS
+     * answers for the WRONG config. The bind probe closes that
+     * hole: a held candidate is skipped, never used. -1 when
+     * the whole range is busy.
+     */
+    @Synchronized
+    private fun takeFreePort(): Int {
+        repeat(91) {
+            val p = takePort()
+            try {
+                ServerSocket(p).use { return p }
+            } catch (e: Exception) {
+                // Held — try the next candidate.
+            }
+        }
+        return -1
     }
 
     /**
@@ -39,7 +118,8 @@ object XrayTester {
      * substitutes the actual port, keeping one source of config truth.
      */
     fun measureDelay(context: Context, configJson: String): Long {
-        val port = takePort()
+        val port = takeFreePort()
+        if (port < 0) return -1
         val config = configJson.replace("\"port\": 0", "\"port\": $port")
             .replace("\"port\":0", "\"port\":$port")
         val proc = startInstance(context, config, port) ?: return -1
@@ -56,12 +136,291 @@ object XrayTester {
     }
 
     /**
+     * [measureDelay] plus the exit identity through the SAME
+     * throwaway instance (build 2032, the v2go fold-in): a delay
+     * test that also learns where the profile exits, so the list
+     * can show the exit IP/country without a full connect. The
+     * exit lookup is best-effort and never fails the delay.
+     */
+    fun measureDelayEx(context: Context, configJson: String): Map<String, Any> {
+        val port = takeFreePort()
+        if (port < 0) {
+            return mapOf("ms" to -1L, "ip" to "", "countryCode" to "")
+        }
+        val config = configJson.replace("\"port\": 0", "\"port\": $port")
+            .replace("\"port\":0", "\"port\":$port")
+        val proc = startInstance(context, config, port)
+            ?: return mapOf("ms" to -1L, "ip" to "", "countryCode" to "")
+        try {
+            var best = Long.MAX_VALUE
+            repeat(2) {
+                val ms = timeRequest(port)
+                if (ms >= 0 && ms < best) best = ms
+            }
+            if (best == Long.MAX_VALUE) {
+                return mapOf("ms" to -1L, "ip" to "", "countryCode" to "")
+            }
+            val exit = exitInfo(port)
+            return mapOf(
+                "ms" to best,
+                "ip" to (exit?.get("ip") ?: ""),
+                "countryCode" to (exit?.get("countryCode") ?: ""),
+            )
+        } finally {
+            kill(proc)
+        }
+    }
+
+    /**
+     * The endurance qualification of [configJson] (build 2029A):
+     * three real requests at t=0, +2.5 s and +5.4 s over ONE
+     * keep-alive connection through a throwaway instance. The
+     * same socket is reused on purpose: filtered networks in
+     * the target region let a handshake through and then freeze
+     * the session seconds later, and a fresh socket per probe
+     * would grade that a pass. Returns per-probe ms (-1 on
+     * failure) and "held" = 1 when all three answered.
+     */
+    fun endurance(context: Context, configJson: String): Map<String, Long> {
+        val failed = mapOf("p0" to -1L, "p1" to -1L, "p2" to -1L, "held" to 0L)
+        val port = takeFreePort()
+        if (port < 0) return failed
+        val config = configJson.replace("\"port\": 0", "\"port\": $port")
+            .replace("\"port\":0", "\"port\":$port")
+        val proc = startInstance(context, config, port) ?: return failed
+        try {
+            return enduranceOnPort(port)
+        } finally {
+            kill(proc)
+        }
+    }
+
+    /**
+     * The endurance probes against a core ALREADY listening on
+     * [port] (build 2061): the socket work of [endurance],
+     * factored out so the sandbox test can run the same hold
+     * check on its own instance instead of starting a second
+     * core for it.
+     */
+    private fun enduranceOnPort(port: Int): Map<String, Long> {
+        val failed = mapOf("p0" to -1L, "p1" to -1L, "p2" to -1L, "held" to 0L)
+        var socket: Socket? = null
+        try {
+            val host = "connectivitycheck.gstatic.com"
+            val s = Socket()
+            socket = s
+            s.connect(InetSocketAddress("127.0.0.1", port), 5000)
+            s.soTimeout = 7000
+            val out = s.getOutputStream()
+            val input = s.getInputStream()
+            // SOCKS5 greeting + CONNECT by domain (the core
+            // resolves it), once for the whole run.
+            out.write(byteArrayOf(5, 1, 0))
+            out.flush()
+            val greeting = readExactly(input, 2) ?: return failed
+            if (greeting[0].toInt() != 5) return failed
+            val hostBytes = host.toByteArray(Charsets.US_ASCII)
+            out.write(
+                byteArrayOf(5, 1, 0, 3, hostBytes.size.toByte()) +
+                    hostBytes + byteArrayOf(0, 80),
+            )
+            out.flush()
+            val head = readExactly(input, 4) ?: return failed
+            if (head[0].toInt() != 5 || head[1].toInt() != 0) return failed
+            when (head[3].toInt()) {
+                1 -> readExactly(input, 6)
+                3 -> {
+                    val len = readExactly(input, 1) ?: return failed
+                    readExactly(input, (len[0].toInt() and 0xff) + 2)
+                }
+                4 -> readExactly(input, 18)
+                else -> return failed
+            } ?: return failed
+
+            fun probe(): Long {
+                val started = System.nanoTime()
+                return try {
+                    out.write(
+                        ("HEAD /generate_204 HTTP/1.1\r\nHost: $host\r\n" +
+                            "Connection: keep-alive\r\n\r\n")
+                            .toByteArray(Charsets.US_ASCII),
+                    )
+                    out.flush()
+                    val status = readHttpStatus(input) ?: return -1
+                    if (status == 204 || status == 200) {
+                        (System.nanoTime() - started) / 1_000_000
+                    } else {
+                        -1
+                    }
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+
+            val t0 = System.nanoTime()
+            val p0 = probe()
+            sleepUntil(t0 + 2_500_000_000L)
+            val p1 = probe()
+            sleepUntil(t0 + 5_400_000_000L)
+            val p2 = probe()
+            val held = if (p0 >= 0 && p1 >= 0 && p2 >= 0) 1L else 0L
+            return mapOf("p0" to p0, "p1" to p1, "p2" to p2, "held" to held)
+        } catch (e: Exception) {
+            Log.w(TAG, "endurance test failed", e)
+            return failed
+        } finally {
+            try {
+                socket?.close()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
+    /**
+     * The sandbox config test (build 2061, feature queue #1):
+     * ONE throwaway instance proves a config end to end —
+     * delay, endurance hold, exit identity — without touching
+     * the live tunnel. The instance listens on a genuinely
+     * free port ([takeFreePort]), and its temp config is
+     * deleted when the test ends. Returns the verdict map:
+     * ok 1/0, ms, p0/p1/p2, held 1/0, ip, countryCode,
+     * country, error '' when ok. `error` names the failing
+     * stage in plain words; a config that answers but does
+     * not hold is ok=1 with held=0 — the caller grades it
+     * "unstable", not "failed".
+     */
+    fun sandboxTest(context: Context, configJson: String): Map<String, Any> {
+        fun failed(error: String): Map<String, Any> = mapOf(
+            "ok" to 0,
+            "ms" to -1L,
+            "p0" to -1L,
+            "p1" to -1L,
+            "p2" to -1L,
+            "held" to 0L,
+            "ip" to "",
+            "countryCode" to "",
+            "country" to "",
+            "error" to error,
+        )
+        val port = takeFreePort()
+        if (port < 0) return failed("no free port for the sandbox test")
+        val config = configJson.replace("\"port\": 0", "\"port\": $port")
+            .replace("\"port\":0", "\"port\":$port")
+        val configFile = File(
+            File(XrayVpnService.workDir(context), "test"),
+            "config-$port.json",
+        )
+        val proc = startInstance(context, config, port)
+            ?: run {
+                try {
+                    configFile.delete()
+                } catch (e: Exception) {
+                    // A leftover temp config is overwritten by
+                    // the next test on this port.
+                }
+                return failed(
+                    "the sandbox core did not start — the config may be rejected",
+                )
+            }
+        try {
+            var best = Long.MAX_VALUE
+            repeat(2) {
+                val ms = timeRequest(port)
+                if (ms >= 0 && ms < best) best = ms
+            }
+            if (best == Long.MAX_VALUE) {
+                return failed("the config did not answer through the tunnel")
+            }
+            val held = enduranceOnPort(port)
+            val exit = exitInfo(port)
+            return mapOf(
+                "ok" to 1,
+                "ms" to best,
+                "p0" to (held["p0"] ?: -1L),
+                "p1" to (held["p1"] ?: -1L),
+                "p2" to (held["p2"] ?: -1L),
+                "held" to (held["held"] ?: 0L),
+                "ip" to (exit?.get("ip") ?: ""),
+                "countryCode" to (exit?.get("countryCode") ?: ""),
+                "country" to (exit?.get("country") ?: ""),
+                "error" to "",
+            )
+        } finally {
+            kill(proc)
+            try {
+                configFile.delete()
+            } catch (e: Exception) {
+                // A leftover temp config is overwritten by the
+                // next test on this port.
+            }
+        }
+    }
+
+    /** Reads exactly [n] bytes or returns null at EOF/timeout. */
+    private fun readExactly(input: java.io.InputStream, n: Int): ByteArray? {
+        val buffer = ByteArray(n)
+        var read = 0
+        while (read < n) {
+            val count = try {
+                input.read(buffer, read, n - read)
+            } catch (e: Exception) {
+                return null
+            }
+            if (count < 0) return null
+            read += count
+        }
+        return buffer
+    }
+
+    /**
+     * Reads one HTTP response head (through the blank line) on
+     * a keep-alive connection and returns its status code. A
+     * 204 has no body, so the head is the whole response and
+     * the connection stays usable for the next probe.
+     */
+    private fun readHttpStatus(input: java.io.InputStream): Int? {
+        val buffer = StringBuilder()
+        var matched = 0 // bytes of the "\r\n\r\n" terminator seen
+        while (buffer.length < 8192) {
+            val b = try {
+                input.read()
+            } catch (e: Exception) {
+                return null
+            }
+            if (b < 0) return null
+            buffer.append(b.toChar())
+            matched = when {
+                b == '\r'.code && (matched == 0 || matched == 2) -> matched + 1
+                b == '\n'.code && (matched == 1 || matched == 3) -> matched + 1
+                else -> 0
+            }
+            if (matched == 4) break
+        }
+        val firstLine = buffer.lineSequence().firstOrNull() ?: return null
+        return firstLine.split(' ').getOrNull(1)?.toIntOrNull()
+    }
+
+    private fun sleepUntil(deadlineNanos: Long) {
+        var remaining = deadlineNanos - System.nanoTime()
+        while (remaining > 0) {
+            try {
+                Thread.sleep(remaining / 1_000_000, (remaining % 1_000_000).toInt())
+            } catch (e: InterruptedException) {
+                return
+            }
+            remaining = deadlineNanos - System.nanoTime()
+        }
+    }
+
+    /**
      * Downloads through a throwaway instance of [configJson] for up to
      * [seconds] and returns the average downlink in bytes per second,
      * or -1 on failure.
      */
     fun speedTest(context: Context, configJson: String, seconds: Int = 8): Long {
-        val port = takePort()
+        val port = takeFreePort()
+        if (port < 0) return -1
         val config = configJson.replace("\"port\": 0", "\"port\": $port")
             .replace("\"port\":0", "\"port\":$port")
         val proc = startInstance(context, config, port) ?: return -1
@@ -93,13 +452,78 @@ object XrayTester {
     }
 
     /**
+     * Validates [configJson] with the bundled core binary itself
+     * (`run -test`): null when the core accepts the config, the
+     * core's own output (trimmed) when it rejects it. Backs the
+     * profile editor's save gate for anti-filter-shaped configs
+     * (build 2026, Stage A): a shape the core refuses is never
+     * saved silently.
+     */
+    fun validateConfig(context: Context, configJson: String): String? {
+        val dir = XrayVpnService.workDir(context).apply { mkdirs() }
+        val testDir = File(dir, "test").apply { mkdirs() }
+        val configFile = File(testDir, "validate.json")
+        // Build 2060 (grouped sweep): the -test process was never
+        // reaped on the exception path — a readText() throw left a
+        // libxray process running with no owner. The process is now
+        // hoisted out of the try and destroyed in a finally on
+        // every path; the wait comes before the read, so a hung
+        // core cannot wedge the read either.
+        var proc: Process? = null
+        return try {
+            // Build 2071 (review §9 item 8): atomic write
+            // (tmp + sync + rename) like every other store —
+            // a kill mid-write used to be able to leave the
+            // test config torn for the next run to read.
+            AtomicFile.writeText(configFile, configJson)
+            proc = ProcessBuilder(
+                File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath,
+                "run", "-test", "-c", configFile.absolutePath,
+            )
+                .directory(dir)
+                .redirectErrorStream(true)
+                .start()
+            if (!proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                return "the core did not answer the validation in time"
+            }
+            val out = proc.inputStream.bufferedReader().readText()
+            if (proc.exitValue() == 0) {
+                null
+            } else {
+                out.trim().ifEmpty { "the core rejected the config" }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "config validation failed to run", e)
+            "config validation failed: ${e.message}"
+        } finally {
+            proc?.destroyForcibly()
+        }
+    }
+
+    /**
+     * One real proxied request through the tunnel ALREADY running
+     * on [port] (the live service's SOCKS inbound, not a test
+     * instance): its delay in ms, or -1 when the tunnel does not
+     * answer. The adaptive failover's health probe (build 2026).
+     * LAN sharing (build 2062): [user]/[pass] authenticate to a
+     * password-protected inbound; ''/'' is the noauth behaviour
+     * of every earlier build.
+     */
+    fun tunnelCheck(port: Int, user: String = "", pass: String = ""): Long =
+        timeRequest(port, user, pass)
+
+    /**
      * The exit identity of the tunnel ALREADY running on [port] (the
      * live service's SOCKS inbound, not a test instance): asks
      * Cloudflare's trace endpoint through the tunnel for the exit IP
      * and country code, with ip-api as a fallback. Best-effort only —
      * returns null on any failure and never affects the connection.
+     * LAN sharing (build 2062): [user]/[pass] authenticate to a
+     * password-protected inbound; ''/'' is noauth.
      */
-    fun exitInfo(port: Int): Map<String, String>? {
+    fun exitInfo(port: Int, user: String = "", pass: String = ""): Map<String, String>? {
+        setSocksAuth(user, pass, port)
         try {
             val conn = openViaSocks(URL("https://www.cloudflare.com/cdn-cgi/trace"), port)
             conn.connectTimeout = 6000
@@ -143,44 +567,98 @@ object XrayTester {
 
     /**
      * The running tunnel core's "proxy" outbound traffic since the
-     * previous call, from the core's own statistics API: the core
-     * binary's `api stats` command reads one counter from the local
-     * StatsService and resets it, so each returned value is a delta.
+     * previous call, from the core's own statistics API: the query
+     * resets the counters, so each returned value is a delta.
      * Keys "up"/"down" in bytes; null when the query fails.
+     *
+     * Build 2050 (audit B-H1): ONE `statsquery` process returns
+     * both counters. This used to spawn the multi-MB core binary
+     * TWICE per call — two full Go runtime starts every 2 s poll,
+     * ≈3,600 process creations an hour, on idle tunnels too. The
+     * legacy two-call path stays as the fallback for a core whose
+     * statsquery fails, so nothing is lost if it ever does.
      */
     fun trafficStats(context: Context, apiPort: Int): Map<String, Long>? {
-        fun counter(name: String): Long? {
-            val proc = try {
-                ProcessBuilder(
-                    File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath,
-                    "api", "stats",
-                    "--server=127.0.0.1:$apiPort",
-                    "-name", name,
-                    "-reset",
-                ).redirectErrorStream(true).start()
-            } catch (e: Exception) {
-                Log.w(TAG, "stats query did not start", e)
+        statsQueryBoth(context, apiPort)?.let { return it }
+        val up = counter(context, apiPort, "outbound>>>proxy>>>traffic>>>uplink")
+            ?: return null
+        val down = counter(context, apiPort, "outbound>>>proxy>>>traffic>>>downlink")
+            ?: return null
+        return mapOf("up" to up, "down" to down)
+    }
+
+    /** One process, both counters, via `api statsquery -reset`. */
+    private fun statsQueryBoth(context: Context, apiPort: Int): Map<String, Long>? {
+        val proc = try {
+            ProcessBuilder(
+                File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath,
+                "api", "statsquery",
+                "--server=127.0.0.1:$apiPort",
+                "-pattern", "outbound>>>proxy>>>traffic>>>",
+                "-reset",
+            ).redirectErrorStream(true).start()
+        } catch (e: Exception) {
+            Log.w(TAG, "statsquery did not start", e)
+            return null
+        }
+        return try {
+            val out = proc.inputStream.bufferedReader().readText()
+            if (!proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
                 return null
             }
-            return try {
-                val out = proc.inputStream.bufferedReader().readText()
-                if (!proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                    proc.destroyForcibly()
-                    return null
+            if (proc.exitValue() != 0) return null
+            // Entries look like {"name": "...", "value": 123}; a
+            // zero counter is printed WITHOUT a "value" field.
+            // Parse per entry block so a missing value can never
+            // borrow the next counter's number.
+            fun entryValue(name: String): Long? {
+                for (block in Regex("\\{[^{}]*\\}").findAll(out)) {
+                    val text = block.value
+                    if (!text.contains("\"$name\"")) continue
+                    return Regex("\"value\"\\s*:\\s*(\\d+)").find(text)
+                        ?.groupValues?.get(1)?.toLong() ?: 0L
                 }
-                if (proc.exitValue() != 0) return null
-                // The reply is the counter as JSON; a zero counter is
-                // printed without a "value" field at all.
-                Regex("\"value\"\\s*:\\s*(\\d+)").find(out)
-                    ?.groupValues?.get(1)?.toLong() ?: 0L
-            } catch (e: Exception) {
-                Log.w(TAG, "stats query failed", e)
-                null
+                return null
             }
+            val up = entryValue("outbound>>>proxy>>>traffic>>>uplink") ?: return null
+            val down = entryValue("outbound>>>proxy>>>traffic>>>downlink") ?: return null
+            mapOf("up" to up, "down" to down)
+        } catch (e: Exception) {
+            Log.w(TAG, "statsquery failed", e)
+            null
         }
-        val up = counter("outbound>>>proxy>>>traffic>>>uplink") ?: return null
-        val down = counter("outbound>>>proxy>>>traffic>>>downlink") ?: return null
-        return mapOf("up" to up, "down" to down)
+    }
+
+    /** The legacy single-counter query (`api stats -reset`). */
+    private fun counter(context: Context, apiPort: Int, name: String): Long? {
+        val proc = try {
+            ProcessBuilder(
+                File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath,
+                "api", "stats",
+                "--server=127.0.0.1:$apiPort",
+                "-name", name,
+                "-reset",
+            ).redirectErrorStream(true).start()
+        } catch (e: Exception) {
+            Log.w(TAG, "stats query did not start", e)
+            return null
+        }
+        return try {
+            val out = proc.inputStream.bufferedReader().readText()
+            if (!proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                return null
+            }
+            if (proc.exitValue() != 0) return null
+            // The reply is the counter as JSON; a zero counter is
+            // printed without a "value" field at all.
+            Regex("\"value\"\\s*:\\s*(\\d+)").find(out)
+                ?.groupValues?.get(1)?.toLong() ?: 0L
+        } catch (e: Exception) {
+            Log.w(TAG, "stats query failed", e)
+            null
+        }
     }
 
     /** Starts a test instance and waits for its SOCKS port. */
@@ -188,8 +666,14 @@ object XrayTester {
         val dir = File(XrayVpnService.workDir(context), "test").apply { mkdirs() }
         val configFile = File(dir, "config-$port.json")
         return try {
-            configFile.writeText(configJson)
+            // Build 2071: atomic write, as in validateConfig.
+            AtomicFile.writeText(configFile, configJson)
             val log = File(dir, "test-$port.log")
+            // Build 2057 (audit F-M7): the same 1 MB rotation as
+            // the service — a test instance appends on every run,
+            // and a failing profile's test log would otherwise grow
+            // without bound next to the service logs.
+            rotateLogIfLarge(log)
             val proc = ProcessBuilder(
                 File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath,
                 "run", "-c", configFile.absolutePath,
@@ -236,8 +720,13 @@ object XrayTester {
     /**
      * Times a full request through the tunnel on [port]: a 204 from a
      * generate_204 endpoint, first byte counted at the status line.
+     * LAN sharing (build 2062): [user]/[pass] authenticate to a
+     * password-protected inbound (set — or cleared when empty —
+     * before the request); test cores are noauth, so their callers
+     * pass the defaults and the fields are cleared for them.
      */
-    private fun timeRequest(port: Int): Long {
+    private fun timeRequest(port: Int, user: String = "", pass: String = ""): Long {
+        setSocksAuth(user, pass, port)
         for (target in listOf(
             "http://www.gstatic.com/generate_204",
             "https://www.google.com/generate_204",
@@ -261,13 +750,9 @@ object XrayTester {
     }
 
     private fun kill(p: Process) {
-        try {
-            p.destroy()
-            val deadline = System.currentTimeMillis() + 500
-            while (p.isAlive && System.currentTimeMillis() < deadline) Thread.sleep(30)
-            if (p.isAlive) p.destroyForcibly()
-        } catch (e: Exception) {
-            // Already gone.
-        }
+        // Build 2054 (audit F-M1): the shared kill — the old
+        // destroy + 500 ms + forcibly with NO post-forcible wait
+        // could return while a test core still held its port.
+        ProcessKill.kill(p, destroyGraceMs = 500, forcibleWaitMs = 2500)
     }
 }

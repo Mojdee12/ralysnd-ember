@@ -89,9 +89,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project, static_cast<WPARAM>(std::stoul(key)), start_hidden);
-  Win32Window::Size size(1200, 780);
+  Win32Window::Size size(820, 680);
   Win32Window::Point origin = CenteredOrigin(size);
-  if (!window.Create(L"Ralysnd Ember", origin, size)) {
+  if (!window.Create(L"Firefox VPN", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

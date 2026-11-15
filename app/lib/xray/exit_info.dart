@@ -14,10 +14,10 @@ class ExitInfo {
   });
 
   factory ExitInfo.fromMap(Map<String, String> m) => ExitInfo(
-        ip: m['ip'] ?? '',
-        countryCode: (m['countryCode'] ?? '').toUpperCase(),
-        countryEn: m['country'] ?? '',
-      );
+    ip: m['ip'] ?? '',
+    countryCode: (m['countryCode'] ?? '').toUpperCase(),
+    countryEn: m['country'] ?? '',
+  );
 
   /// The regional-indicator flag emoji for the country code, or a
   /// globe when the code is missing/unknown.
@@ -39,8 +39,15 @@ class ExitInfo {
     return englishCountryNames[countryCode] ?? countryCode;
   }
 
-  /// "185.2.3.4 • 🇩🇪 Germany" — the Home card's exit line.
-  String get line => displayName.isEmpty ? ip : '$ip • $flag $displayName';
+  /// "185.2.3.4 • Germany" — the Home card's exit line.
+  /// Plain text since build 2027 (v7 audit): the regional-
+  /// indicator flag emoji this used to embed renders as a
+  /// missing-glyph box on fonts without flag support (the
+  /// harness font, and several device fonts) — the ▯ the
+  /// audit caught before "Netherlands" on the Psiphon page.
+  /// The drawn FlagCircle stays for the places that show a
+  /// flag as a graphic.
+  String get line => displayName.isEmpty ? ip : '$ip • $displayName';
 }
 
 /// English country names for the codes a VPN exit commonly lands in;

@@ -28,6 +28,21 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // Build 2069 (Psiphon transplant): libpgjni.so
+            // ships BYTE-EXACT as ralysnd ships it — ralysnd's
+            // APK carries the AAR's lib unstripped (sha256
+            // 4f625112… in both), while AGP's strip task trims
+            // 16 bytes and breaks the identity the transplant
+            // exists to prove. Keep its symbols so the packaged
+            // bytes equal ralysnd's exactly.
+            keepDebugSymbols += "**/libpgjni.so"
+            // Build 2072: the DNSTT and wstunnel helpers are
+            // standalone executables staged as .so; they ship
+            // byte-exact as vendored (engines/dnstt,
+            // engines/wstunnel) so the packaged bytes can be
+            // hash-verified against the recorded artifacts.
+            keepDebugSymbols += "**/libdnstt.so"
+            keepDebugSymbols += "**/libwstunnel.so"
         }
     }
 
@@ -69,6 +84,15 @@ android {
             // a machine without the key) with the debug key, which cannot
             // update an installed release.
             signingConfig = signingConfigs.getByName(if (releaseKey.isEmpty) "debug" else "release")
+            // Build 2028: the OpenVPN bridge resolves its Session
+            // callbacks by name from native code; R8 must not strip
+            // or rename them (it did in builds 2025-2027, removing
+            // all nine — the connect-start SIGABRT; see
+            // research_notes/re-2028-openvpn/report.md).
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
@@ -87,17 +111,14 @@ dependencies {
     // The Go core: `gomobile bind -target=android -androidapi 24
     // -o app/android/app/libs/core.aar ./mobile` in core/ (see app/README.md).
     implementation(files("libs/core.aar"))
-    // The Psiphon tunnel core (psiphon-tunnel-core v2.0.42, gomobile
-    // AAR built in ~/workspace/ember-app/psiphon). Its gomobile runtime
-    // package is shaded go/ -> pg/ and its native lib renamed to
-    // libpsiphoncore.so, so it can coexist with core.aar's gomobile
-    // runtime (BUILD-LOG-2.md, build 2007).
+    // The Psiphon tunnel core — build 2069 TRANSPLANT: this AAR
+    // is ralysnd's complete Psiphon stack, byte-exact (their
+    // psiphontunnel-2.0.39-ns-recovered.aar: the stock
+    // tunnel-core v2.0.39 wrapper + libpgjni.so, gomobile
+    // runtime renamed go/ -> pg/ and libgojni -> libpgjni so it
+    // coexists with core.aar's gomobile runtime). It replaces
+    // Ember's rebuilt v2.0.42 + fork-patch AAR wholesale — see
+    // BUILD-LOG-2.md, build 2069. Do not rebuild this from the
+    // fork tree without a device-proven reason.
     implementation(files("libs/psiphon.aar"))
-    // The Lantern core (getlantern/lantern monorepo: radiance +
-    // lantern-core/mobile, gomobile AAR built in
-    // ~/workspace/ember-app/lantern with the core's novpn tag). Its
-    // gomobile runtime package is shaded go/ -> lg/ and its native
-    // lib renamed to liblanterncore.so, for the same coexistence
-    // reason (BUILD-LOG-2.md, build 2009).
-    implementation(files("libs/lantern.aar"))
 }

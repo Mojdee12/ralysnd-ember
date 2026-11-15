@@ -220,9 +220,13 @@ func (s *dashboardServer) handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleAccountRefresh)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleAccountRemove)
 
+	mux.HandleFunc("POST /api/bootstrap/prepare", s.handleBootstrapPrepare)
+	mux.HandleFunc("POST /api/bootstrap/relay", s.handleBootstrapRelay)
+
 	mux.HandleFunc("POST /api/signin", s.handleSignInStart)
 	mux.HandleFunc("GET /api/signin/{id}", s.handleSignInGet)
 	mux.HandleFunc("POST /api/signin/{id}", s.handleSignInAnswer)
+	mux.HandleFunc("POST /api/signin/{id}/browser", s.handleSignInBrowserCode)
 	mux.HandleFunc("DELETE /api/signin/{id}", s.handleSignInCancel)
 
 	mux.HandleFunc("GET /api/settings", s.handleSettingsGet)

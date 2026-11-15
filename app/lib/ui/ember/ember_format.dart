@@ -4,20 +4,26 @@ import '../../xray/xray_models.dart';
 
 /// A profile's cumulative per-config traffic: one fully-English LTR
 /// string with Latin digits and Latin unit letters —
-/// "↓ 35.8 MB · ↑ 3.4 MB" (2006: the user rejected the Persian unit
+/// "Down 35.8 MB · Up 3.4 MB" (2006: the user rejected the Persian unit
 /// words, and the mixed-direction rendering scrambled the line).
+/// Build 2056 (audit Batch 11): the ↓/↑ glyphs rendered as
+/// missing-glyph boxes on this device's font (see OpenVPN's
+/// file, which already replaced them with icons) — the string
+/// form uses words, and the widget call sites use real icons.
 /// Call sites wrap it in an LTR [Directionality] so bidi can never
 /// reorder it.
 String fmtProfileTotals(Profile p) =>
-    '↓ ${fmtBytes(p.totalDownBytes)} · ↑ ${fmtBytes(p.totalUpBytes)}';
+    'Down ${fmtBytes(p.totalDownBytes)} · Up ${fmtBytes(p.totalUpBytes)}';
 
 /// Whether a profile has any counted traffic to show.
-bool profileHasTotals(Profile p) =>
-    p.totalDownBytes > 0 || p.totalUpBytes > 0;
+bool profileHasTotals(Profile p) => p.totalDownBytes > 0 || p.totalUpBytes > 0;
 
+// Build 2074 (audit item 27): the numeric output of the core
+// formatters routes through latDigits(), so every rate/size
+// inherits the Latin-digit rule from the root.
 String fmtBytes(int bytes) {
   if (bytes < 0) return '—';
-  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024) return latDigits('$bytes B');
   const units = ['KB', 'MB', 'GB', 'TB'];
   var value = bytes / 1024.0;
   var i = 0;
@@ -25,13 +31,15 @@ String fmtBytes(int bytes) {
     value /= 1024;
     i++;
   }
-  return '${value.toStringAsFixed(value >= 100 ? 0 : 1)} ${units[i]}';
+  return latDigits(
+    '${value.toStringAsFixed(value >= 100 ? 0 : 1)} ${units[i]}',
+  );
 }
 
 String fmtGigabytes(int bytes) {
   if (bytes < 0) return '—';
   final gb = bytes / (1024 * 1024 * 1024);
-  return gb >= 100 ? gb.toStringAsFixed(0) : gb.toStringAsFixed(1);
+  return latDigits(gb >= 100 ? gb.toStringAsFixed(0) : gb.toStringAsFixed(1));
 }
 
 String fmtRate(int bytesPerSec) => '${fmtBytes(bytesPerSec)}/s';
@@ -41,7 +49,10 @@ String fmtDuration(Duration d) {
   final m = d.inMinutes % 60;
   final s = d.inSeconds % 60;
   String two(int v) => v.toString().padLeft(2, '0');
-  return h > 0 ? '${two(h)}:${two(m)}:${two(s)}' : '${two(m)}:${two(s)}';
+  // Build 2074 (audit item 27): routed through latDigits() too.
+  return latDigits(
+    h > 0 ? '${two(h)}:${two(m)}:${two(s)}' : '${two(m)}:${two(s)}',
+  );
 }
 
 /// Every displayed number in the app uses Latin digits (the user's
