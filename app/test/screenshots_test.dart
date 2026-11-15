@@ -1,0 +1,370 @@
+// Screenshot captures for the GitHub project page.
+//
+// These pump the REAL Ember screens (the shipped build 2074
+// widgets) with sample state and write golden PNGs under
+// test/screenshots/. They are documentation captures, not
+// regression goldens — regenerate with:
+//
+//   flutter test --update-goldens test/screenshots_test.dart
+//
+// The harness mirrors the existing page tests (build2055 /
+// build2056): a dead Mozilla core, real controllers with their
+// public state fields populated, the app's own EmberBackground
+// ground, and widget_test.dart's FakeApi for the full shell.
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:firefox_vpn/aether/aether_controller.dart';
+import 'package:firefox_vpn/app_settings.dart';
+import 'package:firefox_vpn/core/core_api.dart';
+import 'package:firefox_vpn/core/core_controller.dart';
+import 'package:firefox_vpn/l10n/app_localizations.dart';
+import 'package:firefox_vpn/lantern/lantern_controller.dart';
+import 'package:firefox_vpn/openvpn/openvpn_controller.dart';
+import 'package:firefox_vpn/psiphon/psiphon_controller.dart';
+import 'package:firefox_vpn/ui/app.dart';
+import 'package:firefox_vpn/ui/ember/aether_pages.dart';
+import 'package:firefox_vpn/ui/ember/ember_accounts.dart';
+import 'package:firefox_vpn/ui/ember/ember_servers.dart';
+import 'package:firefox_vpn/ui/ember/ember_settings.dart';
+import 'package:firefox_vpn/ui/ember/ember_theme.dart';
+import 'package:firefox_vpn/xray/xray_controller.dart';
+import 'package:firefox_vpn/xray/xray_models.dart';
+
+import 'widget_test.dart' as wt;
+
+/// A phone surface: 390x844 logical at 2x.
+void _phone(WidgetTester tester) {
+  tester.view.physicalSize = const Size(780, 1688);
+  tester.view.devicePixelRatio = 2;
+  addTearDown(tester.view.reset);
+}
+
+/// The Mozilla core, absent (the Ember pages under capture do
+/// not need it; the pattern of build2055's page tests).
+CoreController _deadCore() {
+  final core = CoreController(
+    () async => throw const CoreUnavailable(CoreProblem.refused, 'shots'),
+  );
+  addTearDown(core.dispose);
+  return core;
+}
+
+/// Sample V2Ray state: six configs across two subscriptions,
+/// plausible names, a spread of measured delays.
+XrayController _sampleXray() {
+  final xray = XrayController();
+  addTearDown(xray.dispose);
+  final now = DateTime.now();
+  xray.profiles = [
+    Profile(
+      id: 'p1',
+      name: 'Frankfurt · Reality',
+      protocol: Protocol.vless,
+      address: 'de1.example.net',
+      port: 443,
+      security: 'reality',
+      network: 'tcp',
+      delayMs: 86,
+      subscriptionId: 'sub1',
+    ),
+    Profile(
+      id: 'p2',
+      name: 'Amsterdam · XHTTP',
+      protocol: Protocol.vless,
+      address: 'nl2.example.net',
+      port: 443,
+      security: 'tls',
+      network: 'xhttp',
+      delayMs: 132,
+      subscriptionId: 'sub1',
+    ),
+    Profile(
+      id: 'p3',
+      name: 'Istanbul · Hysteria2',
+      protocol: Protocol.hysteria2,
+      address: 'tr1.example.net',
+      port: 443,
+      delayMs: 64,
+      subscriptionId: 'sub1',
+    ),
+    Profile(
+      id: 'p4',
+      name: 'London · Trojan',
+      protocol: Protocol.trojan,
+      address: 'uk1.example.net',
+      port: 443,
+      security: 'tls',
+      delayMs: 210,
+      subscriptionId: 'sub2',
+    ),
+    Profile(
+      id: 'p5',
+      name: 'Tokyo · Shadowsocks',
+      protocol: Protocol.shadowsocks,
+      address: 'jp3.example.net',
+      port: 8388,
+      method: 'aes-256-gcm',
+      delayMs: 318,
+      subscriptionId: 'sub2',
+    ),
+    Profile(
+      id: 'p6',
+      name: 'Warsaw · VMess',
+      protocol: Protocol.vmess,
+      address: 'pl1.example.net',
+      port: 443,
+      security: 'tls',
+      network: 'ws',
+      subscriptionId: 'sub2',
+    ),
+  ];
+  xray.selectedProfileId = 'p1';
+  xray.subscriptions = [
+    Subscription(
+      id: 'sub1',
+      name: 'My Panel',
+      url: 'https://panel.example.net/sub/rayan',
+      uploadBytes: 12 << 30,
+      downloadBytes: 30 << 30,
+      totalBytes: 100 << 30,
+      expireEpochSec:
+          now.add(const Duration(days: 21)).millisecondsSinceEpoch ~/ 1000,
+      lastUpdatedMs: now
+          .subtract(const Duration(hours: 3))
+          .millisecondsSinceEpoch,
+      profileCount: 24,
+    ),
+    Subscription(
+      id: 'sub2',
+      name: 'Backup Provider',
+      url: 'https://backup.example.net/link/token',
+      uploadBytes: 9 << 30,
+      downloadBytes: 31 << 30,
+      totalBytes: 50 << 30,
+      expireEpochSec:
+          now.add(const Duration(days: 6)).millisecondsSinceEpoch ~/ 1000,
+      lastUpdatedMs: now
+          .subtract(const Duration(days: 1))
+          .millisecondsSinceEpoch,
+      profileCount: 9,
+    ),
+  ];
+  return xray;
+}
+
+/// A page on the app's own ground, composed exactly as the
+/// shipped pushed pages compose it (ember_settings.dart's
+/// _emberPageRoute / automation_pages.dart's _pageShell):
+/// the backdrop inside a Scaffold body over Ember.bg.
+Widget _ground(Widget child) => MaterialApp(
+  debugShowCheckedModeBanner: false,
+  theme: ThemeData(
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: Ember.bg,
+  ),
+  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  supportedLocales: AppLocalizations.supportedLocales,
+  home: Scaffold(
+    backgroundColor: Ember.bg,
+    body: EmberBackground(child: SafeArea(child: child)),
+  ),
+);
+
+/// The test harness's built-in font draws every glyph as a
+/// same-width box — unreadable, and wide enough to overflow rows
+/// that fit easily on a phone. Load the real fonts the phone
+/// renders with — Roboto and Material Icons, both bundled in
+/// the Flutter SDK's material_fonts artifact — under their
+/// family names, so the captures carry real text, real icons
+/// and real metrics. Liberation Sans is the fallback sans if
+/// the SDK artifact is absent; if nothing is found, loading is
+/// skipped and the captures degrade to the harness font.
+Future<void> _loadRealFonts() async {
+  Future<void> load(String family, List<String> files) async {
+    if (!files.every((f) => File(f).existsSync())) return;
+    final loader = FontLoader(family);
+    for (final f in files) {
+      final bytes = await File(f).readAsBytes();
+      loader.addFont(
+        Future.value(ByteData.view(Uint8List.fromList(bytes).buffer)),
+      );
+    }
+    await loader.load();
+  }
+
+  final sdkFonts = [
+    if (Platform.environment['FLUTTER_ROOT'] != null)
+      '${Platform.environment['FLUTTER_ROOT']}/bin/cache/artifacts/material_fonts',
+    '/home/hatch/workspace/ember-app/toolchain/flutter/bin/cache/artifacts/material_fonts',
+  ];
+  for (final dir in sdkFonts) {
+    await load('Roboto', [
+      '$dir/Roboto-Regular.ttf',
+      '$dir/Roboto-Medium.ttf',
+      '$dir/Roboto-Bold.ttf',
+      '$dir/Roboto-Italic.ttf',
+      '$dir/Roboto-BoldItalic.ttf',
+    ]);
+    await load('MaterialIcons', ['$dir/MaterialIcons-Regular.otf']);
+  }
+  await load('Roboto', const [
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf',
+  ]);
+}
+
+void main() {
+  setUpAll(_loadRealFonts);
+
+  testWidgets('shot: home (full shell, V2Ray mode)', (tester) async {
+    wt.stillMotion(tester);
+    _phone(tester);
+    // The shell's engine controllers poll the 'app/android'
+    // channel (the fake of build2054's page tests): every
+    // engine stopped, everything else null — a fresh app.
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('app/android'),
+      (call) async {
+        if (call.method == 'xrayState') {
+          return <String, Object?>{
+            'running': false,
+            'name': '',
+            'sinceMs': 0,
+            'up': 0,
+            'down': 0,
+            'coreRestarts': 0,
+            'coreProblem': '',
+            'chainUnderlay': false,
+            'chainProblem': '',
+            'awg': false,
+            'awgConfig': '',
+            'rotationGen': 0,
+          };
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(
+        const MethodChannel('app/android'),
+        null,
+      ),
+    );
+    final core = CoreController(
+      () async => wt.FakeApi(),
+      pollInterval: const Duration(hours: 1),
+    );
+    await tester.pumpWidget(VpnApp(core: core, settings: AppSettings()));
+    core.start();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    // Switch to the V2Ray engine from the chip rail.
+    await tester.tap(find.text('V2Ray').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await expectLater(
+      find.byType(VpnApp),
+      matchesGoldenFile('screenshots/ui-home.png'),
+    );
+    await tester.pumpWidget(const SizedBox());
+    // Inside the body, as widget_test.dart does: the core's
+    // restart timer must not outlive the test.
+    core.dispose();
+  });
+
+  testWidgets('shot: V2Ray servers list', (tester) async {
+    wt.stillMotion(tester);
+    _phone(tester);
+    final xray = _sampleXray();
+    await tester.pumpWidget(
+      _ground(
+        EmberServers(
+          core: _deadCore(),
+          xray: xray,
+          v2ray: true,
+          onOpenAccounts: () {},
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('screenshots/ui-servers.png'),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shot: subscriptions', (tester) async {
+    wt.stillMotion(tester);
+    _phone(tester);
+    final xray = _sampleXray();
+    await tester.pumpWidget(
+      _ground(
+        EmberAccounts(core: _deadCore(), xray: xray, v2ray: true),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('screenshots/ui-subscriptions.png'),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shot: MASQUE engine page', (tester) async {
+    wt.stillMotion(tester);
+    _phone(tester);
+    final masque = AetherController('masque');
+    addTearDown(masque.dispose);
+    await tester.pumpWidget(_ground(MasqueHomePage(masque: masque)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('screenshots/ui-engine.png'),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('shot: settings (V2Ray mode)', (tester) async {
+    wt.stillMotion(tester);
+    _phone(tester);
+    final xray = _sampleXray();
+    final psiphon = PsiphonController();
+    addTearDown(psiphon.dispose);
+    final lantern = LanternController();
+    addTearDown(lantern.dispose);
+    final openvpn = OpenVpnController();
+    addTearDown(openvpn.dispose);
+    await tester.pumpWidget(
+      _ground(
+        EmberSettings(
+          core: _deadCore(),
+          xray: xray,
+          psiphon: psiphon,
+          lantern: lantern,
+          openvpn: openvpn,
+          settings: AppSettings()..emberMode = 1,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('screenshots/ui-settings.png'),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+}

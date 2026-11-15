@@ -45,15 +45,17 @@ engines (for example V2Ray over Psiphon) or fall back across engines automatical
 
 ## Screenshots
 
+The actual app UI — rendered from the shipped build 2074 code itself
+(widget captures of the real screens, with sample configs), not mockups.
+
 <p align="center">
-  <img src="images/ui-v2ray-connected.webp" width="270" alt="V2Ray home, connected">
-  <img src="images/ui-v2ray-home.webp" width="270" alt="V2Ray home with test results">
-  <img src="images/ui-subscriptions.webp" width="270" alt="Subscriptions">
+  <img src="images/ui-home.png" width="270" alt="Home — the map shell with the engine chips, V2Ray selected">
+  <img src="images/ui-servers.png" width="270" alt="V2Ray configurations with real delay results">
+  <img src="images/ui-subscriptions.png" width="270" alt="Subscriptions with traffic and expiry">
 </p>
 <p align="center">
-  <img src="images/ui-editor.webp" width="270" alt="Config editor">
-  <img src="images/ui-lantern.png" width="270" alt="Lantern">
-  <img src="images/ui-masque.png" width="270" alt="WARP MASQUE">
+  <img src="images/ui-engine.png" width="270" alt="WARP MASQUE engine page">
+  <img src="images/ui-settings.png" width="270" alt="V2Ray settings">
 </p>
 
 ## Engines
