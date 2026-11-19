@@ -52,7 +52,7 @@ The actual app UI — widget captures rendered from the shipped **build 2117** c
 
 | Engine | What it is |
 |---|---|
-| **Mozilla VPN** | Mozilla VPN via the Kumiho core — Firefox Account sign-in (native OAuth or browser), 33 locations with real through-tunnel delay tests, multi-account quota failover, Guardian pass renewal through the live tunnel |
+| **Mozilla VPN** | Mozilla VPN via the Kumiho core — Firefox Account sign-in (native OAuth or browser), locations fetched live from Mozilla with real through-tunnel delay tests, multi-account quota failover, Guardian pass renewal through the live tunnel |
 | **V2Ray** | Full Xray-core client: VLESS / VMess / Trojan / Shadowsocks / WireGuard / Hysteria2 / SOCKS5 / HTTP, REALITY (incl. `mldsa65Verify`), XHTTP, gRPC, WebSocket, HTTPUpgrade, mKCP, QUIC, ECH, uTLS fingerprints, fragment, mux, fakeDNS |
 | **Sidecar (sing-box / Mieru)** | TUIC, AnyTLS, Snell, NaiveProxy and Mieru profiles — which Xray cannot serve — connect through the bundled sidecar instead of being refused |
 | **WireGuard** | WireGuard + AmneziaWG obfuscation (Jc/Jmin/Jmax, S1/S2, H1–H4, I1) on the WG Tunnel backend (amneziawg-go), per-peer handshake/traffic stats, profile MTU honoured, endpoint scanner |
@@ -169,7 +169,7 @@ AGPL — its license text and source link are also shown inside the app under Se
 
 ### موتورها
 
-- **موزیلا (هستهٔ Kumiho)** — با حساب فایرفاکس وصل می‌شود (ورود OAuth داخل اپ یا ورود با مرورگر)؛ ۳۳ لوکیشن با تست تأخیر واقعی از داخل تونل، چند حساب با جابه‌جایی خودکار وقتی حجم حساب فعال به آستانه (پیش‌فرض ۹۵٪) نزدیک شود، و تمدید پس Guardian از داخل تونل زنده.
+- **موزیلا (هستهٔ Kumiho)** — با حساب فایرفاکس وصل می‌شود (ورود OAuth داخل اپ یا ورود با مرورگر)؛ لوکیشن‌ها زنده از موزیلا گرفته می‌شوند با تست تأخیر واقعی از داخل تونل، چند حساب با جابه‌جایی خودکار وقتی حجم حساب فعال به آستانه (پیش‌فرض ۹۵٪) نزدیک شود، و تمدید پس Guardian از داخل تونل زنده.
 - **V2Ray (هستهٔ Xray)** — کلاینت کامل Xray: ‏VLESS ،VMess ،Trojan ،Shadowsocks ،WireGuard ،Hysteria2 ،SOCKS5 و HTTP؛ ‏REALITY (از جمله کلید پس‌کوانتومی `mldsa65Verify`)، ‏XHTTP ،gRPC ،WebSocket ،HTTPUpgrade ،mKCP ،QUIC، ‏ECH، فینگرپرینت uTLS، فرگمنت، mux و fakeDNS.
 - **سایدکار (sing-box / Mieru)** — کانفیگ‌های TUIC ،AnyTLS ،Snell ،NaiveProxy و Mieru که Xray ندارد، از سایدکار داخلی وصل می‌شوند.
 - **وایرگارد (بک‌اند WG Tunnel)** — وایرگارد و مبهم‌سازی AmneziaWG (پکت‌های جانک Jc/Jmin/Jmax، ‏S1/S2، هدرهای H1 تا H4 و پکت I1) روی بک‌اند WG Tunnel؛ آمار زندهٔ هندشیک و ترافیک هر پیر، MTU خود پروفایل اعمال می‌شود، اسکنر اندپوینت.
