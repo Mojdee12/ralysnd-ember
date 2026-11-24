@@ -141,7 +141,7 @@ void main() {
       },
     });
     final text = exitMismatchText(fa, status)!;
-    expect(text, 'انگلیس را انتخاب کردید، اما IP شما مال آلمان است.');
+    expect(text, 'انگلیس را انتخاب کردید، اما IP شما در آلمان است.');
     expect(text, matches(arabicLetter));
     final en = lookupAppLocalizations(const Locale('en'));
     expect(

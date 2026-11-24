@@ -154,7 +154,10 @@ void main() {
       final src = ktSrc('XrayTester.kt');
       expect(src, contains('fun takeFreePort('));
       expect(src, contains('ServerSocket(p).use'));
-      for (final fn in ['measureDelay', 'measureDelayEx', 'speedTest']) {
+      // Build 2095 (third-pass audit 7-7): measureDelay
+      // was deleted as dead code — measureDelayEx is the
+      // only delay path; the pin follows the survivors.
+      for (final fn in ['measureDelayEx', 'speedTest']) {
         final body = src.split('fun $fn(').last.split('\n    }').first;
         expect(body, contains('takeFreePort()'), reason: fn);
       }
@@ -171,7 +174,10 @@ void main() {
     test('the channel handler exists', () {
       final src = ktSrc('MainActivity.kt');
       expect(src, contains('"xraySandboxTest"'));
-      expect(src, contains('XrayTester.sandboxTest(this, config)'));
+      // Build 2109: the handler threads the delay-test timeout
+      // through to the tester (absent → the fixed 8000 ms).
+      expect(src, contains('XrayTester.sandboxTest(this, config, timeoutMs)'));
+      expect(src, contains('call.argument<Int>("timeoutMs")'));
     });
   });
 
@@ -185,7 +191,17 @@ void main() {
     test('the controller runs the sandbox test and stores the result', () {
       final src = dartSrc('xray/xray_controller.dart');
       expect(src, contains('Future<SandboxTestResult> sandboxTest(Profile p)'));
-      expect(src, contains('XrayPlatform.sandboxTest(buildTestConfig(p, settings))'));
+      // Build 2075 pin update: the config now comes from the
+      // sidecar-aware _testConfigFor (a TUIC/Snell/… profile
+      // sandboxes through its sidecar engine, not a bare
+      // buildTestConfig the core would refuse) — the platform
+      // call and the stored-result lines are unchanged.
+      // Build 2109 pin update: the platform call now carries
+      // the delay-test timeout setting (default 8 s — the fixed
+      // value of every build ≤2108).
+      expect(src, contains('await XrayPlatform.sandboxTest('));
+      expect(src, contains('timeoutMs: settings.delayTestTimeoutMs,'));
+      expect(src, contains('final (config, started) = await _testConfigFor(p);'));
       expect(src, contains('p.delayMs = r.delayMs;'));
       expect(src, contains("p.exitIp = r.exitIp;"));
     });

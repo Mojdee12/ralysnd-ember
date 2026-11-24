@@ -5,222 +5,28 @@
 /// the home marker (Iran) to that pin. No pin is ever invented: a
 /// country appears only when a profile's remark carries it or the
 /// through-tunnel exit lookup reported it.
+///
+/// Build 2137 (visual review V-22): the original
+/// WorldMapPainter is deleted — it was never instantiated
+/// anywhere; MapActorsPainter below is the map's only
+/// painter, and its helpers (_samePins, MapViewTransform)
+/// stay.
 
 import 'package:flutter/material.dart';
 
 import 'ember_theme.dart';
 import 'world_map_data.dart';
 
-/// Logical field the painter draws in (2:1); the panel keeps this
-/// aspect, the motif strip cover-crops it.
-const _field = Size(360, 180);
+/// Build 2092 (UI audit 2026-11-16 items 33, 60): pin sets
+/// compare by VALUE in shouldRepaint — the old `!=` on a Set
+/// is identity, and the shell builds a fresh set per run, so
+/// the painters repainted on every unrelated tick.
+bool _samePins(Set<String> a, Set<String> b) =>
+    a.length == b.length && a.containsAll(b);
 
-Offset _project(double lat, double lon) => Offset(
-  (lon + 180) / 360 * _field.width,
-  (worldMapLatTop - lat) / (worldMapLatTop - worldMapLatBottom) * _field.height,
-);
-
-/// Land cells as logical offsets, computed once. A deterministic few
-/// carry an ember tint, as in the mockup's sparse orange sparkle.
-final _dots = <(Offset, bool)>[
-  for (var r = 0; r < worldMapRows.length; r++)
-    for (var c = 0; c < worldMapCols; c++)
-      if (worldMapRows[r][c] == '#')
-        (
-          Offset(
-            (c + 0.5) * _field.width / worldMapCols,
-            (r + 0.5) * _field.height / worldMapRows.length,
-          ),
-          ((r * worldMapCols + c) * 2654435761 % 97) < 5,
-        ),
-];
-
-class WorldMapPainter extends CustomPainter {
-  WorldMapPainter({
-    required this.pins,
-    required this.selected,
-    required this.connected,
-    required this.pulse,
-    required this.homeLabel,
-    this.faint = false,
-    this.pulseAnim,
-    super.repaint,
-  });
-
-  /// Every country code to pin (the selected one is drawn apart).
-  final Set<String> pins;
-  final String? selected;
-  final bool connected;
-  final double pulse;
-  final String homeLabel;
-  final bool faint;
-
-  /// When set, the live animation value replaces [pulse] at paint
-  /// time (the painter instance itself is not rebuilt per tick).
-  final Animation<double>? pulseAnim;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final pulse = pulseAnim?.value ?? this.pulse;
-    final scaleX = size.width / _field.width;
-    final scaleY = size.height / _field.height;
-    final cover = scaleX > scaleY ? scaleX : scaleY;
-    canvas.translate(
-      (size.width - _field.width * cover) / 2,
-      (size.height - _field.height * cover) / 2,
-    );
-    canvas.scale(cover);
-
-    // Land dots.
-    final dotPaint = Paint()..style = PaintingStyle.fill;
-    for (final (pos, ember) in _dots) {
-      dotPaint.color = ember
-          ? Ember.orange.withValues(alpha: faint ? 0.10 : 0.30)
-          : const Color(0xFF41454F)
-                .withValues(alpha: faint ? 0.35 : (connected ? 0.95 : 0.75));
-      canvas.drawCircle(pos, 0.62, dotPaint);
-    }
-    if (faint) return;
-
-    final homeCode = 'IR';
-    final homeLatLon = countryPinLatLon[homeCode];
-    final home = homeLatLon == null
-        ? null
-        : _project(homeLatLon[0], homeLatLon[1]);
-    final selLatLon = selected == null ? null : countryPinLatLon[selected];
-    final sel = selLatLon == null ? null : _project(selLatLon[0], selLatLon[1]);
-
-    // The arc lights up only while connected.
-    if (connected && home != null && sel != null && selected != homeCode) {
-      final mid = Offset(
-        (home.dx + sel.dx) / 2,
-        (home.dy + sel.dy) / 2 - (home - sel).distance * 0.22,
-      );
-      final arc = Path()
-        ..moveTo(home.dx, home.dy)
-        ..quadraticBezierTo(mid.dx, mid.dy, sel.dx, sel.dy);
-      canvas.drawPath(
-        arc,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 4.5
-          ..color = Ember.orange.withValues(alpha: 0.16),
-      );
-      canvas.drawPath(
-        arc,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
-          ..color = Ember.amber.withValues(alpha: 0.9),
-      );
-    }
-
-    // Ordinary pins.
-    for (final code in pins) {
-      if (code == selected) continue;
-      final ll = countryPinLatLon[code];
-      if (ll == null) continue;
-      final pos = _project(ll[0], ll[1]);
-      final a = connected ? 1.0 : 0.45;
-      canvas.drawCircle(
-        pos,
-        5.2,
-        Paint()..color = Ember.orange.withValues(alpha: 0.20 * a),
-      );
-      canvas.drawCircle(
-        pos,
-        2.6,
-        Paint()..color = Ember.orange.withValues(alpha: 0.9 * a),
-      );
-      canvas.drawCircle(
-        pos,
-        1.0,
-        Paint()..color = Colors.white.withValues(alpha: 0.85 * a),
-      );
-    }
-
-    // The home marker.
-    if (home != null) {
-      canvas.drawCircle(
-        home,
-        4.6,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.1
-          ..color = Ember.dim.withValues(alpha: 0.8),
-      );
-      canvas.drawCircle(
-        home,
-        2.0,
-        Paint()..color = Ember.text.withValues(alpha: 0.9),
-      );
-      if (homeLabel.isNotEmpty) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: homeLabel,
-            style: TextStyle(
-              color: Ember.dim.withValues(alpha: 0.9),
-              // Build 2058 (audit §5 micro-type): 8.5 px floored
-              // at 9.5 px.
-              fontSize: 9.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          // Build 2057 (audit §6 appearance low): the label is an
-          // English string — it was laid out right-to-left.
-          textDirection: TextDirection.ltr,
-        )..layout();
-        final lx = (home.dx - tp.width / 2).clamp(0.0, _field.width - tp.width);
-        tp.paint(canvas, Offset(lx, home.dy + 6));
-      }
-    }
-
-    // The selected pin, pulsing while connected.
-    if (sel != null) {
-      if (connected) {
-        canvas.drawCircle(
-          sel,
-          6 + 11 * pulse,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.6
-            ..color = Ember.orange.withValues(alpha: (1 - pulse) * 0.55),
-        );
-        canvas.drawCircle(
-          sel,
-          10,
-          Paint()..color = Ember.orange.withValues(alpha: 0.22),
-        );
-      }
-      canvas.drawCircle(
-        sel,
-        5.4,
-        Paint()
-          ..color = connected
-              ? Ember.amber
-              : Ember.orange.withValues(alpha: 0.55),
-      );
-      canvas.drawCircle(
-        sel,
-        2.2,
-        Paint()..color = Colors.white.withValues(alpha: connected ? 1 : 0.7),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(WorldMapPainter old) =>
-      old.pins != pins ||
-      old.selected != selected ||
-      old.connected != connected ||
-      // Build 2057 (audit §6 appearance low): the home label was
-      // ignored, so a renamed home kept painting the stale label.
-      old.homeLabel != homeLabel ||
-      old.faint != faint;
-}
 
 /// The Map Control view transform: the SAME equirectangular cover
-/// projection the baked backdrop asset (assets/backdrop/map_backdrop.png)
+/// projection the baked backdrop asset (assets/backdrop/map_backdrop.webp)
 /// is drawn with, so live actors land exactly on the baked dots.
 /// The field is 360×180; [cover] scales it to cover [size]; the view
 /// is centred on [centerLon] (portrait phones shift east so the home
@@ -289,6 +95,7 @@ class MapActorsPainter extends CustomPainter {
     required this.homeLabel,
     this.exitBadge,
     this.pulseAnim,
+    this.filament = false,
     super.repaint,
   });
 
@@ -304,6 +111,20 @@ class MapActorsPainter extends CustomPainter {
   /// hides it.
   final String? exitBadge;
   final Animation<double>? pulseAnim;
+
+  /// Home fidelity round R1 (owner order 2026-11-23): the
+  /// approved pro3 home composition — a THIN SOLID luminous
+  /// filament arc with two glowing nodes instead of the thick
+  /// dashed beam, a minimal hollow-ring home marker instead
+  /// of the radar bloom, and smaller, quieter country dots.
+  /// Only the shell's Home tab passes this; every other
+  /// surface keeps the legacy actors byte-for-byte.
+  final bool filament;
+
+  /// Build 2092 (item 33): laid-out badge painters cached by
+  /// (text, screen width) — the bucketed pulse repaint laid
+  /// out two fresh TextPainters on every tick.
+  final Map<String, TextPainter> _badgeCache = {};
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -325,26 +146,66 @@ class MapActorsPainter extends CustomPainter {
       final arc = Path()
         ..moveTo(home.dx, home.dy)
         ..quadraticBezierTo(mid.dx, mid.dy, sel.dx, sel.dy);
-      canvas.drawPath(
-        arc,
-        Paint()
+      if (filament) {
+        // R1 (pro3): one thin luminous filament — a soft
+        // under-glow, a solid hairline core with a warm
+        // gradient along its length, and two small glowing
+        // nodes riding it, like the sample's arc lights.
+        canvas.drawPath(
+          arc,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = px(3.5)
+            ..color = const Color(0xFFFF7A29).withValues(alpha: 0.16),
+        );
+        canvas.drawPath(
+          arc,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = px(1.2)
+            ..shader = LinearGradient(
+              colors: const [Color(0xFFFFC46B), Color(0xFFFF7A29)],
+            ).createShader(Rect.fromPoints(home, sel)),
+        );
+        for (final metric in arc.computeMetrics()) {
+          for (final f in const [0.38, 0.68]) {
+            final pos = metric.getTangentForOffset(metric.length * f)?.position;
+            if (pos == null) continue;
+            canvas.drawCircle(
+              pos,
+              px(5),
+              Paint()
+                ..color = const Color(0xFFFFA24D).withValues(alpha: 0.30),
+            );
+            canvas.drawCircle(
+              pos,
+              px(2.1),
+              Paint()..color = const Color(0xFFFFD9A0),
+            );
+          }
+        }
+      } else {
+        canvas.drawPath(
+          arc,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = px(5)
+            ..color = const Color(0xFFE65116).withValues(alpha: 0.35),
+        );
+        final core = Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = px(5)
-          ..color = const Color(0xFFE65116).withValues(alpha: 0.35),
-      );
-      final core = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = px(1.8)
-        ..color = const Color(0xFFFFA24D).withValues(alpha: 0.95);
-      for (final metric in arc.computeMetrics()) {
-        var d = 0.0;
-        while (d < metric.length) {
-          final end = d + px(4);
-          canvas.drawPath(
-            metric.extractPath(d, end > metric.length ? metric.length : end),
-            core,
-          );
-          d += px(7);
+          ..strokeWidth = px(1.8)
+          ..color = const Color(0xFFFFA24D).withValues(alpha: 0.95);
+        for (final metric in arc.computeMetrics()) {
+          var d = 0.0;
+          while (d < metric.length) {
+            final end = d + px(4);
+            canvas.drawPath(
+              metric.extractPath(d, end > metric.length ? metric.length : end),
+              core,
+            );
+            d += px(7);
+          }
         }
       }
     }
@@ -352,9 +213,27 @@ class MapActorsPainter extends CustomPainter {
     // Ordinary pins: small ember dots.
     for (final code in pins) {
       if (code == selected) continue;
+      // R1 (pro5-off): the sample's disconnected field is
+      // bare — no satellite dots until a session is up.
+      if (filament && !connected) continue;
       final pos = t.pinFor(code);
       if (pos == null) continue;
       final a = connected ? 1.0 : 0.5;
+      if (filament) {
+        // R1 (pro3): the sample's field carries no chunky
+        // satellite blobs — a faint halo and a small core.
+        canvas.drawCircle(
+          pos,
+          px(5),
+          Paint()..color = Ember.orange.withValues(alpha: 0.14 * a),
+        );
+        canvas.drawCircle(
+          pos,
+          px(2.6),
+          Paint()..color = Ember.orange.withValues(alpha: 0.75 * a),
+        );
+        continue;
+      }
       canvas.drawCircle(
         pos,
         px(9),
@@ -374,10 +253,44 @@ class MapActorsPainter extends CustomPainter {
 
     // The home marker: a hot core with radar rings; the rings
     // breathe outward while connected.
-    if (home != null) {
+    if (home != null && filament) {
+      // R1 (pro3): the sample's origin is a single hollow
+      // orange ring with a small lit core and its city label
+      // directly underneath — no bloom, no radar rings. One
+      // soft pulse ring still breathes while connected.
+      if (connected) {
+        canvas.drawCircle(
+          home,
+          px(10 + 7 * pulse),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = px(1.0)
+            ..color = const Color(0xFFFFA04A)
+                .withValues(alpha: (1 - pulse) * 0.35),
+        );
+      }
+      canvas.drawCircle(
+        home,
+        px(9),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = px(2.0)
+          ..color = Ember.orange,
+      );
+      canvas.drawCircle(home, px(2.4), Paint()..color = const Color(0xFFFFD9A0));
+      if (homeLabel.isNotEmpty) {
+        _badge(
+          canvas,
+          home + Offset(0, px(24)),
+          homeLabel,
+          px,
+          screenWidth: size.width,
+        );
+      }
+    } else if (home != null) {
       // The origin's solar core (2023 polish, Gemini round-3
       // audit): a hot additive bloom under the radar rings —
-      // 0x99FF7A1A at the centre, 0x4DFF6200 mid-way, gone at
+      // 0x99FF7A29 at the centre, 0x4DFF6200 mid-way, gone at
       // the outer ring (r40), screen-blended over the dot field
       // so the inner rings sit IN the glow, not on top of it.
       canvas.drawCircle(
@@ -387,7 +300,7 @@ class MapActorsPainter extends CustomPainter {
           ..blendMode = BlendMode.screen
           ..shader = RadialGradient(
             colors: const [
-              Color(0x99FF7A1A),
+              Color(0x99FF7A29),
               Color(0x4DFF6200),
               Color(0x00FF5000),
             ],
@@ -436,7 +349,9 @@ class MapActorsPainter extends CustomPainter {
     // The exit pin: a soft 28 px halo behind it (2024, Gemini
     // audit v4 exact values: 0x55FF8533 fading to transparent),
     // a teardrop with a white core, and its badge.
-    if (sel != null) {
+    // R1 (pro5-off): in the filament composition the pin joins
+    // only once connected — the off state's map stays bare.
+    if (sel != null && !(filament && !connected)) {
       canvas.drawCircle(
         sel,
         px(28),
@@ -490,7 +405,7 @@ class MapActorsPainter extends CustomPainter {
             end: Alignment.bottomCenter,
             colors: connected
                 ? const [Color(0xFFFFB347), Color(0xFFFF6A1A)]
-                : const [Color(0xFF93A2B8), Color(0xFF5B6B82)],
+                : const [Color(0xFF9A9AA0), Color(0xFF5A5A5E)],
           ).createShader(Rect.fromLTWH(sel.dx - w / 2, sel.dy - h, w, h)),
       );
       canvas.drawCircle(
@@ -526,13 +441,33 @@ class MapActorsPainter extends CustomPainter {
     double Function(double) px, {
     required double screenWidth,
   }) {
+    // Build 2092 (item 33): reuse the laid-out painter when
+    // the same badge is painted again (every pulse tick).
+    final cached = _badgeCache['$text|${screenWidth.round()}'];
+    if (cached != null) {
+      final half = cached.width / 2;
+      final cx = half + 4 >= screenWidth - half - 4
+          ? screenWidth / 2
+          : center.dx.clamp(half + 4, screenWidth - half - 4);
+      cached.paint(
+        canvas,
+        Offset(cx, center.dy) - Offset(cached.width / 2, cached.height / 2),
+      );
+      return;
+    }
     final tp = TextPainter(
       text: TextSpan(
         text: text,
         style: TextStyle(
+          // R1: the family is named so capture harnesses (which
+          // load Roboto explicitly) render the badge as the
+          // device does — Android's system sans is Roboto, so
+          // the device pixels are unchanged.
+          fontFamily: 'Roboto',
           // Build 2058 (audit §5 micro-type): px(8.5) floored
           // at px(9.5).
-          fontSize: px(9.5),
+          // Build 2092 (item 52): the floor is px(11).
+          fontSize: px(11),
           fontWeight: FontWeight.w700,
           letterSpacing: 0.6,
           color: const Color(0xFFFFA85C),
@@ -544,6 +479,8 @@ class MapActorsPainter extends CustomPainter {
       // at the canvas, so a long badge wraps/clips inside the
       // screen instead of painting past its edge.
     )..layout(maxWidth: screenWidth);
+    if (_badgeCache.length > 8) _badgeCache.clear();
+    _badgeCache['$text|${screenWidth.round()}'] = tp;
     final half = tp.width / 2;
     final cx = half + 4 >= screenWidth - half - 4
         ? screenWidth / 2
@@ -556,34 +493,12 @@ class MapActorsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(MapActorsPainter old) =>
-      old.pins != pins ||
+      // Build 2092 (item 33): pins by value, not identity.
+      !_samePins(old.pins, pins) ||
       old.selected != selected ||
       old.connected != connected ||
       old.exitBadge != exitBadge ||
+      old.filament != filament ||
       old.homeLabel != homeLabel;
 }
 
-/// A slim dotted-map band used as a decorative header on the V2Ray
-/// servers / subscriptions screens, keeping them in the map family.
-class MapMotifStrip extends StatelessWidget {
-  const MapMotifStrip({super.key});
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(16),
-    child: SizedBox(
-      height: 42,
-      width: double.infinity,
-      child: CustomPaint(
-        painter: WorldMapPainter(
-          pins: const {},
-          selected: null,
-          connected: false,
-          pulse: 0,
-          homeLabel: '',
-          faint: true,
-        ),
-      ),
-    ),
-  );
-}

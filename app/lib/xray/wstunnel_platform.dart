@@ -37,6 +37,11 @@ class WstunnelState {
 class WstunnelPlatform {
   static const _channel = MethodChannel('app/android');
 
+  /// The last start() channel failure's text (build 2116,
+  /// AB-10) — state() surfaces it when the client reports
+  /// no error of its own.
+  static String lastStartError = '';
+
   /// Spawns the client with [args]. Returns once the process
   /// exists; readiness completes asynchronously — poll [state]
   /// until [WstunnelState.ready].
@@ -45,8 +50,10 @@ class WstunnelPlatform {
       final v = await _channel.invokeMethod<bool>('wstunnelStart', {
         'args': args,
       });
+      if (v == true) lastStartError = '';
       return v ?? false;
-    } catch (_) {
+    } catch (e) {
+      lastStartError = '$e';
       return false;
     }
   }
@@ -64,7 +71,7 @@ class WstunnelPlatform {
       final m = await _channel
           .invokeMapMethod<String, dynamic>('wstunnelState');
       if (m == null) return const WstunnelState();
-      return WstunnelState(
+      final s = WstunnelState(
         available: m['available'] as bool? ?? false,
         running: m['running'] as bool? ?? false,
         ready: m['ready'] as bool? ?? false,
@@ -72,8 +79,19 @@ class WstunnelPlatform {
         error: m['error'] as String? ?? '',
         logTail: m['logTail'] as String? ?? '',
       );
-    } catch (_) {
-      return const WstunnelState();
+      if (!s.running && s.error.isEmpty && lastStartError.isNotEmpty) {
+        return WstunnelState(
+          available: s.available,
+          running: s.running,
+          ready: s.ready,
+          stage: s.stage == 'idle' ? 'error' : s.stage,
+          error: lastStartError,
+          logTail: s.logTail,
+        );
+      }
+      return s;
+    } catch (e) {
+      return WstunnelState(stage: 'error', error: '$e');
     }
   }
 }

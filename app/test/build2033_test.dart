@@ -38,8 +38,11 @@ void main() {
       // feature — so the profile imports without it, and the
       // share link carries no insecure parameter either.
       expect(profileToLink(p), isNot(contains('insecure')));
-      // The bundled core has no AnyTLS outbound: parsed,
-      // stored and shareable, never connectable.
+      // Build 2089 pin update: the bundled Xray core still
+      // has no AnyTLS outbound (buildOutbound stays null),
+      // but the sing-box sidecar serves it now, so the
+      // profile IS connectable — only supportedByCore stays
+      // false.
       expect(p.protocol.supportedByCore, isFalse);
       expect(buildOutbound(p, XraySettings()), isNull);
       final back = parseLink(profileToLink(p));
@@ -123,7 +126,15 @@ void main() {
         ..fallbackDns = 'https://dns.quad9.net/dns-query';
       final dns = decode(buildTunnelConfig(tlsProfile(), s))['dns'] as Map;
       final servers = (dns['servers'] as List).cast<String>();
-      expect(servers, [s.remoteDns, 'https://dns.quad9.net/dns-query']);
+      // Build 2113: the primary slot is the single stored
+      // entry (s.remoteDns, the Cloudflare DoH default; the
+      // 2111 appended pair is gone); the single user fallback
+      // still follows it, no group members — the behaviour
+      // this test pins is unchanged.
+      expect(servers, [
+        'https://cloudflare-dns.com/dns-query',
+        'https://dns.quad9.net/dns-query',
+      ]);
     });
 
     test('the group setting round-trips through settings JSON', () {

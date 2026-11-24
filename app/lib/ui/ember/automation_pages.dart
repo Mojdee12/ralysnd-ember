@@ -27,6 +27,7 @@ String emberEngineLabel(int m) => switch (m) {
 };
 
 Widget _pageShell(String title, Widget child) => Scaffold(
+  extendBodyBehindAppBar: true,
   backgroundColor: Ember.bg,
   appBar: AppBar(
     backgroundColor: Colors.transparent,
@@ -89,7 +90,7 @@ class _FallbackChainPageState extends State<FallbackChainPage> {
     return _pageShell(
       'Fallback chain',
       ListView(
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
+        padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + kToolbarHeight + 6, 16, 24),
         children: [
           MapSettingsPanel(
             title: 'Cross-engine fallback',
@@ -121,54 +122,100 @@ class _FallbackChainPageState extends State<FallbackChainPage> {
             ),
           ),
           const SizedBox(height: 14),
-          MapSettingsPanel(
-            title: 'Order',
-            children: [
-              for (var i = 0; i < s.fallbackChain.length; i++)
-                MapSettingRow(
-                  label:
-                      '${latDigits(i + 1)}. ${emberEngineLabel(s.fallbackChain[i])}',
-                  divider: i < s.fallbackChain.length - 1,
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.arrow_upward, size: 18),
-                        color: MapUi.faint,
-                        onPressed: i == 0 ? null : () => _move(i, -1),
+          // Build 2092 (item 10): with the master switch
+          // off, the Order and Engines panels read as
+          // disabled and stop taking taps.
+          Opacity(
+            opacity: s.fallbackChainEnabled ? 1 : 0.45,
+            child: IgnorePointer(
+              ignoring: !s.fallbackChainEnabled,
+              child: MapSettingsPanel(
+                title: 'Order',
+                children: [
+                  for (var i = 0; i < s.fallbackChain.length; i++)
+                    MapSettingRow(
+                      label:
+                          '${latDigits(i + 1)}. ${emberEngineLabel(s.fallbackChain[i])}',
+                      divider: i < s.fallbackChain.length - 1,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'Move up',
+                            icon: const Icon(Icons.arrow_upward, size: 18),
+                            color: MapUi.faint,
+                            onPressed: i == 0 ? null : () => _move(i, -1),
+                          ),
+                          IconButton(
+                            tooltip: 'Move down',
+                            icon: const Icon(Icons.arrow_downward, size: 18),
+                            color: MapUi.faint,
+                            onPressed: i == s.fallbackChain.length - 1
+                                ? null
+                                : () => _move(i, 1),
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.arrow_downward, size: 18),
-                        color: MapUi.faint,
-                        onPressed: i == s.fallbackChain.length - 1
-                            ? null
-                            : () => _move(i, 1),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
+                    ),
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 14),
-          MapSettingsPanel(
-            title: 'Engines in the chain',
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  children: [
-                    for (var m = 0; m <= 7; m++)
-                      EmberChip(
-                        label: emberEngineLabel(m),
-                        selected: s.fallbackChain.contains(m),
-                        onTap: () => _toggleMember(m),
-                      ),
-                  ],
-                ),
+          Opacity(
+            opacity: s.fallbackChainEnabled ? 1 : 0.45,
+            child: IgnorePointer(
+              ignoring: !s.fallbackChainEnabled,
+              child: MapSettingsPanel(
+                title: 'Engines in the chain',
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Wrap(
+                          spacing: 7,
+                          runSpacing: 7,
+                          children: [
+                            for (var m = 0; m <= 7; m++)
+                              // Build 2092 (item 10): the last
+                              // remaining member renders disabled
+                              // — the chain can never be emptied.
+                              Opacity(
+                                opacity:
+                                    s.fallbackChain.contains(m) &&
+                                        s.fallbackChain.length <= 1
+                                    ? 0.5
+                                    : 1,
+                                child: EmberChip(
+                                  label: emberEngineLabel(m),
+                                  selected: s.fallbackChain.contains(m),
+                                  onTap:
+                                      s.fallbackChain.contains(m) &&
+                                          s.fallbackChain.length <= 1
+                                      ? null
+                                      : () => _toggleMember(m),
+                                ),
+                              ),
+                          ],
+                        ),
+                        // Build 2092 (item 10): the rule, stated
+                        // on the panel instead of only in a
+                        // SnackBar after a dead tap.
+                        if (s.fallbackChain.length <= 1) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'At least one engine must stay in the chain.',
+                            style: Ember.caption,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ],
       ),
@@ -215,7 +262,7 @@ class _AutoConnectPageState extends State<AutoConnectPage> {
     return _pageShell(
       'Auto-connect',
       ListView(
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
+        padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + kToolbarHeight + 6, 16, 24),
         children: [
           // Build 2074 (audit items 7 + 26): the panel is
           // retitled "Triggers" — its first row already reads
@@ -271,7 +318,9 @@ class _AutoConnectPageState extends State<AutoConnectPage> {
                     ),
                     MapSettingRow(
                       label: 'On network change',
-                      subtitle: 'When the phone moves to a different network and nothing is connected',
+                      subtitle:
+                          'When the phone moves to a different network and nothing is connected. '
+                          'Suppressed on trusted Wi-Fi; mobile-data changes count too.',
                       divider: false,
                       trailing: MapToggle(
                         value: s.autoConnectOnNetworkChange,
@@ -296,6 +345,7 @@ class _AutoConnectPageState extends State<AutoConnectPage> {
                 MapSettingRow(
                   label: s.trustedSsids[i],
                   trailing: IconButton(
+                    tooltip: 'Remove',
                     icon: const Icon(Icons.close, size: 18),
                     color: MapUi.faint,
                     onPressed: () {
@@ -345,10 +395,15 @@ class _FilteringProbePageState extends State<FilteringProbePage> {
   bool _running = false;
   List<ProbeCheck> _checks = const [];
 
+  /// Build 2092 (item 43): a failed run says so — the panel
+  /// used to just stay empty.
+  String? _error;
+
   Future<void> _run() async {
     setState(() {
       _running = true;
       _checks = const [];
+      _error = null;
     });
     // Build 2074 (audit item 9): try/finally — a throwing
     // probe used to wedge the button on "Running…" forever.
@@ -356,6 +411,12 @@ class _FilteringProbePageState extends State<FilteringProbePage> {
       final checks = await runFilteringProbe();
       if (mounted) {
         setState(() => _checks = checks);
+      }
+    } catch (_) {
+      // Build 2092 (item 43): the catch that pairs with the
+      // finally — the failure becomes a line, not silence.
+      if (mounted) {
+        setState(() => _error = 'The checks could not run on this network.');
       }
     } finally {
       if (mounted) {
@@ -377,9 +438,10 @@ class _FilteringProbePageState extends State<FilteringProbePage> {
     return _pageShell(
       'Filtering probe',
       ListView(
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
+        padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + kToolbarHeight + 6, 16, 24),
         children: [
           MapGlass(
+        blur: false,
             luminous: true,
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
             child: Column(
@@ -393,9 +455,20 @@ class _FilteringProbePageState extends State<FilteringProbePage> {
                 ),
                 const SizedBox(height: 12),
                 EmberButton(
-                  label: _running ? 'Running…' : 'Run checks',
+                  label: _running
+                      ? 'Running…'
+                      : _error != null
+                      ? 'Retry checks'
+                      : 'Run checks',
                   onTap: _running ? null : _run,
                 ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    style: Ember.caption.copyWith(color: Ember.red),
+                  ),
+                ],
               ],
             ),
           ),
@@ -412,7 +485,7 @@ class _FilteringProbePageState extends State<FilteringProbePage> {
                     trailing: Text(
                       _checks[i].verdict,
                       style: TextStyle(
-                        fontSize: 12.5,
+                        fontSize: Ember.fontSmall,
                         fontWeight: FontWeight.w700,
                         color: _verdictColor(_checks[i].verdict),
                       ),

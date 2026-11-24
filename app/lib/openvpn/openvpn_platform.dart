@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import '../core/system_ui_flight.dart';
+
 /// The OpenVPN engine's state, as OpenVpnService and OpenVpnCore
 /// report it on the bridge (build 2025).
 class OpenVpnState {
@@ -12,10 +14,13 @@ class OpenVpnState {
     this.profileName = '',
     this.sinceMs = 0,
     this.upBytes = 0,
+    this.countersReported = false,
     this.downBytes = 0,
     this.exitIp = '',
     this.exitCountry = '',
     this.exitCode = '',
+    this.ipv6Captured = false,
+    this.killSwitchHeld = false,
     this.error,
     this.logTail = const [],
     this.lastStage = '',
@@ -34,9 +39,18 @@ class OpenVpnState {
     sinceMs: (m['sinceMs'] as num?)?.toInt() ?? 0,
     upBytes: (m['up'] as num?)?.toInt() ?? 0,
     downBytes: (m['down'] as num?)?.toInt() ?? 0,
+    // Build 2096 (post-2095 audit M19): whether the core
+    // actually reported counters — absent keys used to
+    // default to 0 and read as "no traffic".
+    countersReported: m['up'] is num && m['down'] is num,
     exitIp: (m['exitIp'] as String?) ?? '',
     exitCountry: (m['exitCountry'] as String?) ?? '',
     exitCode: (m['exitCode'] as String?) ?? '',
+    // Build 2125 (audit A25-25 / P-04 remainder): the
+    // session's IPv6 capture verdict from the TUN builder.
+    ipv6Captured: m['ipv6Captured'] == true,
+    // Build 2125 (audit A25-04): the kill-switch hold flag.
+    killSwitchHeld: m['killSwitchHeld'] == true,
     error: m['error'] as String?,
     logTail:
         (m['logTail'] as List?)?.map((e) => e.toString()).toList() ?? const [],
@@ -63,11 +77,29 @@ class OpenVpnState {
   final int sinceMs;
   final int upBytes;
   final int downBytes;
+
+  /// Build 2096 (audit M19): false when the core's state
+  /// carried no counter keys at all — the zeros above are
+  /// then placeholders, not measurements.
+  final bool countersReported;
   final String exitIp;
   final String exitCountry;
 
   /// The exit's ISO country code, for the map pin.
   final String exitCode;
+
+  /// Build 2125 (audit A25-25 / P-04 remainder): whether
+  /// the live session's TUN captured IPv6. False on a
+  /// v4-only session — that family's traffic then stays
+  /// outside the tunnel, which the OpenVPN page now says
+  /// out loud instead of leaking silently.
+  final bool ipv6Captured;
+
+  /// Build 2125 (audit A25-04): the kill-switch hold is
+  /// in place — the session ended unexpectedly and its
+  /// TUN is held as a blackhole until the user
+  /// disconnects or reconnects.
+  final bool killSwitchHeld;
 
   /// The last failure, verbatim from the platform.
   final String? error;
@@ -142,6 +174,8 @@ class OpenVpnPlatform {
     String user = '',
     String pass = '',
     bool needsCreds = false,
+    // Build 2125 (audit A25-04): the kill switch.
+    bool killSwitch = false,
   }) => _channel.invokeMethod<void>('openVpnSetOn', {
     'on': true,
     'profileId': profileId,
@@ -151,13 +185,23 @@ class OpenVpnPlatform {
     'user': user,
     'pass': pass,
     'needsCreds': needsCreds,
+    'killSwitch': killSwitch,
   });
 
   static Future<void> stop() => _channel.invokeMethod<void>('openVpnStop');
 
   static Future<OpenVpnState> state() async {
-    final m = await _channel.invokeMapMethod<dynamic, dynamic>('openVpnState');
-    return m == null ? const OpenVpnState() : OpenVpnState.fromMap(m);
+    // Build 2116 (AB-11): catch→stopped, like the rest of
+    // the platform family — a thrown state read froze the
+    // OpenVPN card on its last state.
+    try {
+      final m = await _channel.invokeMapMethod<dynamic, dynamic>(
+        'openVpnState',
+      );
+      return m == null ? const OpenVpnState() : OpenVpnState.fromMap(m);
+    } catch (_) {
+      return const OpenVpnState();
+    }
   }
 
   /// "" when the core accepts the profile, else an error code.
@@ -188,14 +232,39 @@ class OpenVpnPlatform {
 
   /// The system file picker for one .ovpn file; null on cancel.
   static Future<Map<String, String>?> pickFile() async {
-    final m = await _channel.invokeMapMethod<dynamic, dynamic>(
-      'openVpnPickFile',
-    );
-    if (m == null) return null;
-    return {
-      'name': (m['name'] as String?) ?? 'profile.ovpn',
-      'content': (m['content'] as String?) ?? '',
-    };
+    // Build 2097 (IMP-1): a system-UI flight — the app
+    // lock must not re-lock (and dispose the page) over it.
+    SystemUiFlight.begin();
+    try {
+      final m = await _channel.invokeMapMethod<dynamic, dynamic>(
+        'openVpnPickFile',
+      );
+      if (m == null) return null;
+      return {
+        'name': (m['name'] as String?) ?? 'profile.ovpn',
+        'content': (m['content'] as String?) ?? '',
+      };
+    } on PlatformException catch (e) {
+      // Build 2098 (post-2097 audit M9): the native side now
+      // answers 'busy' when a pick is already open instead of
+      // superseding it — the first pick is still open and
+      // will deliver, so this call is a benign no-op, exactly
+      // like a cancel.
+      if (e.code == 'busy') return null;
+      rethrow;
+    } on MissingPluginException {
+      // Build 2098 (post-2097 audit M8): the same IMP-3
+      // conversion the Xray route has had since build 2097 —
+      // a platform with no picker handler must surface the
+      // named "picker unavailable" failure, not a raw
+      // MissingPluginException escaping the import helper.
+      throw PlatformException(
+        code: 'pick_unavailable',
+        message: 'Could not read that file',
+      );
+    } finally {
+      SystemUiFlight.end();
+    }
   }
 
   /// Saves credentials; true only when the platform wrote

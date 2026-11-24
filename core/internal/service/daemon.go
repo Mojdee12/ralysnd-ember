@@ -981,7 +981,7 @@ func (d *Daemon) updateSettings(next config.Config, newPassword *string) (settin
 	if err := next.Validate(); err != nil {
 		return settingsChange{}, err
 	}
-	if !slices.Equal(next.DNS.Servers, prev.DNS.Servers) || next.DNS.FallbackToSystem != prev.DNS.FallbackToSystem {
+	if !slices.Equal(next.DNS.Servers, prev.DNS.Servers) || next.DNS.FallbackToSystem != prev.DNS.FallbackToSystem || next.DNS.IPVersion != prev.DNS.IPVersion {
 		if err := configureDNS(next.DNS); err != nil {
 			return settingsChange{}, fmt.Errorf("invalid dns.servers: %w", err)
 		}

@@ -12,7 +12,6 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.DatagramPacket
@@ -168,6 +167,18 @@ object OpenVpnTrace {
 object OpenVpnCore {
     /** idle | connecting | verifying | connected | reconnecting | error */
     @Volatile var phase: String = "idle"
+
+    /**
+     * Build 2126 (audit A26-04): latched true the moment
+     * a session verifies as connected; cleared when a new
+     * session starts and when the session-end hold gate
+     * has consumed it. The kill-switch hold reads THIS,
+     * not the live [phase]: the core's DISCONNECTED event
+     * resets phase to "idle" before the session-end tail
+     * runs, so a phase-reading gate silently never fired
+     * for remote-initiated disconnects — the common case.
+     */
+    @Volatile var wasConnected: Boolean = false
     @Volatile var profileId: String = ""
     @Volatile var profileName: String = ""
     @Volatile var error: String? = null
@@ -327,7 +338,31 @@ class OpenVpnService : VpnService() {
     private val worker = Executors.newSingleThreadExecutor()
     private val stopping = AtomicBoolean(false)
 
+    /**
+     * Build 2123 (audit P-06 / E-03): underlying-network
+     * watch — Mozilla's CoreService pattern, shared via
+     * [UnderlyingNetworkWatch]. The watch's
+     * setUnderlyingNetworks re-point is the fix here:
+     * OpenVPN's own keepalive/reconnect then lands on the
+     * live network instead of the dead one; up to 2121 a
+     * Wi-Fi↔mobile switch left the session stalled while
+     * Connected.
+     */
+    private val underlyingWatch =
+        UnderlyingNetworkWatch(this, "OpenVpnService") {
+            OpenVpnTrace.mark(this, "underlying_network_changed")
+        }
+
     @Volatile private var session: Session? = null
+
+    /** Build 2125 (audit A25-04): the Settings kill
+     *  switch, carried on the start intent. */
+    @Volatile private var inKillSwitch = false
+
+    /** Build 2125 (A25-04): the TUN a kill-switch hold is
+     *  keeping open (the session that owned it is gone;
+     *  OpenVpnTun still holds the same object). */
+    @Volatile private var heldTunPfd: ParcelFileDescriptor? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Build 2070 (review §5.1): the start net — the last
@@ -352,12 +387,21 @@ class OpenVpnService : VpnService() {
     }
 
     private fun onStartCommandGuarded(intent: Intent?, flags: Int, startId: Int): Int {
+        // Build 2123 (P-06): the underlying-network watch
+        // lives for the service's lifetime (idempotent).
+        underlyingWatch.start()
         when (intent?.action) {
             ACTION_STOP -> {
                 stopTunnel()
+                // Build 2116 (B7-1): the claim is released.
+                EngineClaim.release(this, EngineClaim.OPENVPN)
                 return START_NOT_STICKY
             }
             ACTION_START -> {
+                // Build 2116 (B7-1, AB-08): claim the VPN
+                // slot through the native single-writer
+                // claim, displacing any other engine.
+                EngineClaim.claim(this, EngineClaim.OPENVPN)
                 startInForeground()
                 if (running) return START_STICKY
                 stopping.set(false)
@@ -368,6 +412,15 @@ class OpenVpnService : VpnService() {
                 val user = intent.getStringExtra(EXTRA_USER) ?: ""
                 val pass = intent.getStringExtra(EXTRA_PASS) ?: ""
                 val needsCreds = intent.getBooleanExtra(EXTRA_NEEDS_CREDS, false)
+                // Build 2125 (A25-04): the kill switch.
+                inKillSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
+                if (killSwitchHeld) {
+                    // A fresh start over a hold: release
+                    // the held TUN first (the new session's
+                    // establish would close it anyway —
+                    // this keeps the flag honest).
+                    releaseHeldTun()
+                }
                 worker.execute {
                     try {
                         startTunnel(profileId, name, config, credKey, user, pass, needsCreds)
@@ -462,11 +515,26 @@ class OpenVpnService : VpnService() {
         val s = Session(profileId, config, username, password)
         session = s
         OpenVpnCore.phase = "connecting"
+        // Build 2126 (A26-04): a new session starts with
+        // no connected evidence.
+        OpenVpnCore.wasConnected = false
         running = true
         startedAtMs = System.currentTimeMillis()
         updateNotification()
         // The connect deadline: a server that never answers must
         // not leave the page on "connecting" for good.
+        // Build 2099 (V1): the deadline applies only until the
+        // core reports CONNECTED. Once the session enters the
+        // "verifying" phase it is exempt: the verify window's
+        // worst case is ~76 s (3 attempts x ~24 s of probes +
+        // sleeps), which alone exceeds the 75 s deadline
+        // measured from before the handshake, so firing here
+        // would kill the very counter cross-check the verify
+        // phase ends with. Verification is bounded by its own
+        // probe loop, which always terminates in verified or
+        // NO_DATA. The deadline stays fully in force for the
+        // pre-CONNECTED phases (evaluate/handshake/auth),
+        // which is what it exists for.
         Thread {
             try {
                 Thread.sleep(CONNECT_DEADLINE_MS)
@@ -474,7 +542,8 @@ class OpenVpnService : VpnService() {
                 return@Thread
             }
             if (session === s && running &&
-                OpenVpnCore.phase != "connected"
+                OpenVpnCore.phase != "connected" &&
+                OpenVpnCore.phase != "verifying"
             ) {
                 s.timeOut()
             }
@@ -485,9 +554,26 @@ class OpenVpnService : VpnService() {
         if (session === s) {
             session = null
             running = false
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            if (killSwitchHeld) {
+                // Build 2125 (A25-04): the kill-switch
+                // hold — the service STAYS foreground with
+                // the held TUN until the user disconnects
+                // (stopTunnel releases it) or a fresh start
+                // replaces it.
+                updateNotification()
+            } else {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
+    }
+
+    /** Build 2125 (A25-04): release a kill-switch-held TUN. */
+    private fun releaseHeldTun() {
+        val held = heldTunPfd
+        heldTunPfd = null
+        killSwitchHeld = false
+        if (held != null) OpenVpnTun.release(held)
     }
 
     private fun fail() {
@@ -499,6 +585,15 @@ class OpenVpnService : VpnService() {
     private fun stopTunnel() {
         OpenVpnTrace.mark(this, "clean_stop")
         stopping.set(true)
+        if (session == null && killSwitchHeld) {
+            // Build 2125 (A25-04): stopping a kill-switch
+            // hold — no session is left to stop; releasing
+            // the held TUN is the whole stop.
+            releaseHeldTun()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         // The native stop is thread-safe and returns at once;
         // the grace/abandon bookkeeping runs on its own thread,
         // never on the main thread (ANR) and never on the worker
@@ -525,6 +620,15 @@ class OpenVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        // Build 2125 (A25-04): a kill-switch-held TUN is
+        // released with the service.
+        releaseHeldTun()
+        // Build 2123 (P-06): the network watch dies with
+        // the service.
+        underlyingWatch.stop()
+        // Build 2116 (B7-1): teardown releases the claim
+        // (owner-checked).
+        EngineClaim.release(this, EngineClaim.OPENVPN)
         stopping.set(true)
         // The native stop leaves the main thread (build 2030,
         // defect C audit): onDestroy runs there, and no native
@@ -664,12 +768,38 @@ class OpenVpnService : VpnService() {
                     check(id != 0L) { "CORE_UNAVAILABLE" }
                     handle.set(id)
                     if (stopped.get()) OpenVpnNative.stop(id)
-                    val error = try {
+                    val rawResult = try {
                         OpenVpnNative.run(id, config, username, password, this)
                     } finally {
                         handle.getAndSet(0).takeIf { it != 0L }?.let {
                             runCatching { OpenVpnNative.release(it) }
                         }
+                    }
+                    // Build 2099 (B6): run() returns the CODE
+                    // alone, or "CODE\n<detail>" when the core's
+                    // Status carried a message — the bridge now
+                    // forwards that message scrubbed instead of
+                    // dropping it at the JNI boundary (diagnosis
+                    // §3). Split at the FIRST newline: the left
+                    // side drives every existing code path
+                    // (NEED_CREDS resupply included); the right
+                    // side is the core's own words, routed to
+                    // the trail and the engine log at once and
+                    // preserved in the terminal error below as
+                    // "CODE: <detail>" (B7) instead of being
+                    // replaced by the bare code.
+                    val error = rawResult.substringBefore('\n')
+                    val detail = rawResult.substringAfter('\n', "").trim()
+                    if (detail.isNotEmpty()) {
+                        OpenVpnTrace.mark(
+                            this@OpenVpnService,
+                            "core_error_detail",
+                            "$error: $detail",
+                        )
+                        OpenVpnCore.log(
+                            this@OpenVpnService,
+                            "core error detail: $error: $detail",
+                        )
                     }
                     val resupply = error == "NEED_CREDS" &&
                         !stopped.get() &&
@@ -677,7 +807,14 @@ class OpenVpnService : VpnService() {
                         credsResupplies.get() < MAX_CREDS_RESUPPLY
                     if (!resupply) {
                         if (terminal == null && error.isNotEmpty()) {
-                            terminal = error
+                            // Build 2099 (B7): the code stays
+                            // the prefix, the detail rides
+                            // after it — never discarded.
+                            terminal = if (detail.isNotEmpty()) {
+                                "$error: $detail"
+                            } else {
+                                error
+                            }
                         }
                         break
                     }
@@ -694,8 +831,22 @@ class OpenVpnService : VpnService() {
                             "(attempt $attempt)",
                     )
                 }
-            } catch (_: Exception) {
-                if (terminal == null) terminal = "CONNECTION_FAILED"
+            } catch (e: Exception) {
+                // Build 2099 (B7): the catch-all used to
+                // collapse every exception to the bare
+                // CONNECTION_FAILED code, discarding the one
+                // text that named the failure (diagnosis §3,
+                // layer 3). The exception's message now rides
+                // after the code as its detail, the same
+                // "CODE: <detail>" shape as the run() result.
+                if (terminal == null) {
+                    val message = e.message?.takeIf { it.isNotBlank() }
+                    terminal = if (message != null) {
+                        "CONNECTION_FAILED: $message"
+                    } else {
+                        "CONNECTION_FAILED"
+                    }
+                }
             } catch (_: LinkageError) {
                 if (terminal == null) terminal = "CORE_UNAVAILABLE"
             } finally {
@@ -703,8 +854,48 @@ class OpenVpnService : VpnService() {
                     runCatching { OpenVpnNative.release(it) }
                 }
                 synchronized(this) {
-                    OpenVpnTun.release(retainedTun)
-                    retainedTun = null
+                    // Build 2125 (audit A25-04): the kill
+                    // switch. A session that was CONNECTED
+                    // (or mid-reconnect from connected) and
+                    // ends WITHOUT the user stopping keeps
+                    // its TUN: the service retains the
+                    // original descriptor precisely so this
+                    // is possible — the core drove a detached
+                    // dup, so the interface stays up as a
+                    // blackhole on the retained one. The
+                    // service tail in startTunnel sees the
+                    // flag and stays foreground instead of
+                    // stopping. A user stop (stopped), a
+                    // connect-phase failure (never
+                    // connected), and the abandon path all
+                    // release as before.
+                    // Build 2126 (audit A26-04): the gate
+                    // reads the was-connected LATCH, not the
+                    // live phase — the DISCONNECTED event
+                    // handler has usually already reset the
+                    // phase to "idle" by the time this tail
+                    // runs, which is why the 2125 gate never
+                    // fired for remote-initiated disconnects.
+                    val hold = inKillSwitch && !stopped.get() &&
+                        retainedTun != null &&
+                        OpenVpnCore.wasConnected
+                    // The latch is per-session evidence; it
+                    // has now decided this session's ending,
+                    // whichever way it went.
+                    OpenVpnCore.wasConnected = false
+                    if (hold) {
+                        heldTunPfd = retainedTun
+                        retainedTun = null
+                        killSwitchHeld = true
+                        OpenVpnTrace.mark(
+                            this@OpenVpnService,
+                            "kill_switch_hold",
+                            terminal ?: "session ended",
+                        )
+                    } else {
+                        OpenVpnTun.release(retainedTun)
+                        retainedTun = null
+                    }
                 }
                 OpenVpnTrace.mark(
                     this@OpenVpnService,
@@ -738,6 +929,31 @@ class OpenVpnService : VpnService() {
         fun configureTun(operation: String, value: Int): Boolean = runCatching {
             when (operation) {
                 "new" -> {
+                    // Build 2099 (V3): a new Builder starts
+                    // empty, so the applied TUN state must too.
+                    // These lists/fields only ever appended, so
+                    // without this a core-initiated TUN rebuild
+                    // inside one session (reconnect/re-push)
+                    // left the previous incarnation's entries
+                    // behind — a stale IPv6 address kept B3's
+                    // ::/0 decision true on a now IPv4-only
+                    // interface, and a stale appliedMtu kept
+                    // B4's default from applying. The core's
+                    // callbacks (mtu/addAddress/addRoute/addDns/
+                    // addSearchDomain) replay after this point
+                    // and repopulate the state before
+                    // establishTun reads it.
+                    appliedAddresses.clear()
+                    // Build 2125 (A25-25): a new session's
+                    // builder state — the family verdict goes
+                    // with it.
+                    OpenVpnService.ipv6Captured = false
+                    appliedRoutes.clear()
+                    appliedDns.clear()
+                    appliedDomains.clear()
+                    appliedMtu = 0
+                    dnsAdded = false
+                    rerouteV4 = false
                     builder = Builder()
                         .setSession(getString(R.string.app_name))
                         .setBlocking(false)
@@ -783,13 +999,32 @@ class OpenVpnService : VpnService() {
             if (stopped.get()) return -1
             val b = builder ?: return -1
             val appsSummary = applyApps(b)
-            // Capture IPv6 ALWAYS (build 2029A, MLM parity):
-            // before, the ::/0 route was added only when the
-            // session rerouted IPv4 wholesale, so a def1 profile
-            // (0.0.0.0/1 + 128.0.0.0/1) left the device's IPv6
-            // free to fall through to the physical link.
-            runCatching { b.addRoute("::", 0) }
-            appliedRoutes += "::/0 (capture)"
+            // Capture IPv6 when the session actually carries
+            // it. Build 2029A added the ::/0 route ALWAYS (MLM
+            // parity, so a def1 profile could not leak v6 to
+            // the physical link); build 2099 makes it
+            // conditional: on an IPv4-only session (no IPv6
+            // address applied by addAddress above — the same
+            // appliedAddresses state the tun_applied dump
+            // prints) the captured ::/0 blackholes every
+            // v6-first attempt, Ember's own data proof
+            // included, into a tunnel with no v6 transport
+            // (openvpn-nodata-diagnosis.md cause 2). The route
+            // is added only when an IPv6 address was applied.
+            val ipv6Applied = appliedAddresses.any { it.contains(':') }
+            // Build 2125 (audit A25-25 / P-04 remainder):
+            // publish the family verdict for the state map
+            // (see the companion's ipv6Captured).
+            OpenVpnService.ipv6Captured = ipv6Applied
+            if (ipv6Applied) {
+                runCatching { b.addRoute("::", 0) }
+                appliedRoutes += "::/0 (capture)"
+            } else {
+                OpenVpnCore.log(
+                    this@OpenVpnService,
+                    "tun: no IPv6 address applied; not capturing ::/0",
+                )
+            }
             if (!dnsAdded) {
                 // No DNS came through the core: name resolution
                 // would silently use the physical network's.
@@ -798,6 +1033,25 @@ class OpenVpnService : VpnService() {
                 OpenVpnCore.log(this@OpenVpnService, "tun: no DNS from the server; using 1.1.1.1")
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) b.setMetered(false)
+            // Build 2099: a default MTU when the core never
+            // named one. tun_builder_set_mtu fires only when
+            // the profile or the PUSH carries tun-mtu, so a
+            // profile without one left appliedMtu at 0 and
+            // Builder.setMtu was never called — the interface
+            // MTU was an uncontrolled platform default while
+            // the core's session math assumed 1500 and mssfix
+            // stayed disabled (diagnosis §1/cause 3). Apply
+            // 1400 in that case and record it in appliedMtu,
+            // so the dump below and every later log line state
+            // the MTU the interface really got.
+            if (appliedMtu == 0) {
+                appliedMtu = 1400
+                runCatching { b.setMtu(appliedMtu) }
+                OpenVpnCore.log(
+                    this@OpenVpnService,
+                    "tun: no MTU from the core; applying default 1400",
+                )
+            }
             // The applied-state dump (build 2029A): one trail
             // line + one log line carrying everything the
             // interface is about to be established with. The
@@ -965,11 +1219,40 @@ class OpenVpnService : VpnService() {
             return "apps: mode=exclude disallowed=[${bypass.joinToString(",")}]"
         }
 
-        fun onCoreEvent(name: String, error: Boolean) {
+        // Build 2099 (B6): the third parameter is the core
+        // Event's info string, forwarded scrubbed by the
+        // bridge. This exact signature is the JNI contract:
+        // the bridge resolves it as
+        // "(Ljava/lang/String;ZLjava/lang/String;)V" — do not
+        // change it. Before, the bridge dropped info at the
+        // boundary (diagnosis §3, layer 1), so a config-load
+        // rejection surfaced as a bare code with the core's
+        // own words destroyed.
+        fun onCoreEvent(name: String, error: Boolean, info: String) {
             if (stopped.get() && name != "DISCONNECTED") return
-            OpenVpnCore.log(this@OpenVpnService, "core event: $name${if (error) " (error)" else ""}")
+            OpenVpnCore.log(
+                this@OpenVpnService,
+                "core event: $name${if (error) " (error)" else ""}" +
+                    (if (info.isNotEmpty()) " — $info" else ""),
+            )
+            if (error && info.isNotEmpty()) {
+                OpenVpnTrace.mark(
+                    this@OpenVpnService,
+                    "core_event_error",
+                    "$name: $info",
+                )
+            }
             when {
-                name == "AUTH_FAILED" -> terminal = "AUTH_FAILED"
+                // Build 2099 (B7): with an error detail the
+                // code stays as the prefix and the core's
+                // words ride after it, here and in the
+                // unrecognized-error mapping below.
+                name == "AUTH_FAILED" -> terminal =
+                    if (error && info.isNotEmpty()) {
+                        "AUTH_FAILED: $info"
+                    } else {
+                        "AUTH_FAILED"
+                    }
                 // The core asked for credentials (build 2030,
                 // defect B): NOT terminal at the event any
                 // more. The core purged its own copy of the
@@ -983,13 +1266,30 @@ class OpenVpnService : VpnService() {
                 // exhausted or no pair is held — run() decides.
                 name == "NEED_CREDS" ->
                     OpenVpnTrace.mark(this@OpenVpnService, "creds_requested")
-                error -> terminal = when (name) {
-                    "CERT_VERIFY_FAIL", "TLS_VERSION_MIN",
-                    "CONNECTION_TIMEOUT", "NETWORK_UNREACHABLE" -> name
-                    // The core's acquire failure maps to the
-                    // manager's named state (build 2030).
-                    "TUN_IFACE_CREATE" -> terminal ?: "TUN_ACQUIRE_FAILED"
-                    else -> terminal ?: "CONNECTION_FAILED"
+                error -> {
+                    // The code mapping is unchanged (build
+                    // 2030): recognized names keep their name,
+                    // the acquire failure maps to the manager's
+                    // named state, anything else collapses to
+                    // CONNECTION_FAILED — an already-set
+                    // terminal still wins in the two collapsing
+                    // cases. Build 2099 (B7): the collapse no
+                    // longer discards the surfaced text — with
+                    // an info detail the terminal becomes
+                    // "CODE: <detail>", the code (or the
+                    // preserved terminal's own code prefix, so
+                    // details never stack) as prefix.
+                    val code = when (name) {
+                        "CERT_VERIFY_FAIL", "TLS_VERSION_MIN",
+                        "CONNECTION_TIMEOUT", "NETWORK_UNREACHABLE" -> name
+                        "TUN_IFACE_CREATE" -> terminal ?: "TUN_ACQUIRE_FAILED"
+                        else -> terminal ?: "CONNECTION_FAILED"
+                    }
+                    terminal = if (info.isNotEmpty()) {
+                        "${code.substringBefore(':').trim()}: $info"
+                    } else {
+                        code
+                    }
                 }
                 name == "CONNECTED" -> {
                     terminal = null
@@ -1035,10 +1335,39 @@ class OpenVpnService : VpnService() {
          * A real request across the tunnel — the definition of
          * "connected". This app rides its own tunnel (header),
          * so a plain HTTPS request goes through it; the answer
-         * also names the exit. Three tries over ~20 s; none
-         * through ends the session with NO_DATA.
+         * also names the exit. Three tries over ~20 s.
+         *
+         * Build 2099 hardening (diagnosis cause 4): the proof
+         * used to be a single HTTPS GET to a single host and
+         * the core's byte counters were never consulted, so a
+         * tunnel carrying real traffic could be torn down as
+         * NO_DATA because that one request failed (its DNS,
+         * that exit's route to that host, a stalled TLS
+         * flight). Each attempt now tries two independent
+         * targets — the Cloudflare trace (which also names
+         * the exit) and Google's generate_204 — and ANY
+         * target proving traffic crosses verifies the
+         * session. The core's counters are snapshotted on
+         * entry; NO_DATA is declared only when every probe
+         * failed AND downBytes has not moved meaningfully
+         * by the end of the window (Build 2099, V2 — see the
+         * counter cross-check at the end of this function).
+         * A session whose counters moved past the threshold
+         * is verified, never torn down.
          */
         private fun verifyThroughTunnel(generation: Int) {
+            val upAtStart = OpenVpnCore.upBytes
+            val downAtStart = OpenVpnCore.downBytes
+            // Build 2099 (V2): the counter cross-check's
+            // baseline. It starts as the entry snapshot (the
+            // fallback if only one attempt's worth of window
+            // ever runs) and is re-snapshotted after the FIRST
+            // failed attempt below, so attempt 1's own
+            // through-tunnel DNS — downstream frames the
+            // probes themselves caused — no longer counts as
+            // evidence the data plane is alive.
+            var upCounterBaseline = upAtStart
+            var downCounterBaseline = downAtStart
             repeat(3) { attempt ->
                 if (stopped.get() || verifyGeneration.get() != generation) return
                 val exit = probeExit()
@@ -1048,6 +1377,7 @@ class OpenVpnService : VpnService() {
                     OpenVpnCore.exitCountry = exit.second
                     OpenVpnCore.exitCode = exit.third
                     OpenVpnCore.phase = "connected"
+                    OpenVpnCore.wasConnected = true
                     OpenVpnTrace.mark(this@OpenVpnService, "verified")
                     OpenVpnCore.log(
                         this@OpenVpnService,
@@ -1055,6 +1385,32 @@ class OpenVpnService : VpnService() {
                     )
                     updateNotification()
                     return
+                }
+                if (probeGenerate204()) {
+                    if (stopped.get() || verifyGeneration.get() != generation) return
+                    OpenVpnCore.phase = "connected"
+                    OpenVpnCore.wasConnected = true
+                    OpenVpnTrace.mark(
+                        this@OpenVpnService,
+                        "verified",
+                        "via=generate_204",
+                    )
+                    OpenVpnCore.log(
+                        this@OpenVpnService,
+                        "verified: traffic crossed " +
+                            "(generate_204 answered through the tunnel)",
+                    )
+                    updateNotification()
+                    return
+                }
+                // Build 2099 (V2): both probes just failed on
+                // the first attempt — re-snapshot the counters
+                // now, so everything the first attempt itself
+                // moved (its tunnel DNS above all) is excluded
+                // from the cross-check at the end of the window.
+                if (attempt == 0) {
+                    upCounterBaseline = OpenVpnCore.upBytes
+                    downCounterBaseline = OpenVpnCore.downBytes
                 }
                 if (attempt < 2) {
                     try {
@@ -1065,13 +1421,81 @@ class OpenVpnService : VpnService() {
                 }
             }
             if (stopped.get() || verifyGeneration.get() != generation) return
+            // Build 2099: the counter cross-check rides the
+            // same probe window (no extra wait). Downstream
+            // movement since the snapshot is the data plane
+            // proving itself even when both probe targets
+            // failed — verify instead of tearing down.
+            // Build 2099 (V2): the movement must exceed
+            // COUNTER_VERIFY_THRESHOLD_BYTES past the
+            // re-snapshot (or past the entry snapshot when
+            // that is the baseline): the probes' own DNS and
+            // other small downstream chatter grow downBytes
+            // by a few hundred bytes even on a path where
+            // real traffic blackholes, so any-growth was
+            // enough to fake-verify such a session.
+            val downNow = OpenVpnCore.downBytes
+            val downDelta = downNow - downCounterBaseline
+            if (downDelta > COUNTER_VERIFY_THRESHOLD_BYTES) {
+                OpenVpnCore.phase = "connected"
+                    OpenVpnCore.wasConnected = true
+                OpenVpnTrace.mark(this@OpenVpnService, "verified", "via=counters")
+                OpenVpnCore.log(
+                    this@OpenVpnService,
+                    "verified: probes failed but the core's counters " +
+                        "moved (down +$downDelta B past the " +
+                        "counter baseline, threshold " +
+                        "${COUNTER_VERIFY_THRESHOLD_BYTES} B, " +
+                        "up +${OpenVpnCore.upBytes - upCounterBaseline} B); " +
+                        "session kept — bytes are crossing even " +
+                        "though both probe targets failed",
+                )
+                updateNotification()
+                return
+            }
             terminal = "NO_DATA"
             OpenVpnCore.log(this@OpenVpnService, "failed: NO_DATA (handshake ok, no traffic)")
             handle.get().takeIf { it != 0L }?.let { runCatching { OpenVpnNative.stop(it) } }
         }
 
+        /**
+         * Build 2099: the second, independent probe target —
+         * true when Google's generate_204 answers HTTP 204
+         * through the tunnel. It names no exit (the
+         * Cloudflare trace remains the exit-naming probe);
+         * its job is only to prove traffic crosses, so one
+         * host's failure can no longer condemn a live tunnel.
+         */
+        private fun probeGenerate204(): Boolean {
+            try {
+                val conn = URL("https://www.google.com/generate_204")
+                    .openConnection() as HttpURLConnection
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.setRequestProperty("User-Agent", "RalysndEmber")
+                val ok = conn.responseCode == 204
+                conn.disconnect()
+                return ok
+            } catch (_: Exception) {
+                // No answer through the tunnel.
+            }
+            return false
+        }
+
         /** (ip, country name, country code) through the tunnel, or null. */
         private fun probeExit(): Triple<String, String, String>? {
+            // Build 2087 (analysis A5) — the former second attempt
+            // (http://ip-api.com/...) is REMOVED, named per the
+            // no-silent-removal rule: since build 2084 the app's
+            // network security config permits cleartext only for
+            // the two gstatic probe hosts, so the platform refused
+            // that request in-process every time, and ip-api.com
+            // offers no free HTTPS endpoint to switch it to. The
+            // HTTPS trace below yields the same ip + country
+            // code. (Build 2099: it is no longer the only probe
+            // target — probeGenerate204 is the second,
+            // independent one; the trace stays the exit-naming
+            // probe.)
             try {
                 val conn = URL("https://www.cloudflare.com/cdn-cgi/trace")
                     .openConnection() as HttpURLConnection
@@ -1088,21 +1512,6 @@ class OpenVpnService : VpnService() {
                     }
                 }
                 if (ip.isNotEmpty()) return Triple(ip, loc, loc)
-            } catch (_: Exception) {
-                // The fallback below gets its turn.
-            }
-            try {
-                val conn = URL("http://ip-api.com/json/?fields=status,query,country,countryCode")
-                    .openConnection() as HttpURLConnection
-                conn.connectTimeout = 6000
-                conn.readTimeout = 6000
-                val doc = JSONObject(conn.inputStream.bufferedReader().readText())
-                if (doc.optString("status") == "success") {
-                    val ip = doc.optString("query")
-                    if (ip.isNotEmpty()) {
-                        return Triple(ip, doc.optString("country"), doc.optString("countryCode"))
-                    }
-                }
             } catch (_: Exception) {
                 // No answer through the tunnel.
             }
@@ -1143,6 +1552,10 @@ class OpenVpnService : VpnService() {
         )
         val name = OpenVpnCore.profileName
         val text = when {
+            // Build 2125 (A25-04): the held state names
+            // itself on the notification.
+            killSwitchHeld ->
+                "OpenVPN · kill switch holding — traffic is blocked"
             running && OpenVpnCore.phase == "connected" && OpenVpnCore.exitCountry.isNotEmpty() ->
                 "OpenVPN · $name · ${OpenVpnCore.exitCountry}"
             running && OpenVpnCore.phase == "connected" -> "OpenVPN · $name"
@@ -1175,6 +1588,8 @@ class OpenVpnService : VpnService() {
         private const val EXTRA_USER = "user"
         private const val EXTRA_PASS = "pass"
         private const val EXTRA_NEEDS_CREDS = "needsCreds"
+        // Build 2125 (A25-04): the kill switch.
+        private const val EXTRA_KILL_SWITCH = "killSwitch"
 
         private const val CHANNEL = "openvpn_status"
         private const val NOTIFICATION_ID = 5
@@ -1182,6 +1597,12 @@ class OpenVpnService : VpnService() {
 
         /** Handshake plus the data proof on a slow network, and no longer. */
         private const val CONNECT_DEADLINE_MS = 75_000L
+
+        /** Build 2099 (V2): downstream growth past the
+         *  verify window's counter baseline that counts as
+         *  the data plane proving itself — more than any
+         *  plausible DNS chatter, less than one TLS flight. */
+        private const val COUNTER_VERIFY_THRESHOLD_BYTES = 1024L
         private const val STOP_GRACE_MS = 5_000L
 
         /** Protect failures in a row that end the session with
@@ -1196,6 +1617,29 @@ class OpenVpnService : VpnService() {
         var running = false
             private set
 
+        /**
+         * Build 2125 (audit A25-25 / P-04 remainder): whether
+         * the live session's TUN actually captured IPv6 (an
+         * IPv6 address was applied and ::/0 routed). Set by
+         * the TUN builder at establish, cleared when a new
+         * session's builder state resets. Published in the
+         * state map so the Dart side can journal/surface the
+         * uncovered family — up to 2124 a v4-only OpenVPN
+         * session leaked IPv6 silently, the last engine
+         * family with no surfacing (Xray journals its note
+         * since 2123, WireGuard since 2116).
+         */
+        @Volatile
+        var ipv6Captured = false
+
+        /** Build 2125 (audit A25-04): the kill-switch hold
+         *  is in place — a connected session ended
+         *  unexpectedly and its TUN is held as a blackhole
+         *  until the user disconnects or a fresh start
+         *  replaces it. */
+        @Volatile
+        var killSwitchHeld = false
+
         @Volatile
         var startedAtMs = 0L
             private set
@@ -1209,6 +1653,8 @@ class OpenVpnService : VpnService() {
             username: String,
             password: String,
             needsCreds: Boolean,
+            // Build 2125 (A25-04): the kill switch.
+            killSwitch: Boolean = false,
         ) {
             val intent = Intent(context, OpenVpnService::class.java).apply {
                 action = ACTION_START
@@ -1217,6 +1663,7 @@ class OpenVpnService : VpnService() {
                 putExtra(EXTRA_CONFIG, config)
                 putExtra(EXTRA_CRED_KEY, credKey)
                 putExtra(EXTRA_USER, username)
+                putExtra(EXTRA_KILL_SWITCH, killSwitch)
                 putExtra(EXTRA_PASS, password)
                 putExtra(EXTRA_NEEDS_CREDS, needsCreds)
             }

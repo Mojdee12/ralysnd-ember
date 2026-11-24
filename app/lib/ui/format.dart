@@ -40,13 +40,6 @@ String formatRate(int bytesPerSecond) {
 /// left-to-right isolate).
 String ltr(String s) => '\u2066$s\u2069';
 
-String formatDuration(AppLocalizations l, Duration d) {
-  if (d.isNegative) d = Duration.zero;
-  if (d.inDays > 0) return l.durationDays(d.inDays, d.inHours % 24);
-  if (d.inHours > 0) return l.durationHours(d.inHours, d.inMinutes % 60);
-  if (d.inMinutes > 0) return l.durationMinutes(d.inMinutes, d.inSeconds % 60);
-  return l.durationSeconds(d.inSeconds);
-}
 
 const _jalaliMonths = [
   'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', //

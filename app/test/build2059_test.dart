@@ -19,12 +19,18 @@ String _dart(String path) => _read('lib/$path');
 
 void main() {
   group('WG home name never overflows (audit §6 appearance low)', () {
+    // Build 2075 pin update: the title ternary grew the
+    // honest-peer branch (item 18 — "Tunnel up" when the peer
+    // has not answered); the invariant this group protects —
+    // the line ellipsises, never overflows — is unchanged and
+    // still pinned below.
     test('the Connected line ellipsises', () {
       final src = _dart('ui/ember/wireguard_pages.dart');
       expect(
         src,
         contains(
-          "? 'Connected: \${selected.displayName}'\n"
+          "? 'Tunnel up: \${selected.displayName}'\n"
+          "                              : 'Connected: \${selected.displayName}')\n"
           "                        : 'Not connected',\n"
           "                    style: Ember.heading,\n"
           "                    // Build 2059 (audit §6 appearance low): the name\n"
@@ -65,15 +71,20 @@ void main() {
   group('QR dialog title never overflows a long name', () {
     test('the QR dialog title ellipsises', () {
       final src = _dart('ui/ember/qr_pages.dart');
+      // Build 2092: the pin's literal indentation drifted when
+      // the dialog gained its OverlayGuard wrapper (the title
+      // sits one level deeper now). The invariant this pin
+      // protects — the title ellipsises at one line — is
+      // unchanged in the code.
       expect(
         src,
         contains(
           'title: Text(\n'
-          '        title,\n'
-          '        style: Ember.heading,\n'
-          '        overflow: TextOverflow.ellipsis,\n'
-          '        maxLines: 1,\n'
-          '      ),',
+          '          title,\n'
+          '          style: Ember.heading,\n'
+          '          overflow: TextOverflow.ellipsis,\n'
+          '          maxLines: 1,\n'
+          '        ),',
         ),
       );
     });
@@ -175,23 +186,42 @@ void main() {
 
   group('AWG v6 route only with a v6 address (audit §6 engine low)', () {
     test('the ::/0 route is gated on an assigned v6 address', () {
-      const path =
-          'android/app/src/main/kotlin/com/ralysnd/ember/XrayVpnService.kt';
-      final src = _read(path);
-      expect(src, contains('if (ip.contains(":")) hasV6 = true'));
-      expect(src, contains('if (ipv6 && hasV6) builder.addRoute("::", 0)'));
-      expect(src.contains('if (ipv6) builder.addRoute("::", 0)'), isFalse);
+      // Build 2100 (W-WG2, named reason): startAwgTunnel moved
+      // verbatim to AwgVpnService.kt (:awg process); the gating
+      // logic is unchanged, only its file moved.
+      // Build 2104: the service and its Builder are deleted —
+      // the gate now lives in two places, both pinned here:
+      // the Dart flag is addresses-only (wg_conf.dart's
+      // profileHasIpv6, build 2103 L2), and the Kotlin
+      // hand-off adds ::/0 to a route-less peer's AllowedIPs
+      // default only under that flag; a peer WITH AllowedIPs
+      // routes per its own list in the backend's TUN builder.
+      final wgConf = File('lib/xray/wg_conf.dart').readAsStringSync();
+      expect(
+        wgConf,
+        contains("return p.localAddress.split(',').any(v6Of);"),
+      );
+      final engine = _read(
+        'android/app/src/main/kotlin/com/ralysnd/ember/WgTunnelEngine.kt',
+      );
+      expect(engine, contains('if (ipv6) "::/0" else null'));
+      expect(engine, contains('allowedIPs.isNullOrBlank()'));
     });
   });
 
   group('WARP status title is a label, not a chip (build 2056)', () {
     test('the engine name renders as plain text', () {
       final src = _dart('ui/ember/aether_pages.dart');
+      // PIN UPDATED by build 2145 (composition rebuild):
+      // the status card's glass is retired; the engine
+      // name renders as the tracked label line of the
+      // open composition — still a plain Text label, not
+      // a chip — with the title-uppercase fallback kept.
       expect(
         src,
-        contains('the engine name is a\n              // label, not a chip'),
+        contains('Text(tracked, style: Ember.microLabelOrange)'),
       );
-      expect(src, contains('title.toUpperCase(),'));
+      expect(src, contains(r"'CLOUDFLARE · ${title.toUpperCase()}'"));
     });
   });
 }

@@ -20,9 +20,39 @@ import '../../l10n/app_localizations.dart';
 import '../../openvpn/openvpn_controller.dart';
 import '../../openvpn/openvpn_models.dart';
 import '../../openvpn/openvpn_platform.dart';
+import 'ember_dialogs.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
+
+/// Build 2145 (pro6 composition rebuild): the flat hairline
+/// panel that replaces MapGlass on the recomposed OpenVPN
+/// surfaces — a solid card fill and a 1 px hairline edge, no
+/// blur, no luminous ring (the sample's document panel).
+class _HairlinePanel extends StatelessWidget {
+  const _HairlinePanel({
+    required this.child,
+    required this.padding,
+    this.borderColor,
+  });
+
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+  final Color? borderColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: MapUi.card,
+        border: Border.all(color: borderColor ?? MapUi.line),
+        borderRadius: MapUi.panelBorder,
+      ),
+      padding: padding,
+      child: child,
+    );
+  }
+}
 
 /// The session's traffic counters with real arrow icons
 /// (build 2026: the 2025 pages used ↓/↑ characters, which the
@@ -100,38 +130,46 @@ class _CredentialsDialogState extends State<_CredentialsDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.profileName, style: Ember.heading),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _user,
-            style: Ember.body,
-            autofillHints: const [AutofillHints.username],
-            decoration: emberField(context, 'Username / email'),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _pass,
-            style: Ember.body,
-            obscureText: true,
-            autofillHints: const [AutofillHints.password],
-            decoration: emberField(context, 'Password'),
-          ),
-          if (!widget.forSaveOnly) ...[
-            const SizedBox(height: 6),
-            CheckboxListTile(
-              value: _save,
-              onChanged: (v) => setState(() => _save = v ?? false),
-              title: Text(
-                'Save on this device (keystore)',
-                style: Ember.caption,
-              ),
-              controlAffinity: ListTileControlAffinity.leading,
-              contentPadding: EdgeInsets.zero,
-              dense: true,
+      // Build 2092 (item 31): the content scrolls (the
+      // keyboard no longer crushes it) and the save choice
+      // is the app's MapToggle, not a stock checkbox tile.
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _user,
+              style: Ember.body,
+              autofillHints: const [AutofillHints.username],
+              decoration: emberField(context, 'Username / email'),
             ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _pass,
+              style: Ember.body,
+              obscureText: true,
+              autofillHints: const [AutofillHints.password],
+              decoration: emberField(context, 'Password'),
+            ),
+            if (!widget.forSaveOnly) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Save on this device (keystore)',
+                      style: Ember.caption,
+                    ),
+                  ),
+                  MapToggle(
+                    value: _save,
+                    onChanged: (v) => setState(() => _save = v),
+                  ),
+                ],
+              ),
+            ],
           ],
-        ],
+        ),
       ),
       actions: [
         TextButton(
@@ -151,12 +189,27 @@ class _CredentialsDialogState extends State<_CredentialsDialog> {
   }
 }
 
+/// Whether a connect failure is the server rejecting the
+/// credentials themselves (build 2095, whole-app journey
+/// audit #9): the core's terminal AUTH_FAILED, or a sentence
+/// saying the same.
+bool isOvpnAuthFailure(String message) =>
+    message.contains('AUTH_FAILED') ||
+    message.toLowerCase().contains('authentication failed') ||
+    message.toLowerCase().contains('auth failed');
+
 /// Connects [controller]'s selected profile, asking for
 /// credentials when the controller says they're required —
 /// or when a saved entry exists but cannot be read on this
 /// device (build 2027: 'credentials-unreadable'; entering
 /// them again replaces the entry). Shared by the servers
 /// view's rows and the shell's toggle.
+///
+/// Build 2095 (audit #9): when the server REJECTS a saved
+/// pair (AUTH_FAILED), the flow offers to re-enter the
+/// credentials instead of failing identically forever — the
+/// saved pair is deleted and the normal prompt path runs,
+/// so the new pair replaces it in the vault.
 Future<void> connectOpenVpnWithPrompt(
   BuildContext context,
   OpenVpnController controller,
@@ -164,6 +217,27 @@ Future<void> connectOpenVpnWithPrompt(
   try {
     await controller.connect();
   } on StateError catch (e) {
+    if (isOvpnAuthFailure(e.message) && context.mounted) {
+      final p = controller.selected;
+      if (p != null &&
+          p.needsAuth &&
+          !p.hasInlineCredentials &&
+          p.credKey.isNotEmpty) {
+        final reenter = await showEmberConfirm(
+          context,
+          title: 'The server rejected the saved password',
+          message:
+              'The saved credentials for ${p.name} did not work. '
+              'Re-enter them? The saved pair is replaced.',
+          confirmLabel: 'Re-enter',
+        );
+        if (reenter == true && context.mounted) {
+          await OpenVpnPlatform.deleteCredentials(p.credKey);
+          await connectOpenVpnWithPrompt(context, controller);
+        }
+        return;
+      }
+    }
     if ((e.message != 'credentials-required' &&
             e.message != 'credentials-unreadable') ||
         !context.mounted) {
@@ -215,10 +289,12 @@ Future<void> connectOpenVpnWithPrompt(
   }
 }
 
-/// The OpenVPN home: a status card floating over the map,
-/// the selected-profile card under it, the exit card when
-/// connected, and — loudly — the failure card with the log
-/// tail when a connect went wrong.
+/// The OpenVPN home: the centred hero composition (build
+/// 2145, pro6 sample) — the hero word and profile-count line
+/// over the map, the selected profile as a document panel,
+/// the status word at hero scale under it, and — loudly —
+/// the failure card with the log tail when a connect went
+/// wrong.
 class OpenVpnHomePage extends StatelessWidget {
   const OpenVpnHomePage({super.key, required this.openvpn, this.onOpenServers});
 
@@ -238,126 +314,251 @@ class OpenVpnHomePage extends StatelessWidget {
     final on = state.connected;
     final error = openvpn.lastError;
     final selected = openvpn.selected;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      children: [
-        // Build 2074 (audit item 3): the top spacer is a capped
-        // fraction of the viewport height, not a fixed 150dp.
-        SizedBox(
-          height: (MediaQuery.sizeOf(context).height * 0.18).clamp(0.0, 150.0),
+    // Build 2145 (pro6 composition rebuild): the document
+    // panel's mono meta line — protocol · port · cipher,
+    // every part from the selected profile's own data (the
+    // cipher via ovpnCipherLabel, as the Servers rows read
+    // it); a part the profile does not carry is absent.
+    final selectedRemote = selected?.firstRemote;
+    final selectedCipher = selected == null
+        ? null
+        : ovpnCipherLabel(selected);
+    final selectedMeta = selected == null
+        ? ''
+        : [
+            selected.proto.toUpperCase(),
+            if (selectedRemote != null) latDigits(selectedRemote.port),
+            if (selectedCipher != null) selectedCipher.toUpperCase(),
+          ].join(' · ');
+    // Build 2116 (AP-05): LayoutBuilder page height, as on
+    // the V2Ray/Psiphon homes — not the device height.
+    return LayoutBuilder(
+      builder: (context, constraints) => ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        children: [
+          // Build 2074 (audit item 3): the top spacer is a capped
+          // fraction of the viewport height, not a fixed 150dp.
+          SizedBox(
+            // Build 2092 (items 39/59): the shared home top
+            // gap (was this page's own 0.18/150 variant).
+            height: emberHomeTopGap(constraints.maxHeight),
+          ),
+        // Build 2145 (pro6 composition rebuild): the glass
+        // status card leaves — the sample's centred hero
+        // composition: the 'OpenVPN' hero word and the real
+        // profile-count line centred over the map, the
+        // selected profile as a document panel under them,
+        // and the status area below carrying the real status
+        // word at hero scale where the sample puts its
+        // session numeral (no session count exists in the
+        // app — that numeral is a recorded gap, not
+        // invented). The AUTH/CERT rows of the sample's
+        // panel are likewise a gap: the profile object
+        // carries no cert verdict, and its saved-credential
+        // state lives in the async vault, not on the
+        // profile — both rows are omitted, not faked.
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text('OpenVPN', style: Ember.hero, textAlign: TextAlign.center),
+            const SizedBox(height: 6),
+            Text(
+              // The settings page's own count wording.
+              '${latDigits(openvpn.userProfiles.length)} '
+              'imported profile(s)',
+              style: Ember.caption,
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
-        MapGlass(
-          // Build 2026 (Gemini v6 audit): no more 0.8-width
-          // wrapper — the status card and the profile card
-          // below share the full width and radius; the
-          // disconnected card carries the diagonal glass
-          // rim (luminous), the connected one the orange rim.
-          rim: on,
-          luminous: !on,
-          borderColor: on ? Ember.orange.withValues(alpha: 0.55) : null,
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 9,
-                    height: 9,
-                    decoration: BoxDecoration(
-                      color: on
-                          ? Ember.green
-                          : state.running
-                          ? Ember.amber
-                          : Ember.faint,
-                      shape: BoxShape.circle,
+        if (selected != null) ...[
+          const SizedBox(height: 16),
+          _HairlinePanel(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    // The sample's document row: the orange
+                    // file icon, as the Servers rows wear it.
+                    const Icon(
+                      Icons.description_outlined,
+                      size: 24,
+                      color: Ember.orange,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      on ? 'Connected' : state.phaseLabel,
-                      style: Ember.heading,
-                      overflow: TextOverflow.ellipsis,
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            selected.name,
+                            style: Ember.heading.copyWith(
+                              fontSize: Ember.fontTitle,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            selectedMeta,
+                            style: Ember.caption.copyWith(
+                              fontFamily: 'monospace',
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                // The running session's traffic, formerly the
+                // separate running-profile card's line — same
+                // condition, folded into the document panel.
+                if (state.running &&
+                    (state.upBytes > 0 || state.downBytes > 0)) ...[
+                  const SizedBox(height: 8),
+                  ovpnTrafficLine(state.downBytes, state.upBytes),
+                ],
+                // The country picker: the current selection,
+                // one tap from changing it (2026 selection
+                // contract — see the field's doc).
+                if (!state.running) ...[
+                  const SizedBox(height: 12),
+                  InkWell(
+                    onTap: onOpenServers,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Padding(
+                      // Build 2092 (item 32): the row's tap
+                      // target reaches the 48 dp floor (was
+                      // ~28 dp: 4 dp padding around a 20 dp
+                      // icon).
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.vpn_key_rounded,
+                            size: 20,
+                            color: MapUi.dim,
+                          ),
+                          const SizedBox(width: 9),
+                          Expanded(
+                            child: Text(
+                              selected.name,
+                              style: Ember.body,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Text(
+                            'Change',
+                            // 2027 (v7 audit): the caption grey
+                            // was too faint over the map —
+                            // brightened to the audit's steel
+                            // label tone (MapUi.steelLabel).
+                            style: Ember.caption.copyWith(
+                              color: MapUi.steelLabel,
+                            ),
+                          ),
+                          const Icon(
+                            Icons.chevron_right_rounded,
+                            size: 18,
+                            color: MapUi.faint,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                on && state.exitLine.isNotEmpty
-                    ? 'Exit: ${state.exitLine}'
-                    : selected != null
-                    ? 'Profile: ${selected.name}'
-                    : 'No profile selected.',
-                style: Ember.body,
-              ),
-              if (!state.available) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'The OpenVPN core is not included in this build '
-                  '(it ships for arm64 phones).',
-                  style: Ember.caption,
-                ),
               ],
-              // The country picker: the current selection,
-              // one tap from changing it (2026 selection
-              // contract — see the field's doc).
-              if (selected != null && !state.running) ...[
-                const SizedBox(height: 12),
-                InkWell(
-                  onTap: onOpenServers,
-                  borderRadius: BorderRadius.circular(10),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.vpn_key_rounded,
-                          size: 20,
-                          color: MapUi.dim,
-                        ),
-                        const SizedBox(width: 9),
-                        Expanded(
-                          child: Text(
-                            selected.name,
-                            style: Ember.body,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        Text(
-                          'Change',
-                          // 2027 (v7 audit): the caption grey
-                          // was too faint over the map —
-                          // brightened to the audit's #9BB0C7.
-                          style: Ember.caption.copyWith(
-                            color: const Color(0xFF9BB0C7),
-                          ),
-                        ),
-                        const Icon(
-                          Icons.chevron_right_rounded,
-                          size: 18,
-                          color: MapUi.faint,
-                        ),
-                      ],
-                    ),
-                  ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
+        // The status area: the status dot and the real
+        // status word at hero scale, centred — the old status
+        // card's first row, re-laid at the sample's numeral
+        // position.
+        Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color: on
+                      ? Ember.green
+                      : state.running
+                      ? Ember.amber
+                      : Ember.faint,
+                  shape: BoxShape.circle,
                 ),
-              ],
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  on ? 'Connected' : state.phaseLabel,
+                  style: Ember.hero,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
         ),
+        const SizedBox(height: 8),
+        Text(
+          on && state.exitLine.isNotEmpty
+              ? 'Exit: ${state.exitLine}'
+              : selected != null
+              ? 'Profile: ${selected.name}'
+              : 'No profile selected.',
+          style: Ember.body,
+          textAlign: TextAlign.center,
+        ),
+        // Build 2125 (audit A25-25 / P-04 remainder):
+        // a v4-only session's IPv6 rides direct — said
+        // on the page, not left silent.
+        if (on && !state.ipv6Captured) ...[
+          const SizedBox(height: 6),
+          Text(
+            'IPv6 is not captured by this session — IPv6 '
+            'traffic stays outside the tunnel and keeps '
+            'your current IP address.',
+            style: Ember.caption,
+          ),
+        ],
+        // Build 2125 (audit A25-04): the kill-switch
+        // hold names itself — the session is down,
+        // but its TUN is held so traffic is blocked,
+        // never direct.
+        if (state.killSwitchHeld) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Kill switch holding: the session dropped, '
+            'and its tunnel is being held so traffic '
+            'stays blocked instead of going direct. '
+            'Reconnect or disconnect to clear it.',
+            style: Ember.caption,
+          ),
+        ],
+        if (!state.available) ...[
+          const SizedBox(height: 8),
+          Text(
+            'The OpenVPN core is not included in this build '
+            '(it ships for arm64 phones).',
+            style: Ember.caption,
+          ),
+        ],
         // Crash visibility (2026): a previous session that
         // ended without a clean stop names its last stage —
         // a silent death is no longer possible.
         if (!state.running &&
             (state.lastUnclean || state.lastExitReason.isNotEmpty)) ...[
           const SizedBox(height: 12),
-          MapGlass(
-            // 2027 (v7 audit): the diagnostics card wears the
-            // ember-tinted border so it reads as a warning
-            // surface, not another content card.
-            borderColor: const Color(0x55FF8533),
+          // Build 2145: flat hairline panel (was MapGlass);
+          // the ember-tinted border that marks it as a
+          // warning surface (2027 v7 audit) is kept.
+          _HairlinePanel(
+            borderColor: Ember.orange.withValues(alpha: 0.33),
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -410,7 +611,9 @@ class OpenVpnHomePage extends StatelessWidget {
         ],
         if (error != null && !state.running) ...[
           const SizedBox(height: 12),
-          MapGlass(
+          // Build 2145: flat hairline panel (was MapGlass),
+          // contents unchanged.
+          _HairlinePanel(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -461,7 +664,12 @@ class OpenVpnHomePage extends StatelessWidget {
         // view.
         if (!state.running) ...[
           const SizedBox(height: 12),
-          MapGlass(
+          // Build 2145: flat hairline panel (was MapGlass);
+          // the import actions take the sample's pairing —
+          // the file import as the flat pill, the paste
+          // import as an orange TEXT action, same labels,
+          // same callbacks, in place.
+          _HairlinePanel(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -482,14 +690,23 @@ class OpenVpnHomePage extends StatelessWidget {
                     MapActionPill(
                       icon: Icons.folder_open_rounded,
                       label: 'Import file',
+                      // Build 2144 (pro6 reskin): the import
+                      // action wears the sample's orange.
+                      primary: true,
                       onTap: () =>
                           unawaited(importOpenVpnFile(context, openvpn)),
                     ),
-                    MapActionPill(
-                      icon: Icons.content_paste_rounded,
-                      label: 'Import paste',
-                      onTap: () =>
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                      ),
+                      onPressed: () =>
                           unawaited(importOpenVpnPaste(context, openvpn)),
+                      child: Text(
+                        'Import paste',
+                        style: Ember.heading.copyWith(color: Ember.orange),
+                      ),
                     ),
                   ],
                 ),
@@ -497,32 +714,51 @@ class OpenVpnHomePage extends StatelessWidget {
             ),
           ),
         ],
-        if (state.running && selected != null) ...[
-          const SizedBox(height: 12),
-          MapGlass(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(selected.name, style: Ember.heading),
-                const SizedBox(height: 8),
-                if (selected.firstRemote != null)
-                  Text(
-                    '${selected.firstRemote!.host}:${selected.firstRemote!.port}'
-                    ' · ${selected.proto.toUpperCase()}',
-                    style: Ember.body,
-                  ),
-                if (state.upBytes > 0 || state.downBytes > 0) ...[
-                  const SizedBox(height: 6),
-                  ovpnTrafficLine(state.downBytes, state.upBytes),
-                ],
-              ],
-            ),
-          ),
-        ],
+        // Build 2145: the separate running-profile card is
+        // gone — the document panel above carries the
+        // selected profile in every state, traffic line
+        // included (same conditions as the old card's).
       ],
+      ),
     );
   }
+}
+
+/// Renames one profile (build 2095, whole-app journey
+/// audit #34): a form dialog over the controller's
+/// renameProfile — id and credKey never change.
+Future<void> _renameProfileDialog(
+  BuildContext context,
+  OpenVpnController controller,
+  OvpnProfile profile,
+) async {
+  final controllerField = TextEditingController(text: profile.name);
+  final name = await showEmberFormDialog<String>(
+    context,
+    title: 'Rename profile',
+    content: TextField(
+      controller: controllerField,
+      autofocus: true,
+      style: Ember.body,
+      decoration: emberField(context, 'Profile name'),
+      onSubmitted: (v) => Navigator.of(context).pop(v),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(controllerField.text),
+        child: const Text('Rename'),
+      ),
+    ],
+  );
+  controllerField.dispose();
+  if (name == null || name.trim().isEmpty || name.trim() == profile.name) {
+    return;
+  }
+  await controller.renameProfile(profile.id, name);
 }
 
 /// Manages one profile's saved credentials (build 2028):
@@ -606,11 +842,15 @@ Future<void> showProfileCredentialsSheet(
                   },
                 ),
                 if (status != 'none')
-                  OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0x5952759C)),
-                    ),
-                    onPressed: () async {
+                  // Build 2082 (verification V-2): the last stock
+                  // Material button on an engine page — a
+                  // MapActionPill like the Import pills above, so
+                  // the A-H3 one-button-language gate holds for
+                  // this sheet too.
+                  MapActionPill(
+                    icon: Icons.delete_outline_rounded,
+                    label: 'Remove saved',
+                    onTap: () => unawaited(() async {
                       await OpenVpnPlatform.deleteCredentials(profile.credKey);
                       if (!context.mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -622,8 +862,7 @@ Future<void> showProfileCredentialsSheet(
                       );
                       status = 'none';
                       setState(() {});
-                    },
-                    child: const Text('Remove saved'),
+                    }()),
                   ),
               ],
             ),
@@ -652,6 +891,17 @@ String ovpnImportErrorText(StateError e) {
   return 'that profile could not be imported';
 }
 
+/// Plain sentence for an .ovpn intent-intake failure (build
+/// 2085, audit F-H15) — the same sentences the file picker
+/// shows for the same failures, so "Open with Ember" and the
+/// in-app import never disagree about what went wrong.
+String ovpnIntakeErrorText(String error) {
+  if (error == 'file-too-large') {
+    return 'That file is too large to import (256 KB max)';
+  }
+  return 'Could not read that file';
+}
+
 /// Imports profile [text] under [name] through the controller
 /// and reports the outcome — the one import path every
 /// OpenVPN surface shares (build 2050).
@@ -669,7 +919,14 @@ Future<void> importOpenVpnText(
   } on StateError catch (e) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Import failed: ${ovpnImportErrorText(e)}')),
+      // Build 2092 (item 11): a plain sentence, not a
+      // fragment after a colon.
+      SnackBar(
+        content: Text(
+          'Import failed — ${ovpnImportErrorText(e)[0].toUpperCase()}'
+          '${ovpnImportErrorText(e).substring(1)}',
+        ),
+      ),
     );
   }
 }
@@ -702,7 +959,14 @@ Future<void> importOpenVpnFile(
     }
     return;
   }
-  if (picked == null || !context.mounted) return;
+  if (picked == null) return;
+  // Build 2097 (IMP-2): no mounted check here — the pick
+  // completing IS the user's intent, and importOpenVpnText
+  // already adds through the controller before it gates
+  // its messages on the context. Build 2096 discarded a
+  // completed pick wholesale when the page had been
+  // disposed mid-pick (the re-lock window), which read as
+  // "file import does nothing at all".
   await importOpenVpnText(
     context,
     openvpn,
@@ -751,11 +1015,15 @@ class _PasteProfileDialogState extends State<_PasteProfileDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text('Paste a .ovpn profile', style: Ember.heading),
-      content: TextField(
-        controller: _controller,
-        style: Ember.caption.copyWith(fontFamily: 'monospace'),
-        maxLines: 12,
-        decoration: emberField(context, 'client\ndev tun\nremote \u2026'),
+      // Build 2092 (item 31): scrollable like the other
+      // form dialogs.
+      content: SingleChildScrollView(
+        child: TextField(
+          controller: _controller,
+          style: Ember.caption.copyWith(fontFamily: 'monospace'),
+          maxLines: 12,
+          decoration: emberField(context, 'client\ndev tun\nremote \u2026'),
+        ),
       ),
       actions: [
         TextButton(
@@ -793,148 +1061,213 @@ class _OpenVpnServersViewState extends State<OpenVpnServersView> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    return ListenableBuilder(
-      listenable: openvpn,
-      builder: (context, _) {
-        final shown = openvpn.userProfiles.where((p) {
-          if (_query.isEmpty) return true;
-          return p.name.toLowerCase().contains(_query.toLowerCase());
-        }).toList();
-        // Build 2055 (audit A-H4): slivers — the header panel
-        // on its own, the profile rows lazily built below it.
-        // The old form put every row in one giant blurred
-        // MapGlass, all built eagerly.
-        return CustomScrollView(
-          slivers: [
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                child: MapGlass(
-                  luminous: true,
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      MapPanelHeader(
-                        title: 'OpenVPN profiles',
-                        onClose: widget.onClose,
-                        actions: [
-                          if (openvpn.pinging)
-                            const SizedBox(
-                              width: 19,
-                              height: 19,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Ember.orange,
+    // Build 2095 (owner-reported appearance fix): the same
+    // container-level frosted backing as the V2Ray list —
+    // these profile rows (MapGlass blur: false) rendered on
+    // the bare dotted map.
+    return MapListFrost(
+      child: ListenableBuilder(
+        listenable: openvpn,
+        builder: (context, _) {
+          final shown = openvpn.userProfiles.where((p) {
+            if (_query.isEmpty) return true;
+            return p.name.toLowerCase().contains(_query.toLowerCase());
+          }).toList();
+          // Build 2055 (audit A-H4): slivers — the header panel
+          // on its own, the profile rows lazily built below it.
+          // The old form put every row in one giant blurred
+          // MapGlass, all built eagerly.
+          return CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  // Build 2145: the header panel goes flat —
+                  // hairline panel, contents unchanged.
+                  child: _HairlinePanel(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        MapPanelHeader(
+                          title: 'OpenVPN profiles',
+                          onClose: widget.onClose,
+                          actions: [
+                            if (openvpn.pinging)
+                              const SizedBox(
+                                width: 19,
+                                height: 19,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Ember.orange,
+                                ),
+                              )
+                            else
+                              MapGhostButton(
+                                icon: Icons.bolt_rounded,
+                                label: l.pingAll,
+                                onTap: () => unawaited(openvpn.pingAll()),
                               ),
-                            )
-                          else
-                            MapGhostButton(
-                              icon: Icons.bolt_rounded,
-                              label: l.pingAll,
-                              onTap: () => unawaited(openvpn.pingAll()),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Your own .ovpn profiles — import one, tap to '
-                        'select, connect from Home. Long-press a '
-                        'profile to manage its saved credentials.',
-                        style: Ember.caption.copyWith(fontSize: 10.5),
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: [
-                          MapActionPill(
-                            icon: Icons.folder_open_rounded,
-                            label: 'Import file',
-                            onTap: _importFile,
-                          ),
-                          MapActionPill(
-                            icon: Icons.content_paste_rounded,
-                            label: 'Import paste',
-                            onTap: _importPaste,
-                          ),
-                        ],
-                      ),
-                      if (openvpn.userProfiles.length > 1) ...[
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Your own .ovpn profiles — import one, tap to '
+                          'select, connect from Home. Long-press a '
+                          'profile to manage its saved credentials.',
+                          // Build 2138 (V-06): was caption at
+                          // 10.5 sp — caption itself is the
+                          // micro step now, no override needed.
+                          style: Ember.caption,
+                        ),
                         const SizedBox(height: 12),
-                        TextField(
-                          onChanged: (v) => setState(() => _query = v),
-                          style: Ember.body,
-                          decoration: emberField(
-                            context,
-                            'Search profiles',
-                            prefix: const Icon(
-                              Icons.search_rounded,
-                              color: Ember.faint,
-                              size: 20,
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            MapActionPill(
+                              icon: Icons.folder_open_rounded,
+                              label: 'Import file',
+                              // Build 2144 (pro6 reskin): the
+                              // import action wears the
+                              // sample's orange.
+                              primary: true,
+                              onTap: _importFile,
+                            ),
+                            // Build 2145: the paste import is
+                            // the sample's orange TEXT action —
+                            // same label, same callback, in
+                            // place beside the flat pill.
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                minimumSize: const Size(0, 48),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                              ),
+                              onPressed: _importPaste,
+                              child: Text(
+                                'Import paste',
+                                style: Ember.heading.copyWith(
+                                  color: Ember.orange,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (openvpn.userProfiles.length > 1) ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            onChanged: (v) => setState(() => _query = v),
+                            style: Ember.body,
+                            decoration: emberField(
+                              context,
+                              'Search profiles',
+                              prefix: const Icon(
+                                Icons.search_rounded,
+                                color: Ember.faint,
+                                size: 20,
+                              ),
                             ),
                           ),
-                        ),
+                        ],
+                        const SizedBox(height: 6),
+                        if (openvpn.userProfiles.isEmpty)
+                          // Build 2116 (AP-19): the shared
+                          // empty state, like the other lists.
+                          const EmberEmpty(
+                            icon: Icons.vpn_key_outlined,
+                            text: 'No profiles yet — import a .ovpn '
+                                'file to get started.',
+                          )
+                        else if (shown.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: Text(
+                              'No profile matches the search.',
+                              style: Ember.body,
+                            ),
+                          ),
                       ],
-                      const SizedBox(height: 6),
-                      if (openvpn.userProfiles.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 10),
-                          child: Text(
-                            'No profiles yet — import a .ovpn file to '
-                            'get started.',
-                            style: Ember.body,
-                          ),
-                        )
-                      else if (shown.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 10),
-                          child: Text(
-                            'No profile matches the search.',
-                            style: Ember.body,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            if (shown.isNotEmpty)
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, i) => _ProfileRow(
-                      profile: shown[i],
-                      selected: openvpn.selectedId == shown[i].id,
-                      ping: openvpn.pings[shown[i].id],
-                      divider:
-                          i + 1 < shown.length &&
-                          openvpn.selectedId != shown[i].id &&
-                          openvpn.selectedId != shown[i + 1].id,
-                      onTap: () => openvpn.select(shown[i].id),
-                      onDelete: () => openvpn.deleteProfile(shown[i].id),
-                      onPing: () => unawaited(openvpn.pingProfile(shown[i])),
-                      onLongPress:
-                          shown[i].needsAuth && !shown[i].hasInlineCredentials
-                          ? () => unawaited(
-                              showProfileCredentialsSheet(
-                                context,
-                                openvpn,
-                                shown[i],
-                              ),
-                            )
-                          : null,
                     ),
-                    childCount: shown.length,
                   ),
                 ),
               ),
-          ],
-        );
-      },
+              if (shown.isNotEmpty)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, i) => _ProfileRow(
+                        profile: shown[i],
+                        selected: openvpn.selectedId == shown[i].id,
+                        ping: openvpn.pings[shown[i].id],
+                        divider:
+                            i + 1 < shown.length &&
+                            openvpn.selectedId != shown[i].id &&
+                            openvpn.selectedId != shown[i + 1].id,
+                        onTap: () => openvpn.select(shown[i].id),
+                        // Build 2092 (item 7): the row delete
+                        // confirms first, naming the profile —
+                        // it fired on one tap before.
+                        onDelete: () => unawaited(
+                          _confirmDeleteProfile(context, openvpn, shown[i]),
+                        ),
+                        onPing: () => unawaited(openvpn.pingProfile(shown[i])),
+                        onLongPress:
+                            shown[i].needsAuth && !shown[i].hasInlineCredentials
+                            ? () => unawaited(
+                                showProfileCredentialsSheet(
+                                  context,
+                                  openvpn,
+                                  shown[i],
+                                ),
+                              )
+                            : null,
+                        onCredentials:
+                            shown[i].needsAuth && !shown[i].hasInlineCredentials
+                            ? () => unawaited(
+                                showProfileCredentialsSheet(
+                                  context,
+                                  openvpn,
+                                  shown[i],
+                                ),
+                              )
+                            : null,
+                        onRename: () => unawaited(
+                          _renameProfileDialog(context, openvpn, shown[i]),
+                        ),
+                      ),
+                      childCount: shown.length,
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
     );
   }
+}
+
+/// The cipher a profile declares, read from its own config
+/// text (build 2144, pro6 reskin): the `cipher` line's value,
+/// else the first entry of `data-ciphers` — the sample's
+/// document-row micro-line shows it beside protocol and port.
+/// Null when the profile declares neither (the core's default
+/// then applies, and the row simply omits it).
+String? ovpnCipherLabel(OvpnProfile profile) {
+  String? dataCipher;
+  for (final raw in profile.config.split('\n')) {
+    final parts = raw.trim().split(RegExp(r'\s+'));
+    if (parts.length < 2) continue;
+    final head = parts.first.toLowerCase();
+    if (head == 'cipher') return parts[1];
+    if (head == 'data-ciphers' && dataCipher == null) {
+      dataCipher = parts[1].split(':').first;
+    }
+  }
+  return dataCipher;
 }
 
 /// One selectable profile row (an imported profile), in the
@@ -949,6 +1282,8 @@ class _ProfileRow extends StatelessWidget {
     this.onDelete,
     this.onPing,
     this.onLongPress,
+    this.onCredentials,
+    this.onRename,
     this.divider = false,
   });
 
@@ -959,6 +1294,14 @@ class _ProfileRow extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onPing;
   final VoidCallback? onLongPress;
+
+  /// Build 2095 (whole-app journey audit #51): the
+  /// credentials manager was reachable ONLY by long-press —
+  /// a visible button opens the same sheet.
+  final VoidCallback? onCredentials;
+
+  /// Build 2095 (whole-app journey audit #34): rename.
+  final VoidCallback? onRename;
 
   /// A 1px hairline under this row (between unselected rows).
   final bool divider;
@@ -974,8 +1317,15 @@ class _ProfileRow extends StatelessWidget {
     // the map as a tint/hairline InkWell.
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: MapGlass(
-        blur: false,
+      // Build 2145: the row's glass leaves — a flat hairline
+      // container (solid fill, hairline edge) carries the
+      // same InkWell, selection treatment and actions.
+      child: Container(
+        decoration: BoxDecoration(
+          color: MapUi.card,
+          border: Border.all(color: MapUi.line),
+          borderRadius: MapUi.panelBorder,
+        ),
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         child: InkWell(
           onTap: onTap,
@@ -997,7 +1347,10 @@ class _ProfileRow extends StatelessWidget {
                 : divider
                 ? const BoxDecoration(
                     border: Border(
-                      bottom: BorderSide(color: Color(0x2252759C), width: 1),
+                      // Build 2144: the blue-tinted hairline
+                      // literal is neutralised to the palette's
+                      // hairline token.
+                      bottom: BorderSide(color: MapUi.line, width: 1),
                     ),
                   )
                 : null,
@@ -1008,10 +1361,13 @@ class _ProfileRow extends StatelessWidget {
                 children: [
                   Row(
                     children: [
+                      // Build 2144 (pro6 reskin): the profile
+                      // reads as a document — the sample's
+                      // orange file icon.
                       const Icon(
-                        Icons.vpn_key_rounded,
+                        Icons.description_outlined,
                         size: 24,
-                        color: MapUi.dim,
+                        color: Ember.orange,
                       ),
                       const SizedBox(width: 11),
                       Expanded(
@@ -1020,15 +1376,23 @@ class _ProfileRow extends StatelessWidget {
                           children: [
                             Text(
                               primary,
-                              style: Ember.heading.copyWith(fontSize: 14.5),
+                              style: Ember.heading.copyWith(fontSize: Ember.fontTitle),
                               overflow: TextOverflow.ellipsis,
                             ),
                             Text(
+                              // Build 2144 (pro6 reskin): the
+                              // mono micro-line — protocol, port
+                              // and the cipher the profile itself
+                              // declares, from its own data.
                               remote != null
-                                  ? '${remote.host}:${remote.port}'
+                                  ? '${remote.host}:${latDigits(remote.port)}'
                                         ' · ${p.proto.toUpperCase()}'
-                                  : p.proto.toUpperCase(),
-                              style: Ember.caption,
+                                        '${ovpnCipherLabel(p) == null ? '' : ' · ${ovpnCipherLabel(p)!.toUpperCase()}'}'
+                                  : '${p.proto.toUpperCase()}'
+                                        '${ovpnCipherLabel(p) == null ? '' : ' · ${ovpnCipherLabel(p)!.toUpperCase()}'}',
+                              style: Ember.caption.copyWith(
+                                fontFamily: 'monospace',
+                              ),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ],
@@ -1038,7 +1402,7 @@ class _ProfileRow extends StatelessWidget {
                         Text(
                           '${latDigits(ping!.ms)} ms',
                           style: TextStyle(
-                            fontSize: 13,
+                            fontSize: Ember.fontBody,
                             fontWeight: FontWeight.w700,
                             color: mapPingColor(ping!.ms),
                           ),
@@ -1074,6 +1438,26 @@ class _ProfileRow extends StatelessWidget {
                           ),
                         ),
                       ],
+                      if (onCredentials != null)
+                        IconButton(
+                          onPressed: onCredentials,
+                          icon: const Icon(
+                            Icons.key_rounded,
+                            size: 19,
+                            color: MapUi.dim,
+                          ),
+                          tooltip: 'Saved credentials',
+                        ),
+                      if (onRename != null)
+                        IconButton(
+                          onPressed: onRename,
+                          icon: const Icon(
+                            Icons.edit_rounded,
+                            size: 19,
+                            color: MapUi.dim,
+                          ),
+                          tooltip: 'Rename profile',
+                        ),
                       if (onDelete != null)
                         IconButton(
                           onPressed: onDelete,
@@ -1125,30 +1509,32 @@ class OpenVpnStatusView extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
           children: [
-            Center(child: Text('Status', style: Ember.title)),
+            Center(child: Text('Status', style: Ember.microLabel)),
+            // Build 2144 (pro6 reskin): the centred editorial
+            // composition — the engine title in the samples'
+            // hero tier. (No active-session numeral: the app
+            // tracks a single session's state, not a count, so
+            // the status block below stays as the record.)
             Center(
               child: Text(
                 'OpenVPN',
-                style: Ember.caption.copyWith(
-                  color: const Color(0xFF9BB0C7),
+                style: Ember.hero.copyWith(
                   shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
                 ),
               ),
             ),
             const SizedBox(height: 16),
-            MapGlass(
-              // When this card carries the crash diagnostics,
-              // it trades the luminous ring for the ember-
-              // tinted border, like the home's diagnostics
-              // card (2027 v7 audit).
-              luminous:
-                  state.running ||
-                  (state.lastStage.isEmpty && state.lastExitReason.isEmpty),
+            // Build 2145: flat hairline panel (was MapGlass).
+            // When this panel carries the crash diagnostics,
+            // it wears the ember-tinted border, like the
+            // home's diagnostics panel (2027 v7 audit); the
+            // luminous ring leaves with the glass.
+            _HairlinePanel(
               borderColor:
                   (!state.running &&
                       (state.lastStage.isNotEmpty ||
                           state.lastExitReason.isNotEmpty))
-                  ? const Color(0x55FF8533)
+                  ? Ember.orange.withValues(alpha: 0.33)
                   : null,
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -1237,6 +1623,7 @@ class OpenVpnSettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -1244,14 +1631,15 @@ class OpenVpnSettingsPage extends StatelessWidget {
         foregroundColor: Ember.text,
         title: Text('OpenVPN', style: Ember.heading),
       ),
-      body: EmberBackground(
+      body: EmberBackground(banded: true, 
         child: ListenableBuilder(
           listenable: openvpn,
           builder: (context, _) {
             return ListView(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+              padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
               children: [
                 MapGlass(
+        blur: false,
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1276,6 +1664,7 @@ class OpenVpnSettingsPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 MapGlass(
+        blur: false,
                   padding: const EdgeInsets.all(16),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
@@ -1307,6 +1696,26 @@ class OpenVpnSettingsPage extends StatelessWidget {
 /// log was shown, and a session dying early writes almost
 /// nothing to it — the owner's "my log is empty" while the
 /// trail that names the death sat unread in another file.
+/// Build 2092 (item 7): the Servers-tab row delete asks
+/// first, naming the profile — it fired on one tap before.
+Future<void> _confirmDeleteProfile(
+  BuildContext context,
+  OpenVpnController controller,
+  OvpnProfile profile,
+) async {
+  final confirmed = await showEmberConfirm(
+    context,
+    title: 'Delete profile?',
+    // Build 2098 (post-2097 audit L17): the disconnect-first
+    // disclosure, matching the multi-delete wording.
+    message:
+        'Delete "${profile.name}"? This cannot be undone. '
+        'If it is connected, it is disconnected first.',
+    confirmLabel: 'Delete',
+  );
+  if (confirmed) await controller.deleteProfile(profile.id);
+}
+
 class OpenVpnLogsPage extends StatefulWidget {
   const OpenVpnLogsPage({super.key, required this.openvpn});
 
@@ -1326,6 +1735,7 @@ class _OpenVpnLogsPageState extends State<OpenVpnLogsPage> {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -1337,8 +1747,18 @@ class _OpenVpnLogsPageState extends State<OpenVpnLogsPage> {
             onPressed: _reload,
             icon: const Icon(Icons.refresh_rounded, color: Ember.dim),
           ),
+          // Build 2092 (item 51): Clear carries a tooltip
+          // and confirms first, like the other log pages.
           IconButton(
+            tooltip: 'Clear logs',
             onPressed: () async {
+              final confirmed = await showEmberConfirm(
+                context,
+                title: 'Clear logs?',
+                message: 'Delete the saved OpenVPN logs?',
+                confirmLabel: 'Clear',
+              );
+              if (!confirmed) return;
               await widget.openvpn.clearLogs();
               _reload();
             },
@@ -1346,7 +1766,7 @@ class _OpenVpnLogsPageState extends State<OpenVpnLogsPage> {
           ),
         ],
       ),
-      body: EmberBackground(
+      body: EmberBackground(banded: true, 
         child: FutureBuilder<({String trail, String logs})>(
           future: _bundle,
           builder: (context, snap) {
@@ -1362,7 +1782,7 @@ class _OpenVpnLogsPageState extends State<OpenVpnLogsPage> {
             }
             if (snap.hasError) {
               return ListView(
-                padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+                padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
                 children: [
                   GlassCard(
                     padding: const EdgeInsets.all(13),
@@ -1392,12 +1812,17 @@ class _OpenVpnLogsPageState extends State<OpenVpnLogsPage> {
               ],
             );
             return ListView(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+              padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
               children: [
                 if (snap.hasData)
                   Align(
                     alignment: AlignmentDirectional.centerEnd,
                     child: TextButton.icon(
+                      // Build 2092 (item 51): the Copy all
+                      // action reaches the 48 dp floor.
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
                       onPressed: () async {
                         await Clipboard.setData(ClipboardData(text: all));
                         if (context.mounted) {

@@ -31,6 +31,10 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
   List<InstalledApp>? _apps;
   AppRouting? _routing;
 
+  /// Build 2092 (item 18): a failed load is a state of its
+  /// own, with a retry — not an eternal spinner.
+  bool _loadFailed = false;
+
   /// The choice when the page opened, to know whether to apply it.
   String _initial = '';
   String _query = '';
@@ -43,16 +47,29 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
   }
 
   Future<void> _load() async {
-    final apps = await AndroidCore.installedApps();
-    final routing = await AndroidCore.appRouting();
-    if (!mounted) return;
-    setState(() {
-      _routing = routing;
-      _initial = routing.key;
-      _apps = apps;
-      _sort();
-    });
+    // Build 2092 (item 18): the platform call can throw —
+    // catch it into the error state instead of leaving the
+    // spinner up forever.
+    try {
+      final apps = await AndroidCore.installedApps();
+      final routing = await AndroidCore.appRouting();
+      if (!mounted) return;
+      setState(() {
+        _loadFailed = false;
+        _routing = routing;
+        _initial = routing.key;
+        _apps = apps;
+        _sort();
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+    }
   }
+
+  /// The app's icon future, cached per package (build 2092,
+  /// item 60: hoisted out of the row builder).
+  Future<Uint8List?> _iconFor(String package) =>
+      _icons.putIfAbsent(package, () => AndroidCore.appIcon(package));
 
   /// The checked apps first, then by name.
   void _sort() {
@@ -69,7 +86,6 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final theme = Theme.of(context);
     final routing = _routing;
     final q = _query.trim().toLowerCase();
     final apps = [
@@ -88,6 +104,7 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
         }
       },
       child: Scaffold(
+        extendBodyBehindAppBar: true,
         backgroundColor: Ember.bg,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
@@ -107,9 +124,47 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
           ],
         ),
         body: EmberBackground(
-          child: routing == null || _apps == null
-              ? const Center(child: CircularProgressIndicator())
+          child: _loadFailed
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: GlassCard(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'The installed apps could not be loaded.',
+                            style: Ember.body,
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 12),
+                          EmberButton(
+                            label: 'Retry',
+                            icon: Icons.refresh_rounded,
+                            onTap: () {
+                              setState(() => _loadFailed = false);
+                              _load();
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                )
+              : routing == null || _apps == null
+              // Build 2092 (item 18): the spinner is the
+              // app's orange, not the theme's.
+              ? const Center(
+                  child: CircularProgressIndicator(color: Ember.orange),
+                )
               : ListView.builder(
+                  // Build 2138 (visual review V-26): the body
+                  // extends behind the transparent bar — the
+                  // list starts below it.
+                  padding: EdgeInsets.only(
+                    top: MediaQuery.of(context).padding.top + kToolbarHeight,
+                  ),
                   itemCount: apps.length + 1,
                   itemBuilder: (context, i) {
                     if (i == 0) {
@@ -118,22 +173,18 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            SegmentedButton<bool>(
-                              showSelectedIcon: false,
-                              segments: [
-                                ButtonSegment(
-                                  value: false,
-                                  label: Text(l.appModeExclude),
-                                ),
-                                ButtonSegment(
-                                  value: true,
-                                  label: Text(l.appModeInclude),
-                                ),
+                            // Build 2092 (item 41): the app's
+                            // segmented control, not the stock
+                            // Material one.
+                            EmberSegmented<bool>(
+                              options: [
+                                (false, l.appModeExclude, null),
+                                (true, l.appModeInclude, null),
                               ],
-                              selected: {routing.onlyChosen},
-                              onSelectionChanged: (v) {
+                              value: routing.onlyChosen,
+                              onChanged: (v) {
                                 setState(() {
-                                  routing.onlyChosen = v.first;
+                                  routing.onlyChosen = v;
                                   _sort();
                                 });
                                 _save();
@@ -144,9 +195,7 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
                               routing.onlyChosen
                                   ? l.appModeIncludeHint
                                   : l.appModeExcludeHint,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
+                              style: Ember.caption,
                             ),
                             if (!routing.onlyChosen &&
                                 routing.suggested.isNotEmpty) ...[
@@ -203,36 +252,72 @@ class _BypassAppsPageState extends State<BypassAppsPage> {
                     final onList =
                         widget.region != null &&
                         routing.suggested.contains(app.package);
-                    final icon = _icons.putIfAbsent(
-                      app.package,
-                      () => AndroidCore.appIcon(app.package),
-                    );
-                    return CheckboxListTile(
-                      value: routing.checked(app.package),
-                      onChanged: (v) {
-                        setState(() => routing.toggle(app.package, v ?? false));
+                    final checked = routing.checked(app.package);
+                    // Build 2092 (item 41): an Ember row —
+                    // icon, name, package and the app's
+                    // toggle — not a stock CheckboxListTile
+                    // with theme colours.
+                    return InkWell(
+                      onTap: () {
+                        setState(() => routing.toggle(app.package, !checked));
                         _save();
                       },
-                      secondary: SizedBox.square(
-                        dimension: 40,
-                        child: FutureBuilder<Uint8List?>(
-                          future: icon,
-                          builder: (context, snap) => snap.data == null
-                              ? const Icon(Icons.android_rounded)
-                              : Image.memory(snap.data!, gaplessPlayback: true),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
                         ),
-                      ),
-                      title: Text(
-                        app.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        onList ? l.fromRegionList(widget.region!) : app.package,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: onList ? theme.colorScheme.primary : null,
+                        child: Row(
+                          children: [
+                            SizedBox.square(
+                              dimension: 40,
+                              child: FutureBuilder<Uint8List?>(
+                                future: _iconFor(app.package),
+                                builder: (context, snap) =>
+                                    snap.hasError || snap.data == null
+                                    ? const Icon(
+                                        Icons.android_rounded,
+                                        color: MapUi.dim,
+                                      )
+                                    : Image.memory(
+                                        snap.data!,
+                                        gaplessPlayback: true,
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    app.label,
+                                    style: Ember.body,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    onList
+                                        ? l.fromRegionList(widget.region!)
+                                        : app.package,
+                                    style: Ember.caption.copyWith(
+                                      color: onList ? Ember.orange : null,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            MapToggle(
+                              value: checked,
+                              onChanged: (v) {
+                                setState(() => routing.toggle(app.package, v));
+                                _save();
+                              },
+                            ),
+                          ],
                         ),
-                        overflow: TextOverflow.ellipsis,
                       ),
                     );
                   },

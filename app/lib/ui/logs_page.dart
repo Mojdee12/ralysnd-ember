@@ -10,6 +10,7 @@ import '../core/core_controller.dart';
 import '../core/models.dart';
 import '../l10n/app_localizations.dart';
 import 'connections_view.dart';
+import 'ember/ember_dialogs.dart';
 import 'ember/ember_theme.dart';
 import 'ember/map_widgets.dart';
 import 'format.dart';
@@ -25,9 +26,19 @@ class LogsPage extends StatefulWidget {
     required this.core,
     this.settings,
     this.connections,
+    this.emberChrome = false,
   });
 
   final CoreController core;
+
+  /// Build 2116 (AP-02): when the page is pushed as a
+  /// route of its own (the Ember shell's Mozilla log
+  /// viewer), it carries the shared Ember page chrome —
+  /// a Scaffold with a transparent AppBar and an
+  /// Ember.heading title — like every sibling log viewer.
+  /// Hosted inside another shell's content area (the
+  /// desktop layout), it keeps its in-page title instead.
+  final bool emberChrome;
 
   /// Keeps the Connections tab's columns; without it they are not kept.
   final AppSettings? settings;
@@ -49,6 +60,16 @@ class _LogsPageState extends State<LogsPage> {
   Timer? _timer;
   int _after = 0;
   bool _reading = false;
+
+  /// Build 2092 (item 17): the first read has completed —
+  /// before it, an empty list is a loading state, not
+  /// "no logs".
+  bool _firstReadDone = false;
+
+  /// Build 2092 (item 17): the last read failed (the core
+  /// was unreachable) — an empty list then shows the error
+  /// line, not "no logs".
+  bool _readFailed = false;
   String _minLevel = 'DEBUG';
   String _text = '';
   bool _follow = true;
@@ -85,6 +106,7 @@ class _LogsPageState extends State<LogsPage> {
       // second, and a read may be under way) stay cleared.
       final cleared = widget.core.logsClearedAt;
       setState(() {
+        _readFailed = false;
         _entries.addAll([
           for (final e in more)
             if (cleared == null || e.time == null || e.time!.isAfter(cleared))
@@ -104,10 +126,15 @@ class _LogsPageState extends State<LogsPage> {
       }
     } on CoreApiException {
       // The next tick tries again.
+      if (mounted) setState(() => _readFailed = true);
     } on CoreUnavailable {
       // The shell shows it.
+      if (mounted) setState(() => _readFailed = true);
     } finally {
       _reading = false;
+      if (mounted && !_firstReadDone) {
+        setState(() => _firstReadDone = true);
+      }
     }
   }
 
@@ -324,27 +351,43 @@ class _LogsPageState extends State<LogsPage> {
     onChanged: (v) => setState(() => _follow = v),
   );
 
+  // Build 2092 (item 51): the copy icon takes the Ember
+  // dim colour, and a successful copy is confirmed with a
+  // plain SnackBar — it used to go through the error
+  // channel (showError).
   Widget _copyButton(AppLocalizations l, List<LogEntry> visible) => IconButton(
     tooltip: l.copyAll,
-    icon: const Icon(Icons.copy_rounded),
+    icon: const Icon(Icons.copy_rounded, color: Ember.dim),
     onPressed: visible.isEmpty
         ? null
         : () {
             Clipboard.setData(
               ClipboardData(text: visible.map(_line).join('\n')),
             );
-            showError(context, l.logsCopied);
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(l.logsCopied)));
           },
   );
 
+  // Build 2092 (items 17/51): Clear confirms first, like
+  // the other log pages.
   Widget _clearButton(AppLocalizations l) => IconButton(
     tooltip: l.clear,
-    icon: const Icon(Icons.delete_sweep_outlined),
-    onPressed: () => setState(() {
-      widget.core.logsClearedAfter = _after;
-      widget.core.logsClearedAt = DateTime.now();
-      _entries.clear();
-    }),
+    icon: const Icon(Icons.delete_sweep_outlined, color: Ember.dim),
+    onPressed: () async {
+      final confirmed = await showEmberConfirm(
+        context,
+        title: l.clear,
+        message: 'Clear the log lines shown here?',
+        confirmLabel: l.clear,
+      );
+      if (!confirmed || !mounted) return;
+      setState(() {
+        widget.core.logsClearedAfter = _after;
+        widget.core.logsClearedAt = DateTime.now();
+        _entries.clear();
+      });
+    },
   );
 
   static String _line(LogEntry e) {
@@ -362,14 +405,32 @@ class _LogsPageState extends State<LogsPage> {
     // Build 2074 (audit item 12): the page sits on the Ember
     // background like every other Ember log viewer; the
     // filtering/loading behaviour above is unchanged.
-    return EmberBackground(
+    final body = EmberBackground(
       child: Padding(
-        padding: pagePadding(context),
+        // Build 2138 (visual review V-26): only in the page's
+        // own Scaffold (emberChrome) does the body extend
+        // behind the transparent bar — there, add the bar
+        // inset to the page margin's top. In the shell tab
+        // and the settings wrapper route the same body sits
+        // below a bar (or none) and keeps the plain margin.
+        padding: widget.emberChrome
+            ? pagePadding(context).copyWith(
+                top:
+                    MediaQuery.of(context).padding.top +
+                    kToolbarHeight +
+                    pagePadding(context).top,
+              )
+            : pagePadding(context),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            PageTitle(l.navLogs),
-            const SizedBox(height: 16),
+            // Build 2116 (AP-02): with the route chrome the
+            // AppBar carries the title; the in-page title
+            // would double it.
+            if (!widget.emberChrome) ...[
+              PageTitle(l.navLogs),
+              const SizedBox(height: 16),
+            ],
             if (widget.connections ?? !Platform.isAndroid) ...[
               EmberSegmented<bool>(
                 value: _connections,
@@ -401,7 +462,24 @@ class _LogsPageState extends State<LogsPage> {
                 child: GlassCard(
                   padding: EdgeInsets.zero,
                   child: visible.isEmpty
-                      ? Center(child: Text(l.noLogs, style: Ember.dimStyle))
+                      // Build 2092 (item 17): four distinct
+                      // empty states — loading, read error,
+                      // filter matched nothing, and a truly
+                      // empty log.
+                      ? Center(
+                          child: !_firstReadDone
+                              ? const CircularProgressIndicator(
+                                  color: Ember.orange,
+                                )
+                              : Text(
+                                  _readFailed && _entries.isEmpty
+                                      ? 'The logs could not be loaded.'
+                                      : _entries.isNotEmpty
+                                      ? 'No lines match the filter.'
+                                      : l.noLogs,
+                                  style: Ember.dimStyle,
+                                ),
+                        )
                       : SelectionArea(
                           child: ListView.builder(
                             controller: _scroll,
@@ -417,6 +495,23 @@ class _LogsPageState extends State<LogsPage> {
           ],
         ),
       ),
+    );
+    if (!widget.emberChrome) return body;
+    // Build 2116 (AP-02): the shared Ember log-viewer
+    // chrome — the Mozilla viewer was pushed bare (no
+    // Scaffold, no back button, its title under the
+    // status bar) while all four sibling viewers are
+    // full pages like this.
+    return Scaffold(
+      extendBodyBehindAppBar: true,
+      backgroundColor: Ember.bg,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        foregroundColor: Ember.text,
+        title: Text(l.navLogs, style: Ember.heading),
+      ),
+      body: body,
     );
   }
 }
@@ -441,7 +536,7 @@ class _LogLine extends StatelessWidget {
     const mono = TextStyle(
       fontFamily: 'Consolas',
       fontFamilyFallback: ['Menlo', 'DejaVu Sans Mono', 'monospace'],
-      fontSize: 12.5,
+      fontSize: Ember.fontSmall,
       height: 1.45,
     );
     final t = e.time;

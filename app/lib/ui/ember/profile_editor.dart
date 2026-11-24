@@ -10,6 +10,7 @@ import '../../l10n/app_localizations.dart';
 import '../../xray/anti_filter.dart';
 import '../../xray/config_builder.dart';
 import '../../xray/link_parser.dart' show newProfileId;
+import '../../xray/profile_validation.dart';
 import '../../xray/tls_cert_pin.dart';
 import '../../xray/vless_encryption.dart';
 import '../../xray/xray_controller.dart';
@@ -24,16 +25,28 @@ Future<void> openProfileEditor(
   BuildContext context,
   XrayController xray, {
   Profile? existing,
+  Profile? draft,
 }) => Navigator.of(context).push(
   MaterialPageRoute(
-    builder: (_) => ProfileEditorPage(xray: xray, existing: existing),
+    builder: (_) =>
+        ProfileEditorPage(xray: xray, existing: existing, draft: draft),
   ),
 );
 
 class ProfileEditorPage extends StatefulWidget {
-  const ProfileEditorPage({super.key, required this.xray, this.existing});
+  const ProfileEditorPage({
+    super.key,
+    required this.xray,
+    this.existing,
+    this.draft,
+  });
   final XrayController xray;
   final Profile? existing;
+
+  /// Build 2095 (V2Ray journey audit #9): a pre-filled NEW
+  /// profile (e.g. the CF scanner's clean IP) — the editor
+  /// opens on it but still saves through addProfile.
+  final Profile? draft;
 
   @override
   State<ProfileEditorPage> createState() => _ProfileEditorPageState();
@@ -58,11 +71,26 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
   bool _saving = false;
   bool _testing = false;
 
+  /// Build 2092 (item 42): the editor connect chip's
+  /// re-entry guard.
+  bool _connecting = false;
+
+  /// Build 2127 (H2): the Sudoku section's dropdown state,
+  /// seeded from the profile's stored options in initState
+  /// and composed back into Profile.sudokuOptions at
+  /// read-back. '' = the core's default for each.
+  String _sudokuAead = '';
+  String _sudokuTable = '';
+  String _sudokuPure = '';
+  String _sudokuMask = '';
+  String _sudokuMaskMode = '';
+
   @override
   void initState() {
     super.initState();
     _p =
         widget.existing?.copy() ??
+        widget.draft?.copy() ??
         Profile(id: newProfileId(), protocol: Protocol.vless);
     // A stored congestion value outside the set the core
     // honours (build 2036) can never be chosen in the dropdown
@@ -191,7 +219,17 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     // their label when one is set — and _save splits it back
     // into the server name and the label for subscription
     // profiles.
-    _field('name', _p.displayName);
+    // Build 2103 (verification iteration 1, H2): the field is
+    // seeded from the STORED editable name (label, else the
+    // stored name) — never from displayName. Since 2103
+    // displayName falls back to the server address at render
+    // time for a nameless profile; seeding that fallback
+    // would write the address back as a stored name/label
+    // on an untouched save, re-manufacturing exactly the
+    // address-as-name the heal removes (and into localName,
+    // which the heal never touches). A nameless profile
+    // opens with the field empty.
+    _field('name', _p.localName.isNotEmpty ? _p.localName : _p.name);
     _field('address', _p.address);
     _field('port', '${_p.port}');
     _field('cred', _p.uuidOrPassword);
@@ -219,6 +257,11 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     _field('tlsCertPin', _p.tlsCertPin);
     _field('plugin', _p.plugin);
     _field('secretKey', _p.secretKey);
+    // Build 2095 (whole-app journey audit #31/#32): the
+    // .conf's AllowedIPs and DNS are editable fields now,
+    // not read-only captions.
+    _field('wgAllowedIPs', _p.wgAllowedIPs);
+    _field('wgDns', _p.wgDns);
     _field('peerPublicKey', _p.peerPublicKey);
     _field('preSharedKey', _p.preSharedKey);
     _field('localAddress', _p.localAddress);
@@ -231,6 +274,30 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     _field('username', _p.username);
     _field('congestionControl', _p.congestionControl);
     _field('udpRelayMode', _p.udpRelayMode);
+    // Build 2075: the sidecar protocols' own fields — the
+    // Tailscale auth key and the Snell version (sing-box
+    // accepts 4; 5 is refused by the core, so the editor
+    // says so at the field).
+    _field('tsAuthKey', _p.tailscaleAuthKey);
+    _field('snellVersion', '${_p.snellVersion}');
+    _field('mieruTransport', _p.network == 'udp' ? 'udp' : 'tcp');
+    // Build 2127 (H2): the Sudoku options, decoded from
+    // the profile's stored JSON ({} = core defaults).
+    final sudokuOpts = _p.sudokuOpts;
+    _field('sudokuPadMin', '${sudokuOpts['paddingMin'] ?? ''}');
+    _field('sudokuPadMax', '${sudokuOpts['paddingMax'] ?? ''}');
+    _field('sudokuCustomTable', '${sudokuOpts['customTable'] ?? ''}');
+    _field('sudokuMaskHost', '${sudokuOpts['httpMaskHost'] ?? ''}');
+    _field('sudokuMaskPath', '${sudokuOpts['httpMaskPathRoot'] ?? ''}');
+    _sudokuAead = '${sudokuOpts['aeadMethod'] ?? ''}';
+    _sudokuTable = '${sudokuOpts['tableType'] ?? ''}';
+    _sudokuPure = sudokuOpts['pureDownlink'] == true
+        ? 'on'
+        : sudokuOpts['pureDownlink'] == false
+        ? 'off'
+        : '';
+    _sudokuMask = sudokuOpts['httpMask'] == true ? 'on' : '';
+    _sudokuMaskMode = '${sudokuOpts['httpMaskMode'] ?? ''}';
     // Build 2065 (item 8): the AmneziaWG junk fields are EDITABLE
     // now, for any WireGuard profile — the run path has applied
     // them since 2050; until now the editor only displayed them.
@@ -239,10 +306,23 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     _field('awgJmax', _p.awgJmax);
     _field('awgS1', _p.awgS1);
     _field('awgS2', _p.awgS2);
+    _field('awgS3', _p.awgS3);
+    _field('awgS4', _p.awgS4);
     _field('awgH1', _p.awgH1);
     _field('awgH2', _p.awgH2);
     _field('awgH3', _p.awgH3);
     _field('awgH4', _p.awgH4);
+    // Build 2098 (Item A): the AWG 2.0 signature fields are
+    // editable too — before this build the values were not
+    // even stored, so there was nothing to edit.
+    _field('awgI1', _p.awgI1);
+    _field('awgI2', _p.awgI2);
+    _field('awgI3', _p.awgI3);
+    _field('awgI4', _p.awgI4);
+    _field('awgI5', _p.awgI5);
+    _field('awgJ1', _p.awgJ1);
+    _field('awgJ2', _p.awgJ2);
+    _field('awgJ3', _p.awgJ3);
   }
 
   /// Switching protocols carries the fingerprint across (build
@@ -301,6 +381,8 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       ..tlsCertPin = _v('tlsCertPin')
       ..plugin = _v('plugin')
       ..secretKey = _v('secretKey')
+      ..wgAllowedIPs = _v('wgAllowedIPs')
+      ..wgDns = _v('wgDns')
       ..peerPublicKey = _v('peerPublicKey')
       ..preSharedKey = _v('preSharedKey')
       ..localAddress = _v('localAddress')
@@ -313,15 +395,64 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       ..username = _v('username')
       ..congestionControl = _v('congestionControl')
       ..udpRelayMode = _v('udpRelayMode')
+      ..tailscaleAuthKey = _v('tsAuthKey')
+      ..snellVersion = _int('snellVersion', 4)
       ..awgJc = _v('awgJc')
       ..awgJmin = _v('awgJmin')
       ..awgJmax = _v('awgJmax')
       ..awgS1 = _v('awgS1')
       ..awgS2 = _v('awgS2')
+      ..awgS3 = _v('awgS3')
+      ..awgS4 = _v('awgS4')
       ..awgH1 = _v('awgH1')
       ..awgH2 = _v('awgH2')
       ..awgH3 = _v('awgH3')
-      ..awgH4 = _v('awgH4');
+      ..awgH4 = _v('awgH4')
+      ..awgI1 = _v('awgI1')
+      ..awgI2 = _v('awgI2')
+      ..awgI3 = _v('awgI3')
+      ..awgI4 = _v('awgI4')
+      ..awgI5 = _v('awgI5')
+      ..awgJ1 = _v('awgJ1')
+      ..awgJ2 = _v('awgJ2')
+      ..awgJ3 = _v('awgJ3');
+    // Build 2075: a Mieru profile's transport rides the
+    // network field, but the generic transport section does
+    // not render for Mieru — its own section's picker does.
+    if (_p.protocol == Protocol.mieru) {
+      _p.network = _v('mieruTransport') == 'udp' ? 'udp' : 'tcp';
+    }
+    // Build 2127 (H2): compose the Sudoku options JSON
+    // from the section's fields — only non-default
+    // entries are stored, so an untouched section keeps
+    // sudokuOptions '' (the core's defaults throughout).
+    if (_p.protocol == Protocol.sudoku) {
+      final opts = <String, dynamic>{};
+      if (_sudokuAead.isNotEmpty) opts['aeadMethod'] = _sudokuAead;
+      final padMin = int.tryParse(_v('sudokuPadMin'));
+      if (padMin != null) opts['paddingMin'] = padMin;
+      final padMax = int.tryParse(_v('sudokuPadMax'));
+      if (padMax != null) opts['paddingMax'] = padMax;
+      if (_sudokuTable.isNotEmpty) opts['tableType'] = _sudokuTable;
+      if (_sudokuPure == 'on') opts['pureDownlink'] = true;
+      if (_sudokuPure == 'off') opts['pureDownlink'] = false;
+      if (_v('sudokuCustomTable').isNotEmpty) {
+        opts['customTable'] = _v('sudokuCustomTable');
+      }
+      if (_sudokuMask == 'on') {
+        opts['httpMask'] = true;
+        if (_sudokuMaskMode.isNotEmpty) {
+          opts['httpMaskMode'] = _sudokuMaskMode;
+        }
+        if (_v('sudokuMaskHost').isNotEmpty) {
+          opts['httpMaskHost'] = _v('sudokuMaskHost');
+        }
+        if (_v('sudokuMaskPath').isNotEmpty) {
+          opts['httpMaskPathRoot'] = _v('sudokuMaskPath');
+        }
+      }
+      _p.sudokuOptions = opts.isEmpty ? '' : jsonEncode(opts);
+    }
   }
 
   /// Build 2074 (audit item 9): the re-entry guard and busy
@@ -337,12 +468,102 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     }
   }
 
+  /// Build 2092 (UI audit 2026-11-16 item 3): the first
+  /// invalid numeric field's message, or null. _int()'s
+  /// parse fallback substitutes 443/1420/0 for unparseable
+  /// text BEFORE the range gates run, so "abc" — or an
+  /// empty port — used to save as 443 with no message: the
+  /// saved profile differed from what was typed (the 2074
+  /// range gate never saw the bad text). Every numeric
+  /// field now validates as typed; an empty OPTIONAL field
+  /// still takes its documented fallback.
+  String? _numericFieldError() {
+    String? check(
+      String key,
+      String label, {
+      int? min,
+      int? max,
+      bool required = false,
+    }) {
+      final text = _v(key);
+      if (text.isEmpty) {
+        return required ? '$label is required.' : null;
+      }
+      final value = int.tryParse(text);
+      if (value == null) return '$label must be a whole number.';
+      if (min != null && value < min) {
+        return '$label must be between $min and $max.';
+      }
+      if (max != null && value > max) {
+        return '$label must be between $min and $max.';
+      }
+      return null;
+    }
+
+    return check('port', 'Port', min: 1, max: 65535, required: true) ??
+        // Build 2125 (audit A25-38 / P-42): the MTU range
+        // is the app's TUN range (1280–1500) — the editor
+        // used to accept 576–9000, which the connect paths
+        // now clamp anyway; the editor says the real range
+        // up front instead.
+        check('mtu', 'MTU', min: 1280, max: 1500) ??
+        // Build 2096 (post-2095 audit L21): the maxima
+        // are the validation module's own caps — the
+        // editor used to accept values the boundary then
+        // clamped silently at import/connect.
+        check('aid', 'Alter ID', min: 0, max: 65535) ??
+        check('keepAlive', 'Keep-alive', min: 0) ??
+        check('upMbps', 'Upload speed', min: 0, max: 100000) ??
+        check('downMbps', 'Download speed', min: 0, max: 100000) ??
+        // The Snell section's own caption: the bundled
+        // engine refuses version 5 — it used to save
+        // unvalidated.
+        (_p.protocol == Protocol.snell
+            ? check('snellVersion', 'Snell version', min: 1, max: 4)
+            : null);
+  }
+
   Future<void> _saveInner() async {
     final l = AppLocalizations.of(context);
+    // Build 2092 (item 3): validate the numeric fields as
+    // typed, before _readBack's fallbacks can rewrite them.
+    final numericError = _numericFieldError();
+    if (numericError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(numericError),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
     _readBack();
-    if (_p.address.isEmpty && _p.protocol != Protocol.wireguard) {
+    // Build 2075: Tailscale joins WireGuard here — it has
+    // no server address at all (the auth key is the config).
+    if (_p.address.isEmpty &&
+        _p.protocol != Protocol.wireguard &&
+        _p.protocol != Protocol.tailscale) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(l.addressRequired)));
+      return;
+    }
+    // Build 2095 (whole-app journey audit #48): a WireGuard
+    // config without its private key, the peer key or the
+    // endpoint can never connect — refuse the save here
+    // instead of letting a dead config into the list.
+    if (_p.protocol == Protocol.wireguard &&
+        (_p.secretKey.isEmpty ||
+            _p.peerPublicKey.isEmpty ||
+            _p.address.isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A WireGuard config needs its private key, the peer '
+            'public key and the peer endpoint.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
       return;
     }
     // Build 2074 (audit item 21): an out-of-range port refuses
@@ -368,15 +589,32 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     // no label at all. A hand-added profile has no provider name,
     // so the typed name IS its name, as before.
     if (widget.existing != null && _p.subscriptionId.isNotEmpty) {
-      final serverName = widget.existing!.name.isEmpty
-          ? _p.address
-          : widget.existing!.name;
+      // Build 2103 (diagnosis N2): a provider name that
+      // never arrived stays empty — builds ≤2102 put the
+      // address in its place here, cementing the
+      // manufactured address-as-name into the store even
+      // after a manual edit-save. The user's typed name
+      // still lands in localName below, where it belongs.
+      final serverName = widget.existing!.name;
       final typed = _v('name');
       _p.name = serverName;
-      _p.localName = typed.isEmpty || typed == serverName ? '' : typed;
-    } else if (_p.name.isEmpty) {
-      _p.name = _p.address;
+      // Build 2097 (post-2096 audit C-L15): the label goes
+      // through the same name sanitizer as every other
+      // write path — a pasted label carrying a newline
+      // used to be stored raw.
+      final cleanTyped = sanitizeProfileName(typed);
+      _p.localName =
+          cleanTyped.isEmpty || cleanTyped == serverName ? '' : cleanTyped;
     }
+    // Build 2103 (diagnosis N2): a hand-added profile
+    // whose name field was left empty keeps an empty
+    // stored name — builds ≤2102 stored the address
+    // here, manufacturing the address-as-name value the
+    // import routes no longer make. The row identifies
+    // it by its address at render time
+    // (Profile.displayName); the stored field stays
+    // honest, so a later share/re-import names it
+    // positionally instead of re-deriving the address.
     // The cipherSuites rule (build 2029A): the core silently
     // ignores cipher suites unless the fingerprint is
     // "unsafe" — saving that combination would promise a
@@ -498,27 +736,71 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     // be built at all (TUIC) skip the gate. Build 2030: the
     // patched-core fields (dialMode / finalmask) go through the
     // same gate — the bundled core IS the patched one now.
-    if (_p.hasShaping || _p.dialMode.isNotEmpty || _p.finalMask.isNotEmpty) {
+    // Build 2095 (fourth-pass audit 2.1): the gate runs
+    // for EVERY profile whose test config can be built,
+    // not only shaped ones — an imported enum or number
+    // the core refuses is caught here, at save, instead
+    // of surfacing as a failed start. Profiles whose
+    // test config cannot be built at all (TUIC) throw
+    // inside the try and skip the gate, as before.
+    {
       String? rejection;
       try {
+        // Build 2095 fix (full-suite catch): the wait is
+        // bounded — a validator that never answers (a
+        // wedged native side) reads as unavailable, never
+        // as a save that hangs forever on the spinner.
         rejection = await XrayPlatform.validateConfig(
           buildTestConfig(_p, widget.xray.settings),
+        ).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => null,
         );
+        // Build 2095 fix (full-suite catch): validateConfig
+        // reports a missing validator as an 'unavailable'
+        // STRING, not a rejection — with the gate now
+        // running on every save, treating unavailable as
+        // rejected would refuse every save anywhere the
+        // native check cannot run. Only the core's own
+        // verdict refuses.
+        if (rejection != null &&
+            rejection.startsWith('config validation unavailable')) {
+          rejection = null;
+        }
       } catch (_) {
         rejection = null;
       }
       if (rejection != null) {
+        // Build 2092 (UI audit item 19): the SnackBar carries
+        // a plain sentence; the core's own words go to the
+        // diagnostics journal, where the detail belongs.
+        widget.xray.diagnostics.add(
+          'editor',
+          'Core rejected the shaped config: $rejection',
+          ok: false,
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('The core rejected this config: $rejection'),
-              duration: const Duration(seconds: 6),
+            const SnackBar(
+              content: Text(
+                'The core rejected this config — the shaping '
+                'details are in the diagnostics log.',
+              ),
+              duration: Duration(seconds: 6),
             ),
           );
         }
         return;
       }
     }
+    // Build 2097 (post-2096 audit C-L15): editor saves run
+    // the import-boundary sanitizer too — it is idempotent
+    // for editor-shaped profiles by the module's own
+    // contract, and it closes the same-session hole where
+    // an editor-written field (a newline in an AmneziaWG
+    // value, say) reached a .conf export verbatim because
+    // the store-load sanitizer only runs at load.
+    sanitizeImportedProfile(_p);
     if (widget.existing == null) {
       await widget.xray.addProfile(_p);
     } else {
@@ -561,7 +843,7 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
           label,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Ember.faint, fontSize: 13),
+          style: const TextStyle(color: Ember.faint, fontSize: Ember.fontBody),
         ),
         floatingLabelStyle: const TextStyle(color: Ember.orange),
       ),
@@ -701,7 +983,11 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
 
   /// Connects or disconnects this node from the editor's
   /// status card (build 2050, sample C).
+  /// Build 2092 (item 42): the re-entry guard — repeated
+  /// taps used to queue concurrent connect/disconnect cycles.
   Future<void> _connectFromEditor(bool connectedThis) async {
+    if (_connecting) return;
+    setState(() => _connecting = true);
     final xray = widget.xray;
     try {
       if (connectedThis) {
@@ -735,6 +1021,8 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
           SnackBar(content: Text(AppLocalizations.of(context).startFailed)),
         );
       }
+    } finally {
+      if (mounted) setState(() => _connecting = false);
     }
   }
 
@@ -744,7 +1032,7 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Ember.heading.copyWith(fontSize: 14.5)),
+          Text(title, style: Ember.heading.copyWith(fontSize: Ember.fontTitle)),
           const SizedBox(height: 13),
           ...children,
         ],
@@ -761,7 +1049,10 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       Protocol.vmess,
       Protocol.trojan,
     }.contains(proto);
-    return Scaffold(
+    // Build 2075 (item 30): the editor shows full config
+    // credentials — overlay-guarded while it is open.
+    return OverlayGuard(
+      child: Scaffold(
       // Build 2059 (audit §6 appearance low): the body is the map
       // backdrop — extend it behind the transparent app bar so the
       // editor has no flat solid strip over the map.
@@ -788,15 +1079,20 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                   // running the pill is disabled and spins.
                   onTap: _saving ? null : () => unawaited(_save()),
                   borderRadius: BorderRadius.circular(999),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      gradient: Ember.gradient,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
+                  // Build 2092 (item 42): transparent vertical
+                  // padding — the pill's hit height is 48 dp;
+                  // its visual size (~33 dp) is unchanged.
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 7.5),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: Ember.gradient,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
                     child: _saving
                         ? const SizedBox(
                             width: 16,
@@ -809,11 +1105,12 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                         : Text(
                             l.saveAction,
                             style: const TextStyle(
-                              fontSize: 13.5,
+                              fontSize: Ember.fontBody,
                               fontWeight: FontWeight.w800,
                               color: Color(0xFF1A1206),
                             ),
                           ),
+                    ),
                   ),
                 ),
               ),
@@ -844,7 +1141,13 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                         size: 20,
                       ),
                       const SizedBox(width: 10),
-                      Expanded(child: Text(l.tuicNote, style: Ember.dimStyle)),
+                      Expanded(
+                        child: Text(
+                          'TUIC connects through the sing-box engine '
+                          'built into the app.',
+                          style: Ember.dimStyle,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -863,9 +1166,8 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'AnyTLS is saved and can be shared, but the '
-                          'Xray core has no AnyTLS outbound, so it '
-                          'cannot connect yet.',
+                          'AnyTLS connects through the sing-box engine '
+                          'built into the app.',
                           style: Ember.dimStyle,
                         ),
                       ),
@@ -929,33 +1231,37 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                 _text('reserved', l.fieldReserved),
                 _text('mtu', 'MTU', numeric: true),
                 _text('keepAlive', l.fieldKeepAlive, numeric: true),
-                // The .conf's split-tunnel list and DNS (build
-                // 2057, audit §6 WG .conf divergences): the
-                // AllowedIPs list is applied to the outbound;
-                // the DNS is shown but NOT applied — the tunnel's
-                // DNS always comes from Settings, so the note
-                // says so instead of pretending otherwise.
-                if (_p.wgAllowedIPs.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 11),
-                    child: Text(
-                      'AllowedIPs from the .conf (applied): '
-                      '${_p.wgAllowedIPs}',
-                      style: Ember.dimStyle,
-                    ),
+                // Build 2095 (whole-app journey audit
+                // #31/#32): the .conf's split-tunnel list and
+                // DNS are EDITABLE. AllowedIPs is applied to
+                // the outbound. The DNS is stored with the
+                // config and round-trips through share links
+                // and .conf export, but the live tunnel's DNS
+                // still comes from Settings — the caption says
+                // so instead of pretending otherwise.
+                _text(
+                  'wgAllowedIPs',
+                  'Allowed IPs (applied)',
+                  multiline: true,
+                  mono: true,
+                ),
+                _text('wgDns', 'DNS (stored with the config)', mono: true),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 11),
+                  child: Text(
+                    'The DNS above travels with this config; the '
+                    'tunnel itself uses the DNS from Settings.',
+                    style: TextStyle(fontSize: Ember.fontSmall, color: Ember.dim),
                   ),
-                if (_p.wgDns.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 11),
-                    child: Text(
-                      'DNS from the .conf: ${_p.wgDns} — not used; '
-                      'the tunnel uses the DNS in Settings.',
-                      style: Ember.dimStyle,
-                    ),
-                  ),
+                ),
               ] else ...[
-                _text('address', l.fieldAddress),
-                _text('port', l.fieldPort, numeric: true),
+                // Build 2075: a Tailscale profile has no
+                // server to point at — the auth key in its
+                // own section below is the whole config.
+                if (proto != Protocol.tailscale) ...[
+                  _text('address', l.fieldAddress),
+                  _text('port', l.fieldPort, numeric: true),
+                ],
               ],
               if (proto == Protocol.vless ||
                   proto == Protocol.vmess ||
@@ -965,6 +1271,27 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                   proto == Protocol.hysteria2 ||
                   proto == Protocol.anytls)
                 _text('cred', l.fieldPassword, multiline: true, mono: true),
+              // Build 2075: the sidecar protocols' credentials
+              // in the basic section — Snell's key, and the
+              // username + password pairs of Naive, Mieru and
+              // OpenConnect.
+              if (proto == Protocol.snell)
+                _text('cred', 'PSK', multiline: true, mono: true),
+              // Build 2127 (H2): Sudoku's key — a password
+              // or a keypair, exactly what the server gave.
+              if (proto == Protocol.sudoku)
+                _text(
+                  'cred',
+                  'Key (password or keypair)',
+                  multiline: true,
+                  mono: true,
+                ),
+              if (proto == Protocol.naive ||
+                  proto == Protocol.mieru ||
+                  proto == Protocol.openconnect) ...[
+                _text('username', 'Username'),
+                _text('cred', l.fieldPassword, multiline: true, mono: true),
+              ],
               if (proto == Protocol.shadowsocks) ...[
                 _dropdown<String>(
                   l.fieldMethod,
@@ -1080,9 +1407,86 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                   // the handshake; empty = the server name.
                   _text('grpcAuthority', 'Authority (empty = server name)'),
                 ],
+                if (_p.network == 'tcp') ...[
+                  // Build 2095 (V2Ray journey audit #16): the
+                  // TCP header type — the builder honours
+                  // headerType 'http' (camouflage) for tcp,
+                  // but the editor rendered the field only
+                  // for kcp/quic, so a TCP profile's header
+                  // type could never be set or even seen.
+                  _dropdown<String>(
+                    'TCP header type',
+                    _p.headerType == 'http' ? 'http' : 'none',
+                    const [('none', 'None'), ('http', 'HTTP camouflage')],
+                    (v) => setState(() {
+                      _p.headerType = v;
+                      // _readBack reads the text field; keep
+                      // the two in step.
+                      _fields['headerType']?.text = v;
+                    }),
+                  ),
+                ],
+                if (_p.network == 'xhttp') ...[
+                  // Build 2095 (V2Ray journey audit #17): the
+                  // XHTTP mode — the builder writes p.mode
+                  // into xhttpSettings, but the mode dropdown
+                  // rendered only for gRPC, so an XHTTP
+                  // profile's mode was stuck at whatever the
+                  // link carried.
+                  _dropdown<String>(
+                    'XHTTP mode',
+                    const [
+                          'auto',
+                          'packet-up',
+                          'stream-up',
+                          'stream-one',
+                        ].contains(_p.mode)
+                        ? _p.mode
+                        : 'auto',
+                    const [
+                      ('auto', 'Auto'),
+                      ('packet-up', 'Packet up'),
+                      ('stream-up', 'Stream up'),
+                      ('stream-one', 'Stream one'),
+                    ],
+                    (v) => setState(() => _p.mode = v),
+                  ),
+                ],
+                if (_p.network == 'quic') ...[
+                  // Build 2095 (V2Ray journey audit #18): the
+                  // QUIC security/key — the codec carries
+                  // them in host/path (the standard link
+                  // parameters security/key), but the editor
+                  // rendered host/path only for the ws
+                  // family, so a QUIC profile's security and
+                  // key were invisible and uneditable.
+                  _text(
+                    'host',
+                    'QUIC security (none / aes-128-gcm / chacha20-poly1305)',
+                  ),
+                  _text('path', 'QUIC key'),
+                ],
                 if (_p.network == 'kcp' || _p.network == 'quic')
                   _text('headerType', l.fieldHeaderType),
                 if (_p.network == 'kcp') _text('path', l.fieldSeed),
+                // Build 2095 (V2Ray journey audit #27): the
+                // per-profile mux override — mux was a
+                // global-only switch buried in Settings, so
+                // one profile could not opt in or out.
+                if (proto == Protocol.vless ||
+                    proto == Protocol.vmess ||
+                    proto == Protocol.trojan ||
+                    proto == Protocol.shadowsocks)
+                  _dropdown<String>(
+                    'Mux (this config)',
+                    _p.muxOverride,
+                    const [
+                      ('', 'Use the global setting'),
+                      ('on', 'On for this config'),
+                      ('off', 'Off for this config'),
+                    ],
+                    (v) => setState(() => _p.muxOverride = v),
+                  ),
               ]),
               _section(l.sectionSecurity, [
                 _chipPicker<String>(
@@ -1440,15 +1844,25 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
               // through the fallback path, so the home toggle
               // tries the AWG engine first too.
               _section('AmneziaWG', [
-                _text('awgJc', 'Jc — junk packets before the handshake'),
-                _text('awgJmin', 'Jmin — smallest junk packet (bytes)'),
-                _text('awgJmax', 'Jmax — largest junk packet (bytes)'),
-                _text('awgS1', 'S1 — handshake init padding (bytes)'),
-                _text('awgS2', 'S2 — handshake response padding (bytes)'),
-                _text('awgH1', 'H1 — init packet magic header'),
-                _text('awgH2', 'H2 — response packet magic header'),
-                _text('awgH3', 'H3 — underload packet magic header'),
-                _text('awgH4', 'H4 — transport packet magic header'),
+                _text('awgJc', 'Jc — junk packets before the handshake', numeric: true),
+                _text('awgJmin', 'Jmin — smallest junk packet (bytes)', numeric: true),
+                _text('awgJmax', 'Jmax — largest junk packet (bytes)', numeric: true),
+                _text('awgS1', 'S1 — handshake init padding (bytes)', numeric: true),
+                _text('awgS2', 'S2 — handshake response padding (bytes)', numeric: true),
+                _text('awgS3', 'S3 — cookie reply padding (bytes)', numeric: true),
+                _text('awgS4', 'S4 — data packet padding (bytes)', numeric: true),
+                _text('awgH1', 'H1 — init packet magic header', numeric: true),
+                _text('awgH2', 'H2 — response packet magic header', numeric: true),
+                _text('awgH3', 'H3 — underload packet magic header', numeric: true),
+                _text('awgH4', 'H4 — transport packet magic header', numeric: true),
+                _text('awgI1', 'I1 — signature packet before the handshake'),
+                _text('awgI2', 'I2 — signature packet (response side)'),
+                _text('awgI3', 'I3 — signature packet (underload)'),
+                _text('awgI4', 'I4 — signature packet (transport)'),
+                _text('awgI5', 'I5 — signature packet (extra)'),
+                _text('awgJ1', 'J1 — controlled junk packet'),
+                _text('awgJ2', 'J2 — controlled junk packet'),
+                _text('awgJ3', 'J3 — controlled junk packet'),
                 Text(
                   'These shape the WireGuard handshake so it does '
                   'not match the plain protocol signature. They '
@@ -1460,6 +1874,21 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                   'the server, Ember falls back to plain WireGuard.',
                   style: Ember.caption,
                 ),
+                Text(
+                  // Build 2106 (verification iteration 1, M2):
+                  // the blanket claim above does not hold for
+                  // J1–J3 — the WG Tunnel engine has no slot
+                  // for them. The editor is where J values are
+                  // deliberately entered, so it is where the
+                  // exception must be stated.
+                  'Exception: J1–J3 are NOT applied — this '
+                  'engine does not support them. They are kept '
+                  'in the profile and written back on export '
+                  '(other clients can use them), but a profile '
+                  'whose only AmneziaWG values are J1–J3 '
+                  'connects as plain WireGuard.',
+                  style: Ember.caption,
+                ),
               ]),
             if (proto == Protocol.tuic)
               _section('TUIC', [
@@ -1468,6 +1897,118 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                 _text('udpRelayMode', l.fieldUdpRelayMode),
                 _text('sni', 'SNI'),
                 _text('alpn', 'ALPN'),
+              ]),
+            // Build 2075: the sidecar protocols' own
+            // sections. These profiles are served by the
+            // sing-box / Mieru engines, not the Xray core —
+            // the fields shown are exactly the ones those
+            // engines read.
+            if (proto == Protocol.snell)
+              _section('Snell (via sing-box)', [
+                _text('snellVersion', 'Version', numeric: true),
+                _dropdown<String>('Obfs', _p.obfs, const [
+                  ('', '—'),
+                  ('http', 'http'),
+                  ('tls', 'tls'),
+                ], (v) => setState(() => _p.obfs = v)),
+                if (_p.obfs.isNotEmpty)
+                  _text('obfsPassword', 'Obfs host'),
+                Text(
+                  'Version 4 is what the bundled engine accepts; '
+                  'version 5 is refused by it.',
+                  style: Ember.caption,
+                ),
+              ]),
+            if (proto == Protocol.naive)
+              _section('NaiveProxy (via sing-box)', [
+                _text('sni', 'SNI'),
+                Text(
+                  'Leave SNI empty to use the server address. '
+                  'The connection is HTTPS-shaped by design.',
+                  style: Ember.caption,
+                ),
+              ]),
+            if (proto == Protocol.mieru)
+              _section('Mieru', [
+                _dropdown<String>(
+                  'Transport',
+                  _v('mieruTransport'),
+                  const [('tcp', 'TCP'), ('udp', 'UDP')],
+                  (v) => setState(() => _fields['mieruTransport']?.text = v),
+                ),
+                Text(
+                  'Served by the bundled Mieru client. The '
+                  'username and password are in the basic '
+                  'section above.',
+                  style: Ember.caption,
+                ),
+              ]),
+            if (proto == Protocol.tailscale)
+              _section('Tailscale (via sing-box)', [
+                _text('tsAuthKey', 'Auth key', multiline: true, mono: true),
+                Text(
+                  'No server is needed: the key joins this '
+                  'device to your tailnet, and the tunnel exits '
+                  'through the exit node you pick in Tailscale. '
+                  'The key is stored with the profile.',
+                  style: Ember.caption,
+                ),
+              ]),
+            if (proto == Protocol.openconnect)
+              _section('OpenConnect (via sing-box)', [
+                Text(
+                  'The server and port are in the basic section '
+                  'above, with the username and password. AnyConnect / '
+                  'ocserv servers are the usual targets.',
+                  style: Ember.caption,
+                ),
+              ]),
+            if (proto == Protocol.sudoku)
+              _section('Sudoku (Hiddify engine)', [
+                _dropdown<String>('AEAD method', _sudokuAead, const [
+                  ('', 'Default (chacha20-poly1305)'),
+                  ('chacha20-poly1305', 'chacha20-poly1305'),
+                  ('aes-128-gcm', 'aes-128-gcm'),
+                  ('none', 'none'),
+                ], (v) => setState(() => _sudokuAead = v)),
+                _text('sudokuPadMin', 'Padding min (empty = 10)', numeric: true),
+                _text('sudokuPadMax', 'Padding max (empty = 30)', numeric: true),
+                _dropdown<String>('Table type', _sudokuTable, const [
+                  ('', 'Default (prefer_entropy)'),
+                  ('prefer_entropy', 'prefer_entropy'),
+                  ('prefer_ascii', 'prefer_ascii'),
+                  ('up_ascii_down_entropy', 'up_ascii_down_entropy'),
+                  ('up_entropy_down_ascii', 'up_entropy_down_ascii'),
+                ], (v) => setState(() => _sudokuTable = v)),
+                _dropdown<String>('Pure downlink', _sudokuPure, const [
+                  ('', 'Default (on)'),
+                  ('on', 'On'),
+                  ('off', 'Off'),
+                ], (v) => setState(() => _sudokuPure = v)),
+                _text('sudokuCustomTable', 'Custom table (advanced)'),
+                _dropdown<String>('HTTP mask', _sudokuMask, const [
+                  ('', 'Off'),
+                  ('on', 'On'),
+                ], (v) => setState(() => _sudokuMask = v)),
+                if (_sudokuMask == 'on') ...[
+                  _dropdown<String>('Mask mode', _sudokuMaskMode, const [
+                    ('', 'Default (legacy)'),
+                    ('legacy', 'legacy'),
+                    ('stream', 'stream'),
+                    ('poll', 'poll'),
+                    ('ws', 'ws'),
+                    ('auto', 'auto'),
+                  ], (v) => setState(() => _sudokuMaskMode = v)),
+                  _text('sudokuMaskHost', 'Mask host'),
+                  _text('sudokuMaskPath', 'Mask path root'),
+                ],
+                Text(
+                  'Served by the bundled Sudoku engine '
+                  '(Hiddify\'s sing-box fork) when the Sudoku '
+                  'switch in Settings is on. The key is in '
+                  'the basic section above.',
+                  style: Ember.caption,
+                ),
               ]),
             // Sample C's foot (build 2050): test / share
             // actions and the live status card. Saving lives
@@ -1537,7 +2078,9 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                       EmberChip(
                         label: connectedThis ? 'Disconnect' : 'Connect',
                         selected: connectedThis,
-                        onTap: saved
+                        // Build 2092 (item 42): inert while a
+                        // connect cycle is in flight.
+                        onTap: saved && !_connecting
                             ? () => unawaited(_connectFromEditor(connectedThis))
                             : null,
                       ),
@@ -1548,6 +2091,7 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

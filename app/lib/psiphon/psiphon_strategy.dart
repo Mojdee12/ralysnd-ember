@@ -33,12 +33,22 @@ String psiphonMethodName(String method) =>
 /// Auto runs the ladder with unavailable rungs dropped (E needs
 /// tested edges, P needs a pairing, X needs an upstream) and the
 /// remembered winner for this network moved first.
+///
+/// [bridgeMode] (build 2075, feature item 10) governs the
+/// fronted "bridge" rungs (A CDN fronting, E clean IP):
+/// 'auto' = today's ladder; 'on' = bridges only (the plain
+/// direct rung D never runs — every attempt goes through a
+/// fronted or relayed path, C Conduit included); 'off' = no
+/// bridges (A and E never run; direct and relayed paths do).
+/// A pinned method ignores the policy — an explicit pick is
+/// explicit.
 List<String> psiphonRungOrder({
   required String method,
   required String lastWinner,
   required bool hasEdges,
   required bool hasPairing,
   required bool hasUpstream,
+  String bridgeMode = 'auto',
 }) {
   bool available(String rung) {
     switch (rung) {
@@ -56,7 +66,13 @@ List<String> psiphonRungOrder({
   if (method.isNotEmpty) {
     return available(method) ? [method] : const [];
   }
-  final order = psiphonAutoLadder.where(available).toList();
+  var order = psiphonAutoLadder.where(available).toList();
+  if (bridgeMode == 'on') {
+    order = order.where((r) => r != 'D').toList();
+  } else if (bridgeMode == 'off') {
+    order = order.where((r) => r != 'A' && r != 'E').toList();
+  }
+  if (order.isEmpty) order = psiphonAutoLadder.where(available).toList();
   if (lastWinner.isNotEmpty && order.contains(lastWinner)) {
     order.remove(lastWinner);
     order.insert(0, lastWinner);

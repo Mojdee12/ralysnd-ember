@@ -97,7 +97,10 @@ def bake():
     draw = ImageDraw.Draw(img, "RGBA")
 
     # ---- HUD grid: ~70 screen px spacing, quiet ----
-    grid_rgba = (32, 51, 77, int(0.26 * 255))
+    # Build 2118 (appearance fix round): alpha 0.26 -> 0.15 — at
+    # display scale the old grid read as a harsh coordinate cage
+    # next to the samples' near-invisible one.
+    grid_rgba = (32, 51, 77, int(0.15 * 255))
     step = 16.0 * SCALE  # 16 field units = ~69 screen px
     x = 8.0 * SCALE
     while x < W:
@@ -126,7 +129,7 @@ def bake():
                 break
         if not ok:
             continue
-        alpha = int(rng.uniform(34, 54))
+        alpha = int(rng.uniform(26, 42))
         color = (42, 66, 99, alpha)
         pts = [(ox, oy)]
         segs = int(rng.integers(2, 5))
@@ -159,7 +162,7 @@ def bake():
         ox, oy = rng.uniform(4, FIELD_W - 4), rng.uniform(4, FIELD_H - 4)
         if land_at(ox, oy) or land_at(ox + 3, oy) or land_at(ox, oy + 3):
             continue
-        alpha = int(rng.uniform(38, 58))
+        alpha = int(rng.uniform(30, 46))
         color = (42, 66, 99, alpha)
         cxp, cyp = ox * SCALE, oy * SCALE
         arm = 2.2 * SCALE
@@ -168,10 +171,17 @@ def bake():
         ticks += 1
 
     # ---- the dot field: 1-unit lattice, land-sampled ----
-    interior = (61, 90, 125)    # #3D5A7D
-    dense = (78, 112, 153)      # #4E7099
-    coastal = (91, 127, 168)    # #5B7FA8
-    r_screen = 1.22             # dot radius in screen px at reference size
+    # Build 2118 (appearance fix round): the palette is greyer
+    # and paler (the old saturated steel blues read as blue
+    # blocks), the core is smaller (r 1.22 -> 1.02 screen px)
+    # and the soft skirt narrower and fainter (1.55x/0.16 ->
+    # 1.35x/0.10), so dots stay separate round points at
+    # display scale instead of merging into clusters — the
+    # samples' fine dotted map.
+    interior = (64, 82, 102)    # #405266
+    dense = (82, 102, 124)      # #52667C
+    coastal = (104, 124, 146)   # #687C92
+    r_screen = 1.02             # dot radius in screen px at reference size
     r_bake = r_screen * SCALE / COVER
     dots = 0
     for gx in range(0, int(FIELD_W)):
@@ -190,20 +200,20 @@ def bake():
             px, py = (fx + jx) * SCALE, (fy + jy) * SCALE
             roll = h2(gx, gy, 3)
             if coast:
-                color, alpha = coastal, 0.88 + 0.12 * roll
+                color, alpha = coastal, 0.82 + 0.12 * roll
                 radius = r_bake * (0.92 + 0.26 * h2(gx, gy, 4))
             elif roll < 0.22:
-                color, alpha = dense, 0.78 + 0.14 * roll
+                color, alpha = dense, 0.70 + 0.14 * roll
                 radius = r_bake * (0.88 + 0.3 * h2(gx, gy, 4))
             else:
-                color, alpha = interior, 0.62 + 0.26 * roll
+                color, alpha = interior, 0.55 + 0.22 * roll
                 radius = r_bake * (0.85 + 0.3 * h2(gx, gy, 4))
             a = int(alpha * 255)
             # Soft skirt, then the core.
-            sr = radius * 1.55
+            sr = radius * 1.35
             draw.ellipse(
                 [px - sr, py - sr, px + sr, py + sr],
-                fill=color + (int(a * 0.16),),
+                fill=color + (int(a * 0.10),),
             )
             draw.ellipse(
                 [px - radius, py - radius, px + radius, py + radius],

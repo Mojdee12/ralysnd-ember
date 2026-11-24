@@ -50,7 +50,11 @@ List<String> buildWarpArgs(
     '--scan', w.scan,
     '--ip', w.ipVersion,
   ];
-  final masqueFamily = w.protocol == 'masque' || w.protocol == 'gool';
+  // Build 2129: mim is MASQUE-family here too — both hops
+  // ride the one carrier, so the SNI / H2 / fragment / obfs
+  // shape is the masque shape.
+  final masqueFamily =
+      w.protocol == 'masque' || w.protocol == 'gool' || w.protocol == 'mim';
   if (masqueFamily) {
     args.addAll(['--masque-sni', w.masqueSni]);
     if (w.transport == 'h2') {

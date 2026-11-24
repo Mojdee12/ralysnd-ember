@@ -31,11 +31,22 @@ import kotlin.concurrent.thread
  *   account's registration budget and hides the refusal). The
  *   only renewal path is the explicit Renew action below.
  * - Readiness is a SINGLE-socket SOCKS greeting wait (up to
- *   45 s): the listener binds early but only answers once a
+ *   45 s direct; a chained run, whose scan must validate
+ *   through the session's exit-node, gets 150 s — build
+ *   2080): the listener binds early but only answers once a
  *   gateway has passed a real data-plane check, and a 500 ms
  *   poll loop would queue dead greetings ahead of the real
  *   connection. A sibling thread watches the process and
- *   closes the socket if the core dies mid-wait.
+ *   closes the socket if the core dies mid-wait. Build 2087
+ *   (analysis A1): the greeting CONNECT is retried until the
+ *   deadline while the process lives — a loopback connect to
+ *   a not-yet-bound port is refused instantly, and the old
+ *   one-shot attempt latched "error" in milliseconds on the
+ *   chain path's registration run, whose bind follows the
+ *   Cloudflare registration round-trips. A refused connect
+ *   sends nothing, so the single-greeting rule is kept:
+ *   exactly one greeting is ever written, on the one connect
+ *   that succeeds.
  * - The child PID is written to a pid file at spawn; the next
  *   start kills a recorded orphan deterministically (no /proc
  *   scan — hidepid makes that unreliable on Android 10+).
@@ -52,6 +63,20 @@ object EmberWarpCore {
 
     /** The exit port paired with a probe run. */
     const val PROBE_EXIT_PORT = 20854
+
+    /** The greeting wait for a direct run: the core's own
+     *  readiness contract (the listener answers only after a
+     *  gateway carried a real check). */
+    const val GREETING_WAIT_MS = 45_000L
+
+    /** The greeting wait for a CHAINED run (build 2080): the
+     *  scan's every check must additionally ride the Xray
+     *  session's exit-node — a full proxied hop with its own
+     *  handshake on a filtered line — before it can pass, so
+     *  a cold chained scan gets three direct budgets. The
+     *  VPN service's initial chain grace is sized to match
+     *  (XrayVpnService.WARP_CHAIN_INITIAL_GRACE_MS). */
+    const val CHAIN_GREETING_WAIT_MS = 150_000L
 
     /** The core's own words for "this identity is refused":
      *  the tunnel handshakes but carries nothing until the
@@ -85,6 +110,35 @@ object EmberWarpCore {
     @Volatile
     var renewNeeded: Boolean = false
         private set
+
+    /** When the current spawn started (build 2080). */
+    @Volatile
+    var startedAtMs: Long = 0
+        private set
+
+    /** The current spawn is a chain run (its argv carries
+     *  --upstream: the whole egress rides the Xray session it
+     *  serves). Chained cold scans validate through the
+     *  exit-node — an extra proxied hop — so the greeting
+     *  wait is sized for them (build 2080). */
+    @Volatile
+    var chainedRun: Boolean = false
+        private set
+
+    /**
+     * Build 2080: the core is in its FIRST scan — spawned,
+     * alive, still in the starting stage, its readiness wait
+     * still running. The ChainSupervisor exempts this state:
+     * respawning a core mid-scan kills the scan and restarts
+     * the very clock the supervisor is measuring (the dead-
+     * chain churn of the 2026-11-15 diagnosis). The state is
+     * bounded by the greeting wait itself: when that wait
+     * concludes, the stage leaves "starting" and supervision
+     * applies in full again.
+     */
+    fun scanInProgress(): Boolean =
+        running && !ready && stage == "starting" &&
+            (process?.isAlive ?: false)
 
     private var process: Process? = null
     private var readyThread: Thread? = null
@@ -150,8 +204,10 @@ object EmberWarpCore {
         appendLog(context, "emberwarp: renewed identity settled")
     }
 
-    /** Kills a recorded orphan from a previous process life. */
-    private fun reapOrphan(context: Context) {
+    /** Kills a recorded orphan from a previous process life.
+     *  Internal (build 2125, audit A25-18): EmberApplication
+     *  also calls it at process birth. */
+    internal fun reapOrphan(context: Context) {
         val file = pidFile(context)
         try {
             val pid = file.readText().trim().toIntOrNull() ?: return
@@ -180,10 +236,20 @@ object EmberWarpCore {
      * Spawns the core with [args] (built on the Dart side from
      * the warp profile; always protocol+scan+ip). Returns true
      * when the process started; readiness completes
-     * asynchronously — poll [state].
+     * asynchronously — poll [state]. [greetingWaitMs] overrides
+     * the readiness budget (build 2087): the chain path's
+     * direct identity-registration run on the probe port passes
+     * the chain grace (150 s), because registration round-trips
+     * precede its first scan; null keeps the run's own budget
+     * (45 s direct / 150 s chained).
      */
     @Synchronized
-    fun start(context: Context, args: List<String>, port: Int): Boolean {
+    fun start(
+        context: Context,
+        args: List<String>,
+        port: Int,
+        greetingWaitMs: Long? = null,
+    ): Boolean {
         appContext = context.applicationContext
         stop()
         settle(context)
@@ -221,16 +287,23 @@ object EmberWarpCore {
             ready = false
             stage = "starting"
             lastError = ""
+            startedAtMs = System.currentTimeMillis()
+            chainedRun = args.contains("--upstream")
             try {
                 // Process.pid() is a Java 9 surface the Android
                 // stubs do not expose to Kotlin; reach it
                 // reflectively (the runtime implements it).
                 val pid = p.javaClass.getMethod("pid").invoke(p) as? Long
-                if (pid != null) pidFile(context).writeText(pid.toString())
+                if (pid != null) AtomicFile.writeText(pidFile(context), pid.toString())
             } catch (_: Throwable) {
                 // Best-effort bookkeeping only.
             }
-            watchReadiness(context, p, port)
+            watchReadiness(
+                context, p, port,
+                greetingWaitMs
+                    ?: if (chainedRun) CHAIN_GREETING_WAIT_MS
+                    else GREETING_WAIT_MS,
+            )
             watchLog(context, p)
             return true
         } catch (e: Exception) {
@@ -241,10 +314,23 @@ object EmberWarpCore {
         }
     }
 
-    /** The single-socket greeting wait + liveness sibling. */
-    private fun watchReadiness(context: Context, p: Process, port: Int) {
+    /** The single-socket greeting wait + liveness sibling.
+     *  [greetingWaitMs] is the core's own readiness contract:
+     *  45 s for a direct run; a chained run's scan must also
+     *  traverse the session's exit-node before any gateway
+     *  check can pass, so it gets the chain budget (build
+     *  2080). Build 2087 (analysis A1): the connect phase
+     *  retries until the deadline while the process lives —
+     *  "error" latches only on process death or deadline
+     *  expiry, never on the first refusal. */
+    private fun watchReadiness(
+        context: Context,
+        p: Process,
+        port: Int,
+        greetingWaitMs: Long,
+    ) {
         readyThread = thread(isDaemon = true, name = "emberwarp-ready") {
-            val deadline = System.currentTimeMillis() + 45_000
+            val deadline = System.currentTimeMillis() + greetingWaitMs
             var socket: Socket? = null
             // The liveness sibling: a dead core closes the
             // socket so the greeting read cannot hang past it.
@@ -262,39 +348,97 @@ object EmberWarpCore {
                 }
             }
             try {
-                val s = Socket()
-                socket = s
-                s.connect(
-                    InetSocketAddress("127.0.0.1", port),
-                    10_000,
-                )
-                // SOCKS5 greeting: VER=5, one method, no-auth.
-                s.getOutputStream().write(byteArrayOf(5, 1, 0))
-                s.getOutputStream().flush()
-                while (System.currentTimeMillis() < deadline) {
-                    val remaining =
-                        (deadline - System.currentTimeMillis())
-                            .coerceIn(1, 45_000)
-                    s.soTimeout = remaining.toInt()
-                    val reply = ByteArray(2)
-                    var read = 0
-                    while (read < 2) {
-                        val n = s.getInputStream().read(reply, read, 2 - read)
-                        if (n < 0) break
-                        read += n
+                // Build 2087 (analysis A1): the greeting connect
+                // is retried until the deadline while the process
+                // lives. A loopback connect to a port with no
+                // listener yet is refused instantly (RST) — the
+                // 10 s connect timeout governs a silent peer, not
+                // a refusal — so the old single attempt latched
+                // "error" within milliseconds whenever the core
+                // was still provisioning or binding, above all
+                // the chain path's direct registration run, whose
+                // bind follows the Cloudflare round-trips. A
+                // refused connect sends no greeting, so retrying
+                // it cannot queue dead greetings ahead of the
+                // real connection: the single greeting below is
+                // still the only one ever written.
+                var greeted: Socket? = null
+                while (greeted == null) {
+                    if (!p.isAlive) break
+                    if (System.currentTimeMillis() >= deadline) break
+                    val candidate = Socket()
+                    socket = candidate
+                    try {
+                        candidate.connect(
+                            InetSocketAddress("127.0.0.1", port),
+                            10_000,
+                        )
+                        greeted = candidate
+                    } catch (e: Exception) {
+                        try {
+                            candidate.close()
+                        } catch (_: Exception) {
+                        }
+                        if (socket === candidate) socket = null
+                        if (!p.isAlive) break
+                        try {
+                            Thread.sleep(250)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
                     }
-                    if (read == 2 && reply[0].toInt() == 5) {
-                        ready = true
-                        stage = "ready"
-                        break
-                    }
-                    if (read < 2) break
                 }
-                if (!ready && process === p) {
-                    stage = if (renewNeeded) "refused" else "error"
-                    if (lastError.isEmpty()) {
-                        lastError =
-                            "the EmberWarp core did not answer in time"
+                val s = greeted
+                if (s == null) {
+                    // The budget ran out with no listener, or the
+                    // core died trying: the terminal word matches
+                    // the read path's — a live core that never
+                    // answered is a timeout; a dead one stopped.
+                    if (process === p && !ready) {
+                        stage = if (renewNeeded) "refused" else "error"
+                        if (lastError.isEmpty()) {
+                            lastError = if (p.isAlive) {
+                                "the EmberWarp core did not answer in time"
+                            } else {
+                                "the EmberWarp core stopped before it was ready"
+                            }
+                        }
+                    }
+                } else {
+                    // SOCKS5 greeting: VER=5, one method, no-auth.
+                    s.getOutputStream().write(byteArrayOf(5, 1, 0))
+                    s.getOutputStream().flush()
+                    while (System.currentTimeMillis() < deadline) {
+                        // Build 2080: the read may block for the
+                        // whole remaining wait — the liveness
+                        // sibling closes this socket if the core
+                        // dies, so a long read cannot hang past it.
+                        // (The old 45 s cap would have timed the
+                        // read out mid-scan on a chained run.)
+                        val remaining =
+                            (deadline - System.currentTimeMillis())
+                                .coerceIn(1, greetingWaitMs)
+                        s.soTimeout = remaining.toInt()
+                        val reply = ByteArray(2)
+                        var read = 0
+                        while (read < 2) {
+                            val n = s.getInputStream().read(reply, read, 2 - read)
+                            if (n < 0) break
+                            read += n
+                        }
+                        if (read == 2 && reply[0].toInt() == 5) {
+                            ready = true
+                            stage = "ready"
+                            break
+                        }
+                        if (read < 2) break
+                    }
+                    if (!ready && process === p) {
+                        stage = if (renewNeeded) "refused" else "error"
+                        if (lastError.isEmpty()) {
+                            lastError =
+                                "the EmberWarp core did not answer in time"
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -328,6 +472,16 @@ object EmberWarpCore {
             val file = logFile(context)
             while (p.isAlive) {
                 try {
+                    // Build 2095 (audit 6-2): warp.log is
+                    // appended by the core process itself;
+                    // cap it periodically from here (the
+                    // append handle re-seeks to the end, and
+                    // the watch offset restarts with the
+                    // truncation).
+                    if (file.exists() && file.length() > 1024 * 1024) {
+                        file.writeText("")
+                        logOffset = 0
+                    }
                     if (file.exists() && file.length() > logOffset) {
                         RandomAccessFile(file, "r").use { raf ->
                             val start = (logOffset - REFUSAL_LINE.length)
@@ -380,6 +534,8 @@ object EmberWarpCore {
         process = null
         running = false
         ready = false
+        startedAtMs = 0
+        chainedRun = false
         if (stage == "starting" || stage == "ready") stage = "idle"
         readyThread?.interrupt()
         logThread?.interrupt()
@@ -513,6 +669,7 @@ object EmberWarpCore {
         "available" to binary(context).exists(),
         "running" to running,
         "ready" to ready,
+        "scanInProgress" to scanInProgress(),
         "stage" to stage,
         "identityPresent" to identityPresent(context),
         "renewNeeded" to renewNeeded,

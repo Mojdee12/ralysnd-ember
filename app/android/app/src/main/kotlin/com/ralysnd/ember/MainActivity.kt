@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.ActivityNotFoundException
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
@@ -11,9 +12,13 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import android.net.Uri
@@ -80,6 +85,16 @@ class MainActivity : FlutterActivity() {
      *  machinery the OpenVPN picker built). */
     private var pendingTextPick: Result? = null
 
+    /** The result + payload waiting for the document
+     *  creator's answer (build 2095: backup save-to-file). */
+    // Build 2095 (feature 6): gallery image pick for QR
+    // decode — the picked image is copied to the cache dir
+    // and its PATH returned (the decoder needs a file).
+    private var pendingImagePick: Result? = null
+
+    private var pendingSave: Result? = null
+    private var pendingSaveContent: String = ""
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Build 2068: belt and braces — EmberApplication has
         // already installed the crash recorder by now (it runs
@@ -90,7 +105,146 @@ class MainActivity : FlutterActivity() {
         CrashLog.install(this)
         holdPhoneUpright(resources.configuration)
         super.onCreate(savedInstanceState)
+        // Build 2116 (B10-1): a Psiphon state snapshot that
+        // claims a live session while the :psiphon process
+        // is not alive and the snapshot is past the
+        // staleness bound is a dead process's leavings —
+        // delete it, so nothing downstream can adopt it.
+        // The read side (parsePublishedState) already
+        // demotes such a snapshot; this keeps the file
+        // itself honest. Both guards must hold, so a live
+        // process's fresh snapshot is never touched.
+        try {
+            if (PsiphonExternalWatchdog.findPsiphonPid(this) == null) {
+                PsiphonVpnService.clearStalePublishedState(this)
+            }
+        } catch (_: Throwable) {
+            // Hygiene only — never a start failure.
+        }
+        // Build 2075: the notification's Switch-server action
+        // may be what launched the app.
+        // Build 2095 (audit 5-9): the rotate extra is
+        // honoured only with this install's nonce stamp.
+        if (intent?.getStringExtra("ember_action") == "rotate" &&
+            EmberIntentNonce.matches(this, intent)
+        ) {
+            pendingNotificationRotate = true
+        }
+        // Build 2104: the WG Tunnel companion notification's
+        // Disconnect may be what launched the app — a
+        // nonce-stamped stop, performed here in Kotlin (the
+        // old AWG service's ACTION_STOP funnelled through
+        // WgTunnelEngine.stop; it needs no Dart round-trip,
+        // and the engine records it as a user stop).
+        // Build 2106 (verification iteration 2, M-1): via
+        // stopFromNotification, so the stop advances the
+        // user-stop sequence Dart's peer walk watches.
+        if (intent?.getStringExtra("ember_action") == "stop" &&
+            EmberIntentNonce.matches(this, intent)
+        ) {
+            WgTunnelEngine.stopFromNotification(this)
+        }
+        // Build 2085 (audit F-H15): an .ovpn file opened with /
+        // shared to Ember may be what launched the app — read it
+        // now (the granting app's URI permission is tied to this
+        // launch) and flush it to Dart once the channel exists.
+        // Build 2095 (audit #38): a config-scheme VIEW is a
+        // deep link, never an .ovpn file read.
+        val deepLink = extractDeepLink(intent)
+        if (deepLink != null) {
+            pendingDeepLink = deepLink
+        } else {
+            extractOvpnIntent(intent)?.let { pendingOvpnFile = it }
+        }
+        // Build 2093: a launcher-shortcut tap may be what launched
+        // the app — hold the profile id until the channel exists.
+        LauncherShortcuts.extractProfileIdChecked(this, intent)?.let {
+            pendingShortcutProfileId = it
+        }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Build 2075 (feature item 12): the V2Ray
+        // notification's Switch-server action. Forwarded to
+        // Dart, which owns the fallback group and performs
+        // the same switch as the in-app control.
+        if (intent.getStringExtra("ember_action") == "rotate" &&
+            EmberIntentNonce.matches(this, intent)
+        ) {
+            val ch = appChannel
+            if (ch != null) {
+                runOnUiThread { ch.invokeMethod("notificationRotate", null) }
+            } else {
+                pendingNotificationRotate = true
+            }
+        }
+        // Build 2104: the companion notification's Disconnect
+        // while the app is already running — the same
+        // Kotlin-side stop as the cold-start case above.
+        // Build 2106 (M-1): stopFromNotification, as there.
+        if (intent.getStringExtra("ember_action") == "stop" &&
+            EmberIntentNonce.matches(this, intent)
+        ) {
+            WgTunnelEngine.stopFromNotification(this)
+        }
+        // Build 2095 (audit #38): a config link while the app
+        // is already running.
+        val deepLink = extractDeepLink(intent)
+        if (deepLink != null) {
+            val ch = appChannel
+            if (ch != null) {
+                runOnUiThread {
+                    ch.invokeMethod("deepLink", mapOf("link" to deepLink))
+                }
+            } else {
+                pendingDeepLink = deepLink
+            }
+            return
+        }
+        // Build 2085 (audit F-H15): the same .ovpn intake
+        // while the app is already running.
+        extractOvpnIntent(intent)?.let { file ->
+            val ch = appChannel
+            if (ch != null) {
+                runOnUiThread { ch.invokeMethod("openOvpnFile", file) }
+            } else {
+                pendingOvpnFile = file
+            }
+        }
+        // Build 2093: the same launcher-shortcut tap while the
+        // app is already running.
+        // Build 2095 (audit 5-9): nonce-checked, as in onCreate.
+        LauncherShortcuts.extractProfileIdChecked(this, intent)?.let { id ->
+            val ch = appChannel
+            if (ch != null) {
+                runOnUiThread {
+                    ch.invokeMethod("shortcutConnect", mapOf("profileId" to id))
+                }
+            } else {
+                pendingShortcutProfileId = id
+            }
+        }
+    }
+
+    /** Build 2075: a rotate request that arrived before the
+     *  app channel existed; flushed in configureFlutterEngine. */
+    private var pendingNotificationRotate = false
+
+    /** Build 2085 (audit F-H15): an .ovpn file that arrived
+     *  before the app channel existed; flushed in
+     *  configureFlutterEngine, like the rotate request. */
+    private var pendingOvpnFile: Map<String, String>? = null
+
+    /** Build 2093: a launcher-shortcut tap that arrived before
+     *  the app channel existed; flushed in configureFlutterEngine,
+     *  like the rotate request. */
+    private var pendingShortcutProfileId: String? = null
+
+    /** Build 2095 (whole-app journey audit #38): a config
+     *  link (vless://…) that cold-started the app; flushed in
+     *  configureFlutterEngine, like the rotate request. */
+    private var pendingDeepLink: String? = null
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
@@ -149,6 +303,37 @@ class MainActivity : FlutterActivity() {
     /** Build 2065: the app channel, kept so the network callback
      *  can push 'networkChanged' events to Dart. */
     private var appChannel: MethodChannel? = null
+
+    /** Build 2136 (item 1): the screen-off receiver behind the
+     *  stop-on-sleep setting. Registered in configureFlutterEngine;
+     *  it only forwards the broadcast to Dart — the setting and
+     *  the disconnect live on the Dart side, so off means the
+     *  event is dropped there and nothing changes. */
+    private var screenOffReceiver: android.content.BroadcastReceiver? = null
+
+    private fun registerScreenOffReceiver() {
+        if (screenOffReceiver != null) return
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(
+                context: android.content.Context?,
+                intent: Intent?,
+            ) {
+                if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                    appChannel?.invokeMethod("screenOff", null)
+                }
+            }
+        }
+        try {
+            registerReceiver(
+                receiver,
+                android.content.IntentFilter(Intent.ACTION_SCREEN_OFF),
+            )
+            screenOffReceiver = receiver
+        } catch (e: Exception) {
+            // A platform that refuses the registration leaves
+            // stop-on-sleep inert rather than crashing startup.
+        }
+    }
 
     /** Build 2065: the current network's identity, as far as the
      *  platform exposes it without a location permission: the
@@ -222,12 +407,135 @@ class MainActivity : FlutterActivity() {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app/android")
         appChannel = channel
         registerNetworkCallback()
+        registerScreenOffReceiver()
+        // Build 2075: a notification Switch-server tap that
+        // cold-started the app lands here once the channel
+        // exists (see onNewIntent).
+        if (pendingNotificationRotate) {
+            pendingNotificationRotate = false
+            channel.invokeMethod("notificationRotate", null)
+        }
+        // Build 2085 (audit F-H15): a cold-started .ovpn open
+        // lands here once the channel exists (see onCreate).
+        pendingOvpnFile?.let {
+            pendingOvpnFile = null
+            channel.invokeMethod("openOvpnFile", it)
+        }
+        // Build 2093: a cold-started launcher-shortcut tap lands
+        // here once the channel exists (see onCreate).
+        pendingShortcutProfileId?.let {
+            pendingShortcutProfileId = null
+            channel.invokeMethod("shortcutConnect", mapOf("profileId" to it))
+        }
+        // Build 2095 (audit #38): a cold-started config link
+        // lands here once the channel exists (see onCreate).
+        pendingDeepLink?.let {
+            pendingDeepLink = null
+            channel.invokeMethod("deepLink", mapOf("link" to it))
+        }
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "dataDir" -> result.success(CoreService.dataDir(this).absolutePath)
-                "startCore" -> {
-                    CoreService.startCore(this, on = false)
+                // Battery usage report (build 2105): the
+                // device battery level at a session's edges.
+                // BatteryManager's capacity property is the
+                // system reading; a device that does not expose
+                // it answers -1 and the Dart side records the
+                // edge as unknown rather than as a level.
+                "batteryStatus" -> {
+                    val bm = getSystemService(
+                        android.content.Context.BATTERY_SERVICE,
+                    ) as android.os.BatteryManager
+                    val level = bm.getIntProperty(
+                        android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY,
+                    )
+                    result.success(mapOf("level" to level))
+                }
+                // Overlay-attack protection (build 2075,
+                // feature item 30): while a sensitive screen
+                // is showing (config view, QR show/scan,
+                // account pages), the window refuses to be
+                // obscured by another app's overlay. API 31+;
+                // older systems simply have no such switch.
+                // Build 2095 (feature 5): the widget reads
+                // this marker to gate its tap behind the
+                // app lock.
+                "setWidgetLock" -> {
+                    val on = call.argument<Boolean>("on") ?: false
+                    getSharedPreferences("ember_widget", MODE_PRIVATE)
+                        .edit().putBoolean("lock_enabled", on).apply()
                     result.success(null)
+                }
+                "setSecureFlag" -> {
+                    // Build 2095 (whole-app journey audit
+                    // #45): FLAG_SECURE while the lock page or
+                    // a sensitive surface is up — the recents
+                    // thumbnail must not keep a snapshot of
+                    // unlocked content.
+                    val on = call.argument<Boolean>("on") ?: false
+                    runOnUiThread {
+                        if (on) {
+                            window.addFlags(
+                                android.view.WindowManager.LayoutParams
+                                    .FLAG_SECURE,
+                            )
+                        } else {
+                            window.clearFlags(
+                                android.view.WindowManager.LayoutParams
+                                    .FLAG_SECURE,
+                            )
+                        }
+                    }
+                    result.success(null)
+                }
+                "setOverlayGuard" -> {
+                    val on = call.argument<Boolean>("on") ?: false
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        try {
+                            window.setHideOverlayWindows(on)
+                        } catch (_: Exception) {
+                            // A window that cannot take the flag
+                            // must never break the screen.
+                        }
+                    }
+                    result.success(null)
+                }
+                // Launcher shortcuts (build 2093): the starred
+                // profiles as long-press app-icon shortcuts. The
+                // publish is best-effort on this side too — a
+                // refused publish answers success, never an error
+                // into the starring flow.
+                "publishShortcuts" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val items =
+                        (call.argument<List<Any>>("shortcuts") ?: emptyList())
+                            .mapNotNull { raw ->
+                                val m = raw as? Map<*, *> ?: return@mapNotNull null
+                                val id = m["id"] as? String
+                                val name = m["name"] as? String
+                                if (id.isNullOrBlank() || name.isNullOrBlank()) {
+                                    null
+                                } else {
+                                    id to name
+                                }
+                            }
+                    LauncherShortcuts.publish(this, items)
+                    result.success(null)
+                }
+                "clearShortcuts" -> {
+                    LauncherShortcuts.clear(this)
+                    result.success(null)
+                }
+                "startCore" -> {
+                    // Build 2095 (audit 3-4): a native start
+                    // failure crosses the channel as an error
+                    // instead of a silent success.
+                    val problem = CoreService.startCore(this, on = false)
+                    if (problem != null) {
+                        result.error("core_start_failed", problem, null)
+                    } else {
+                        result.success(null)
+                    }
                 }
                 "setOn" -> {
                     if (call.argument<Boolean>("on") != true) {
@@ -244,6 +552,15 @@ class MainActivity : FlutterActivity() {
                         CoreService.setTunnelMtu(
                             this,
                             call.argument<Int>("mtu") ?: 1500,
+                        )
+                        // Build 2127 (H4): the kill switch,
+                        // mirrored beside the MTU so the
+                        // service's death paths can read it
+                        // from prefs (a system restart of the
+                        // service keeps it too).
+                        CoreService.setKillSwitch(
+                            this,
+                            call.argument<Boolean>("killSwitch") ?: false,
                         )
                         // The first time, Android asks the user to allow the
                         // VPN; proxy mode needs no VPN. Build 2067: the
@@ -338,6 +655,13 @@ class MainActivity : FlutterActivity() {
                 "xraySetOn" -> {
                     if (call.argument<Boolean>("on") != true) {
                         XrayVpnService.stop(this)
+                        // Build 2100: an AWG session is stopped
+                        // too (before 2100 one stop reaped every
+                        // session, because one service ran them
+                        // all). Build 2104: the AWG session lives
+                        // on the WG Tunnel backend now — the stop
+                        // funnels into WgTunnelEngine.
+                        WgTunnelEngine.stop(this)
                         result.success(null)
                     } else {
                         // Build 2068: the coarse Xray breadcrumb
@@ -381,6 +705,9 @@ class MainActivity : FlutterActivity() {
                                 call.argument<Boolean>("wgWstunnel") ?: false,
                                 call.argument<List<String>>("wstunnelArgs")
                                     ?: emptyList(),
+                                // OLCRTC underlay (build 2134).
+                                call.argument<List<String>>("olcrtcArgs")
+                                    ?: emptyList(),
                             )
                         }
                         // Build 2067: guarded start handoff
@@ -403,28 +730,52 @@ class MainActivity : FlutterActivity() {
                 }
                 "xrayStop" -> {
                     XrayVpnService.stop(this)
+                    // Build 2100: dual stop — the AWG session
+                    // stops too. Build 2104: it lives on the WG
+                    // Tunnel backend (WgTunnelEngine).
+                    WgTunnelEngine.stop(this)
                     result.success(null)
                 }
-                // The AmneziaWG engine (AwgBackend, build 2040,
-                // queue 2h): start asks for the VPN permission
-                // like xraySetOn does; the service brings the
-                // TUN up and hands its fd to the userspace
-                // device — no Xray core, no SOCKS port.
+                // The AmneziaWG engine (build 2104: WG Tunnel's
+                // backend, WgTunnelEngine): start asks for the
+                // VPN permission like xraySetOn does; the
+                // backend's own VpnService brings the TUN up —
+                // no Xray core, no SOCKS port. The settings
+                // argument is the profile's canonical .conf
+                // text (build 2104; builds 2040–2103 sent a
+                // hand-composed UAPI string to the old bridge).
                 "awgSetOn" -> {
                     if (call.argument<Boolean>("on") != true) {
+                        // Dual stop, as since build 2100: one
+                        // stop reaps every session.
+                        WgTunnelEngine.stop(this)
                         XrayVpnService.stop(this)
                         result.success(null)
                     } else {
                         askForNotifications()
                         val start = {
-                            XrayVpnService.startAwg(
+                            WgTunnelEngine.start(
                                 this,
                                 call.argument<String>("name") ?: "",
                                 call.argument<String>("settings") ?: "",
-                                call.argument<String>("addresses") ?: "",
                                 call.argument<String>("dns") ?: "1.1.1.1",
+                                // Build 2102 (diagnosis C2): the
+                                // profile's IPv4 footprint; absent
+                                // (a pre-2102 caller) keeps the
+                                // historical route capture.
+                                call.argument<Boolean>("ipv4") ?: true,
                                 call.argument<Boolean>("ipv6") ?: true,
-                                call.argument<Int>("mtu") ?: 1500,
+                                // Build 2116 (audit B3-1): the
+                                // Settings tunnel MTU — Dart has
+                                // sent it since 2059 but no
+                                // reader existed; it is the
+                                // fallback when the profile
+                                // carries no usable MTU.
+                                call.argument<Int>("mtu") ?: 0,
+                                // Build 2127 (H4): the kill
+                                // switch (the library lockdown
+                                // on an unexpected drop).
+                                call.argument<Boolean>("killSwitch") ?: false,
                             )
                         }
                         // Build 2067: guarded start handoff
@@ -451,8 +802,13 @@ class MainActivity : FlutterActivity() {
                     // AmneziaWG session has no core to respawn
                     // (build 2040), so it refuses outright.
                     val config = call.argument<String>("config") ?: ""
+                    // Build 2104: the AWG session lives on the
+                    // WG Tunnel backend in THIS process — the
+                    // guard reads its live status directly (the
+                    // :awg published-snapshot staleness rule of
+                    // build 2100 is gone with the process).
                     if (config.isNotEmpty() && XrayVpnService.running &&
-                        !XrayVpnService.awgMode
+                        !WgTunnelEngine.isLive(this)
                     ) {
                         XrayVpnService.rotate(this, config)
                         result.success(true)
@@ -462,36 +818,182 @@ class MainActivity : FlutterActivity() {
                 }
                 "xrayState" -> {
                     val (up, down) = XrayVpnService.sessionTraffic()
-                    result.success(
-                        mapOf(
-                            "running" to XrayVpnService.running,
-                            "name" to XrayVpnService.profileName,
-                            "sinceMs" to XrayVpnService.startedAtMs,
-                            "up" to up,
-                            "down" to down,
-                            "coreRestarts" to XrayVpnService.coreRestarts,
-                            "coreProblem" to XrayVpnService.coreProblem,
-                            // Build 2054 (audit F-H2): the rotation
-                            // generation — the Dart side waits for
-                            // it to advance before believing a
-                            // tunnelCheck after a rotate.
-                            "rotationGen" to XrayVpnService.rotationGen,
-                            "chainUnderlay" to XrayVpnService.chainUnderlay,
-                            "chainProblem" to XrayVpnService.chainProblem,
-                            // AmneziaWG (build 2040): whether the
-                            // live tunnel is the userspace device,
-                            // and its UAPI dump — the Dart side
-                            // parses the handshake age and transfer
-                            // counters out of it.
-                            "awg" to XrayVpnService.awgMode,
-                            "awgConfig" to XrayVpnService.awgConfigDump(),
-                            // Kill switch (build 2063, feature
-                            // queue #3): the service is holding a
-                            // dead session's TUN as a blackhole —
-                            // traffic is blocked, not direct.
-                            "killSwitchHeld" to XrayVpnService.blackholeHeld,
-                        ),
+                    val baseState = mapOf(
+                        "running" to XrayVpnService.running,
+                        "name" to XrayVpnService.profileName,
+                        "sinceMs" to XrayVpnService.startedAtMs,
+                        "up" to up,
+                        "down" to down,
+                        "coreRestarts" to XrayVpnService.coreRestarts,
+                        "coreProblem" to XrayVpnService.coreProblem,
+                        // Build 2054 (audit F-H2): the rotation
+                        // generation — the Dart side waits for
+                        // it to advance before believing a
+                        // tunnelCheck after a rotate.
+                        "rotationGen" to XrayVpnService.rotationGen,
+                        "chainUnderlay" to XrayVpnService.chainUnderlay,
+                        "chainProblem" to XrayVpnService.chainProblem,
+                        // AmneziaWG (build 2104): whether the
+                        // live tunnel is the WG Tunnel backend's,
+                        // and its handshake age / transfer
+                        // counters — computed by WgTunnelEngine
+                        // from the backend's own ActiveConfig
+                        // (the merge below); the base map is the
+                        // not-AWG shape. Builds 2040–2103 shipped
+                        // the raw UAPI dump here for Dart to
+                        // parse; that parse was the standing
+                        // failure (see WgTunnelEngine).
+                        "awg" to false,
+                        "awgHandshakeAgeSec" to -1,
+                        // Build 2104 (iteration 2, M3): the
+                        // problem sequence, 0 until the AWG
+                        // engine records one (see
+                        // WgTunnelEngine.problemSeq).
+                        "awgProblemSeq" to 0,
+                        // Build 2106 (verification iteration
+                        // 2, M-1): the notification-stop
+                        // sequence, same treatment (see
+                        // WgTunnelEngine.userStopSeq).
+                        "awgUserStopSeq" to 0,
+                        "awgRxBytes" to 0L,
+                        "awgTxBytes" to 0L,
+                        // Kill switch (build 2063, feature
+                        // queue #3): the service is holding a
+                        // dead session's TUN as a blackhole —
+                        // traffic is blocked, not direct.
+                        "killSwitchHeld" to XrayVpnService.blackholeHeld,
+                        // Paused (build 2081, verification
+                        // V-8): the tunnel is held from its
+                        // notification, not dropped.
+                        "paused" to XrayVpnService.paused,
+                        // Stopped by the user (build 2087,
+                        // analysis A2): the last stop was
+                        // the notification's Disconnect (or
+                        // the app's own stop) — the Dart poll
+                        // ends the reconnect expectation
+                        // instead of resurrecting the session.
+                        "userStopped" to XrayVpnService.userStopped,
+                        // Build 2110 (wg-start diagnosis,
+                        // defect 2): a tunnel is still
+                        // registered with the WG Tunnel
+                        // backend — the engine-switch funnel
+                        // polls it to observe the previous
+                        // engine fully down (`running` flips
+                        // false before the backend releases
+                        // the VPN slot). Carried in the base
+                        // map so every merge branch reports
+                        // it (see WgTunnelEngine.tunnelPresent).
+                        "awgTunnelPresent" to
+                            WgTunnelEngine.tunnelPresent(),
                     )
+                    // Build 2104: the AWG session lives on the
+                    // WG Tunnel backend in THIS process — merge
+                    // WgTunnelEngine's snapshot over the
+                    // Xray-based values. The :awg published-file
+                    // machinery of build 2100 (the 15 s stale-
+                    // snapshot death rule, the 45 s userStopped
+                    // freshness window and their named trade-
+                    // offs) is gone with the process: the state
+                    // below is read from the backend's own
+                    // status, in-process.
+                    val awgSnap = WgTunnelEngine.snapshot()
+                    when {
+                        // Gated on no live Xray session
+                        // (verification iteration 1, finding 3):
+                        // a late AWG Up must never mask the
+                        // Xray session the walk adopted instead.
+                        awgSnap.running && !XrayVpnService.running ->
+                            result.success(
+                                baseState + mapOf(
+                                "running" to true,
+                                "name" to awgSnap.name,
+                                "sinceMs" to awgSnap.sinceMs,
+                                "up" to awgSnap.up,
+                                "down" to awgSnap.down,
+                                "coreRestarts" to 0,
+                                "coreProblem" to awgSnap.coreProblem,
+                                "awgProblemSeq" to awgSnap.problemSeq,
+                                "awgUserStopSeq" to awgSnap.userStopSeq,
+                                // An AWG session has no chain
+                                // and no pause (as in the 2100
+                                // merge); build 2127 (H4) gives
+                                // it a real kill-switch hold.
+                                "chainUnderlay" to false,
+                                "chainProblem" to "",
+                                "awg" to true,
+                                "awgHandshakeAgeSec" to
+                                    awgSnap.handshakeAgeSec,
+                                "awgRxBytes" to awgSnap.rxBytes,
+                                "awgTxBytes" to awgSnap.txBytes,
+                                "killSwitchHeld" to
+                                    awgSnap.killSwitchHeld,
+                                "paused" to false,
+                                "userStopped" to awgSnap.userStopped,
+                            ),
+                        )
+                        // A stopped AWG session's userStopped
+                        // comes BEFORE the problem branch
+                        // (verification iteration 1, finding 2):
+                        // its stop funnelled through
+                        // WgTunnelEngine.stop, which also clears
+                        // the recorded problem — and with this
+                        // order, even a lingering problem string
+                        // can never reclassify a user stop as an
+                        // unexpected drop that auto-reconnect
+                        // would resurrect. No freshness window
+                        // is needed in-process. A live Xray
+                        // session keeps baseState authoritative.
+                        !XrayVpnService.running && awgSnap.userStopped ->
+                            result.success(
+                                baseState +
+                                    mapOf(
+                                        "userStopped" to true,
+                                        // Build 2106 (M-1): the
+                                        // walk re-reads the
+                                        // sequence on this
+                                        // branch after its own
+                                        // teardown stop.
+                                        "awgUserStopSeq" to
+                                            awgSnap.userStopSeq,
+                                    ),
+                            )
+                        // A failed start or an unexpected stop:
+                        // the engine holds the reason. Reported
+                        // only while no Xray session is live —
+                        // a live Xray session's own state stays
+                        // authoritative, exactly as the 2100
+                        // death branch guarded its report.
+                        !XrayVpnService.running &&
+                            awgSnap.coreProblem.isNotEmpty() ->
+                            result.success(
+                                baseState + mapOf(
+                                    "running" to false,
+                                    "name" to awgSnap.name,
+                                    "sinceMs" to awgSnap.sinceMs,
+                                    "coreProblem" to awgSnap.coreProblem,
+                                    "awgProblemSeq" to awgSnap.problemSeq,
+                                    "awgUserStopSeq" to awgSnap.userStopSeq,
+                                    // A start failure or a drop
+                                    // is never a user stop.
+                                    "userStopped" to false,
+                                    // Nor does it inherit a
+                                    // paused/chain shape from a
+                                    // previous Xray session (the
+                                    // build-2100 death-branch
+                                    // rule, carried over).
+                                    "coreRestarts" to 0,
+                                    "chainUnderlay" to false,
+                                    "chainProblem" to "",
+                                    // Build 2127 (H4): a drop
+                                    // that raised the lockdown
+                                    // reports it here.
+                                    "killSwitchHeld" to
+                                        awgSnap.killSwitchHeld,
+                                    "paused" to false,
+                                ),
+                            )
+                        else -> result.success(baseState)
+                    }
                 }
                 // The EmberWarp engine (EmberWarpCore.kt, build
                 // 2030): a WARP client core as a subprocess. The
@@ -501,6 +1003,10 @@ class MainActivity : FlutterActivity() {
                 "xraySetOnWarp" -> {
                     if (call.argument<Boolean>("on") != true) {
                         XrayVpnService.stop(this)
+                        // Build 2100: dual stop — the AWG
+                        // session stops too. Build 2104: it
+                        // lives on the WG Tunnel backend.
+                        WgTunnelEngine.stop(this)
                         result.success(null)
                     } else {
                         askForNotifications()
@@ -544,7 +1050,17 @@ class MainActivity : FlutterActivity() {
                 "warpStart" -> {
                     val args = call.argument<List<String>>("args") ?: emptyList()
                     val port = call.argument<Int>("port") ?: EmberWarpCore.SOCKS_PORT
-                    inBackground(result) { EmberWarpCore.start(this, args, port) }
+                    // Build 2087 (analysis A1): an optional
+                    // readiness-budget override — the chain
+                    // path's registration run passes the chain
+                    // grace; absent means the run's own budget.
+                    val greetingWaitMs = call.argument<Int>("greetingWaitMs")
+                    inBackground(result) {
+                        EmberWarpCore.start(
+                            this, args, port,
+                            greetingWaitMs?.toLong(),
+                        )
+                    }
                 }
                 "warpStop" -> {
                     inBackground(result) {
@@ -573,6 +1089,25 @@ class MainActivity : FlutterActivity() {
                 "dnsttState" -> {
                     inBackground(result) { DnsttCore.state(this) }
                 }
+                // The OLCRTC underlay client (OlcrtcCore.kt,
+                // build 2134): a subprocess carrying TCP over
+                // a WebRTC video call, started by the Xray
+                // controller when the chain underlay is OLCRTC
+                // and reaped by the VPN service's chain
+                // supervision.
+                "olcrtcStart" -> {
+                    val args = call.argument<List<String>>("args") ?: emptyList()
+                    inBackground(result) { OlcrtcCore.start(this, args) }
+                }
+                "olcrtcStop" -> {
+                    inBackground(result) {
+                        OlcrtcCore.stop()
+                        null
+                    }
+                }
+                "olcrtcState" -> {
+                    inBackground(result) { OlcrtcCore.state(this) }
+                }
                 // The wstunnel client (WstunnelCore.kt, build
                 // 2072): WireGuard over WebSocket — a UDP
                 // forwarder started per WG session when the
@@ -589,6 +1124,121 @@ class MainActivity : FlutterActivity() {
                 }
                 "wstunnelState" -> {
                     inBackground(result) { WstunnelCore.state(this) }
+                }
+                // The sing-box sidecar engine (SingBoxCore.kt,
+                // build 2075): TUIC / Snell / NaiveProxy
+                // outbounds and the Tailscale / OpenConnect
+                // endpoints the Xray core cannot speak. The
+                // Dart side writes filesDir/singbox/config.json
+                // and passes `run -c <path>`; the Xray tunnel
+                // dials its local mixed inbound as a SOCKS
+                // proxy outbound.
+                "singboxStart" -> {
+                    val args = call.argument<List<String>>("args") ?: emptyList()
+                    inBackground(result) { SingBoxCore.start(this, args) }
+                }
+                "singboxStop" -> {
+                    inBackground(result) {
+                        SingBoxCore.stop()
+                        null
+                    }
+                }
+                "singboxState" -> {
+                    inBackground(result) { SingBoxCore.state(this) }
+                }
+                // The Sudoku engine (SudokuBoxCore.kt,
+                // build 2127): Hiddify's sing-box fork as
+                // its own binary — see that file.
+                "sudokuBoxStart" -> {
+                    val args = call.argument<List<String>>("args") ?: emptyList()
+                    inBackground(result) { SudokuBoxCore.start(this, args) }
+                }
+                "sudokuBoxStop" -> {
+                    inBackground(result) {
+                        SudokuBoxCore.stop()
+                        null
+                    }
+                }
+                "sudokuBoxState" -> {
+                    inBackground(result) { SudokuBoxCore.state(this) }
+                }
+                // The Zapret desync proxy (ZapretCore.kt,
+                // build 2127, H1): ciadpi — a userspace
+                // SOCKS5 proxy the DPI Lab's zap candidates
+                // and their connects chain through. Start
+                // carries the full command line (loopback
+                // listen + the candidate's desync flags,
+                // built by zapret_args.dart); no config
+                // file is involved.
+                "zapretStart" -> {
+                    val args = call.argument<List<String>>("args") ?: emptyList()
+                    inBackground(result) { ZapretCore.start(this, args) }
+                }
+                "zapretStop" -> {
+                    inBackground(result) {
+                        ZapretCore.stop()
+                        null
+                    }
+                }
+                "zapretState" -> {
+                    inBackground(result) { ZapretCore.state(this) }
+                }
+                // The Senpai scanner (SenpaiCore.kt, build
+                // 2129, Leg 3): a JSON-lines bridge — start
+                // carries the full request JSON built by
+                // senpai.dart; stop asks the scanner to save
+                // its resumable state; state is polled.
+                "senpaiStart" -> {
+                    val request = call.argument<String>("request") ?: ""
+                    inBackground(result) { SenpaiCore.start(this, request) }
+                }
+                "senpaiStop" -> {
+                    inBackground(result) {
+                        SenpaiCore.stop()
+                        null
+                    }
+                }
+                "senpaiState" -> {
+                    inBackground(result) { SenpaiCore.state(this) }
+                }
+                // The Mieru client (MieruCore.kt, build
+                // 2075): its own upstream client — sing-box
+                // has no Mieru outbound. Start carries the
+                // full client config JSON; the core applies
+                // it (`replace config`) before spawning the
+                // foreground daemon.
+                "mieruStart" -> {
+                    val config = call.argument<String>("config") ?: ""
+                    inBackground(result) {
+                        MieruCore.startWithConfig(this, config)
+                    }
+                }
+                "mieruStop" -> {
+                    inBackground(result) {
+                        MieruCore.stop()
+                        null
+                    }
+                }
+                "mieruState" -> {
+                    inBackground(result) { MieruCore.state(this) }
+                }
+                // The DNSCrypt proxy (DnsCryptCore.kt, build
+                // 2075): a local encrypted-DNS resolver the
+                // Xray DNS settings can select as a transport.
+                // The Dart side writes the TOML config and
+                // passes `-config <path>`.
+                "dnscryptStart" -> {
+                    val args = call.argument<List<String>>("args") ?: emptyList()
+                    inBackground(result) { DnsCryptCore.start(this, args) }
+                }
+                "dnscryptStop" -> {
+                    inBackground(result) {
+                        DnsCryptCore.stop()
+                        null
+                    }
+                }
+                "dnscryptState" -> {
+                    inBackground(result) { DnsCryptCore.state(this) }
                 }
                 "warpRenew" -> {
                     // The ONLY identity renewal path (build
@@ -623,7 +1273,7 @@ class MainActivity : FlutterActivity() {
                         protocol = call.argument<String>("protocol") ?: "masque",
                         scan = call.argument<String>("scan") ?: "turbo",
                         ip = call.argument<String>("ip") ?: "v4",
-                        transport = call.argument<String>("transport") ?: "h3",
+                        transport = call.argument<String>("transport") ?: "auto",
                         ech = call.argument<String>("ech") ?: "",
                         fragment = call.argument<Boolean>("fragment") ?: false,
                         noize = call.argument<String>("noize") ?: "",
@@ -631,6 +1281,30 @@ class MainActivity : FlutterActivity() {
                         peer = call.argument<String>("peer"),
                     )
                     inBackground(result) { slot.start(this, options) }
+                }
+                "aetherConnectMasque" -> {
+                    // Build 2083: the MASQUE carrier ladder —
+                    // ONE call that walks the rungs (engine
+                    // start → CONNECTED → warp trace → data
+                    // proof per rung) until one carries data.
+                    // Blocking for the whole walk (minutes on a
+                    // cold first connect): background, like the
+                    // registration ladder.
+                    val slot = AetherCore.slot(
+                        call.argument<String>("engine") ?: "masque",
+                    )
+                    val options = AetherRunOptions(
+                        protocol = call.argument<String>("protocol") ?: "masque",
+                        scan = call.argument<String>("scan") ?: "turbo",
+                        ip = call.argument<String>("ip") ?: "v4",
+                        transport = call.argument<String>("transport") ?: "auto",
+                        ech = call.argument<String>("ech") ?: "",
+                        fragment = call.argument<Boolean>("fragment") ?: false,
+                        noize = call.argument<String>("noize") ?: "",
+                        keepalive = call.argument<Int>("keepalive") ?: 25,
+                        peer = call.argument<String>("peer"),
+                    )
+                    inBackground(result) { slot.connectMasque(this, options) }
                 }
                 "aetherStop" -> {
                     val slot = AetherCore.slot(
@@ -672,11 +1346,25 @@ class MainActivity : FlutterActivity() {
                     )
                     inBackground(result) { slot.trace() }
                 }
+                "aetherDataProbe" -> {
+                    // Build 2080: real transfers through the
+                    // slot's SOCKS (the CfDataProbe port) — the
+                    // MASQUE connect's data-plane gate. Blocking
+                    // up to ~45 s: background, like the trace.
+                    val slot = AetherCore.slot(
+                        call.argument<String>("engine") ?: "masque",
+                    )
+                    inBackground(result) { slot.dataProbe() }
+                }
                 "socksTunSetOn" -> {
                     // TUN for an Aether slot, VPN consent like
                     // xraySetOnWarp (build 2032).
                     if (call.argument<Boolean>("on") != true) {
                         XrayVpnService.stop(this)
+                        // Build 2100: dual stop — the AWG
+                        // session stops too. Build 2104: it
+                        // lives on the WG Tunnel backend.
+                        WgTunnelEngine.stop(this)
                         result.success(null)
                     } else {
                         askForNotifications()
@@ -758,11 +1446,20 @@ class MainActivity : FlutterActivity() {
                 }
                 "xrayMeasureDelayEx" -> {
                     val config = call.argument<String>("config") ?: ""
-                    inBackground(result) { XrayTester.measureDelayEx(this, config) }
-                }
-                "xrayMeasureDelay" -> {
-                    val config = call.argument<String>("config") ?: ""
-                    inBackground(result) { XrayTester.measureDelay(this, config) }
+                    // Build 2101 (S5): rounds/budgetMs ride along
+                    // for the bulk Test-All pass; absent args keep
+                    // the single-test defaults.
+                    // Build 2109: timeoutMs rides along too — the
+                    // delay-test timeout setting; absent keeps the
+                    // fixed 8000 ms of every build ≤2108.
+                    val rounds = call.argument<Int>("rounds") ?: 2
+                    val budgetMs = (call.argument<Int>("budgetMs") ?: 0).toLong()
+                    val timeoutMs = call.argument<Int>("timeoutMs") ?: 8000
+                    inBackground(result) {
+                        XrayTester.measureDelayEx(
+                            this, config, rounds, budgetMs, timeoutMs,
+                        )
+                    }
                 }
                 "xraySpeedTest" -> {
                     val config = call.argument<String>("config") ?: ""
@@ -773,8 +1470,29 @@ class MainActivity : FlutterActivity() {
                     // feature queue #1): one throwaway core
                     // proves delay + hold + exit on a free
                     // port, without touching the live tunnel.
+                    // Build 2109: timeoutMs rides along — the
+                    // delay-test timeout setting; absent keeps
+                    // the fixed 8000 ms of every build ≤2108.
                     val config = call.argument<String>("config") ?: ""
-                    inBackground(result) { XrayTester.sandboxTest(this, config) }
+                    val timeoutMs = call.argument<Int>("timeoutMs") ?: 8000
+                    inBackground(result) {
+                        XrayTester.sandboxTest(this, config, timeoutMs)
+                    }
+                }
+                "xrayServiceCheck" -> {
+                    // The proxied service reachability check
+                    // (build 2091): one throwaway core asks
+                    // each host for a real HTTPS HEAD through
+                    // the config, on a free port, without
+                    // touching the live tunnel.
+                    val config = call.argument<String>("config") ?: ""
+                    @Suppress("UNCHECKED_CAST")
+                    val hosts =
+                        (call.argument<List<Any>>("hosts") ?: emptyList())
+                            .mapNotNull { it as? String }
+                    inBackground(result) {
+                        XrayTester.serviceCheck(this, config, hosts)
+                    }
                 }
                 "xrayExitInfo" -> {
                     // Best-effort: the exit IP/country of the running
@@ -838,6 +1556,14 @@ class MainActivity : FlutterActivity() {
                                 // the fork core, and tested edges
                                 // now travel as the clean-IP lists.
                                 call.argument<Boolean>("cdnFront") ?: false,
+                                // Build 2125 (A25-04 / S-4):
+                                // the kill switch.
+                                call.argument<Boolean>("killSwitch") ?: false,
+                                // Build 2129 (Leg 2): the Shiro
+                                // bootstrap + strong mode —
+                                // absent = false = 2128 behaviour.
+                                call.argument<Boolean>("shiroBootstrap") ?: false,
+                                call.argument<Boolean>("strongMode") ?: false,
                             )
                             CrashLog.breadcrumb(this, "psiphon:start-returned")
                         }
@@ -867,6 +1593,18 @@ class MainActivity : FlutterActivity() {
                 "psiphonStop" -> {
                     PsiphonVpnService.stop(this)
                     result.success(null)
+                }
+                "psiphonExternalWatchdog" -> {
+                    // Build 2088: the main process's wedge net
+                    // for the :psiphon process. 2087's device
+                    // verdict proved the wedged process cannot
+                    // record or end its own wedge (its watchdog
+                    // never wrote), so the Dart connect path's
+                    // deadline fires THIS: find the process,
+                    // dump its threads from /proc into
+                    // crash.log, kill it, publish the failure.
+                    // See PsiphonExternalWatchdog.
+                    inBackground(result) { PsiphonExternalWatchdog.fire(this) }
                 }
                 // Build 2065: network identity for the per-network
                 // winner memory + auto-connect triggers.
@@ -900,8 +1638,10 @@ class MainActivity : FlutterActivity() {
                     // Psiphon tunnel, asked through its SOCKS proxy.
                     inBackground(result) { XrayTester.exitInfo(PsiphonConstants.SOCKS_PORT) }
                 }
-                // The Lantern engine (LanternVpnService.kt): the
-                // radiance core as a subprocess behind a TUN bridge.
+                // The Lantern engine (LanternVpnService.kt):
+                // build 2129 — the official client's gomobile
+                // core in the :lantern process; state arrives
+                // via the service's published snapshot.
                 "lanternSetOn" -> {
                     if (call.argument<Boolean>("on") != true) {
                         LanternVpnService.stop(this)
@@ -912,9 +1652,14 @@ class MainActivity : FlutterActivity() {
                             LanternVpnService.start(
                                 this,
                                 call.argument<Boolean>("ipv6") ?: true,
-                                call.argument<Boolean>("smart") ?: false,
                                 call.argument<Int>("mtu") ?: 1500,
                                 call.argument<String>("dns") ?: "1.1.1.1",
+                                // Build 2125 (A25-04): the
+                                // kill switch.
+                                call.argument<Boolean>("killSwitch") ?: false,
+                                // Build 2129: the picked server
+                                // ("" = automatic).
+                                call.argument<String>("tag") ?: "",
                             )
                         }
                         // Build 2067: guarded start handoff
@@ -940,51 +1685,72 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "lanternState" -> {
-                    val traffic = LanternVpnService.sessionTraffic()
+                    // Build 2129: the service runs in its own
+                    // process (:lantern), so its state arrives
+                    // via the snapshot it publishes to its state
+                    // file on every change (the psiphonState
+                    // shape). "available" is answered here: the
+                    // renamed gomobile library in nativeLibraryDir.
+                    val published = LanternStateStore.publishedState(this)
                     result.success(
-                        mapOf(
-                            "available" to LanternCore.binary(this).exists(),
-                            "running" to LanternVpnService.running,
-                            "coreRunning" to LanternCore.isAlive(),
-                            "connected" to (LanternVpnService.running &&
-                                LanternCore.stage == "up"),
-                            "stage" to LanternCore.stage,
-                            "exitCity" to LanternCore.exitCity,
-                            "exitCountry" to LanternCore.exitCountry,
-                            "exitCode" to LanternCore.exitCode,
-                            "servers" to LanternCore.servers,
-                            "keptServers" to LanternCore.keptConfig(this).first,
-                            "keptMasque" to LanternCore.keptConfig(this).second,
-                            "exhausted" to LanternCore.exhausted,
-                            "sinceMs" to LanternVpnService.startedAtMs,
-                            "up" to traffic.first,
-                            "down" to traffic.second,
-                            "error" to (LanternVpnService.serviceError
-                                ?: LanternCore.lastError),
-                            "stdoutTail" to LanternCore.stdoutTail(),
-                            "stderrTail" to LanternCore.stderrTail(),
+                        published + mapOf(
+                            "available" to java.io.File(
+                                applicationInfo.nativeLibraryDir,
+                                "liblantern_gojni.so",
+                            ).exists(),
+                            // The core counts as running when a
+                            // session runs or a snapshot claims
+                            // one; the gomobile core has no
+                            // separate process to probe.
+                            "coreRunning" to (published["running"] == true ||
+                                published["connected"] == true),
                         ),
                     )
                 }
-                "lanternFetchList" -> {
-                    result.success(LanternCore.command("fetch"))
+                "lanternFetchServers" -> {
+                    // Build 2129: asks the :lantern process to
+                    // initialize the core and publish its server
+                    // list (Mobile.getAvailableServers through
+                    // the bridge). Replaces the CLI era's list
+                    // and control-plane channels, which died
+                    // with the subprocess contract they drove.
+                    LanternVpnService.fetchInfo(this)
+                    result.success(null)
                 }
-                "lanternVia" -> {
-                    // Build 2052 (diagnosis Cause 2): reroute the
-                    // RUNNING core's control plane through a leg
-                    // (`via HOST:PORT` on its stdin). False when no
-                    // core runs — the caller keeps waiting directly.
-                    val port = call.argument<Int>("port") ?: 0
-                    result.success(if (port > 0) LanternCore.sendVia(port) else false)
+                "lanternSetSmartRouting" -> {
+                    LanternVpnService.setSmartRouting(
+                        this,
+                        call.argument<Boolean>("on") ?: false,
+                    )
+                    result.success(null)
                 }
-                "lanternViaDirect" -> {
-                    // Build 2052: back to direct before the leg goes
-                    // down, so later refreshes never point at a dead
-                    // port.
-                    result.success(LanternCore.sendViaDirect())
+                "lanternAddPrivateServer" -> {
+                    LanternVpnService.addPrivateServer(
+                        this,
+                        call.argument<String>("ip") ?: "",
+                        call.argument<Int>("port") ?: 8080,
+                        call.argument<String>("token") ?: "",
+                        call.argument<String>("tag") ?: "",
+                    )
+                    result.success(null)
                 }
-                "lanternRotateList" -> {
-                    inBackground(result) { LanternCore.rotate(this) }
+                "lanternRemovePrivateServer" -> {
+                    LanternVpnService.removePrivateServer(
+                        this,
+                        call.argument<String>("tag") ?: "",
+                    )
+                    result.success(null)
+                }
+                "lanternSwitch" -> {
+                    // Build 2131: live server switch — the
+                    // running :lantern session re-selects the
+                    // given tag ("" = automatic) inside the
+                    // live tunnel; no TUN rebuild.
+                    LanternVpnService.switchServer(
+                        this,
+                        call.argument<String>("tag") ?: "",
+                    )
+                    result.success(null)
                 }
                 // The OpenVPN engine (OpenVpnService.kt): the
                 // OpenVPN 3 core rebuilt from source behind Ember's
@@ -1005,6 +1771,9 @@ class MainActivity : FlutterActivity() {
                                 call.argument<String>("user") ?: "",
                                 call.argument<String>("pass") ?: "",
                                 call.argument<Boolean>("needsCreds") ?: false,
+                                // Build 2125 (A25-04): the
+                                // kill switch.
+                                call.argument<Boolean>("killSwitch") ?: false,
                             )
                         }
                         // Build 2067: guarded start handoff
@@ -1048,6 +1817,15 @@ class MainActivity : FlutterActivity() {
                             "exitIp" to OpenVpnCore.exitIp,
                             "exitCountry" to OpenVpnCore.exitCountry,
                             "exitCode" to OpenVpnCore.exitCode,
+                            // Build 2125 (audit A25-25): the
+                            // session's IPv6 capture verdict.
+                            "ipv6Captured" to (OpenVpnService.running &&
+                                OpenVpnService.ipv6Captured),
+                            // Build 2125 (A25-04): the
+                            // kill-switch hold flag (NOT gated
+                            // on running — the hold is exactly
+                            // the not-running state).
+                            "killSwitchHeld" to OpenVpnService.killSwitchHeld,
                             "error" to OpenVpnCore.error,
                             "logTail" to OpenVpnCore.logTail(),
                             // Build 2026 crash visibility: the
@@ -1102,17 +1880,29 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "openVpnPickFile" -> {
-                    pendingPick?.error("superseded", "a newer pick replaced this one", null)
-                    pendingPick = result
-                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                    }
-                    try {
-                        startActivityForResult(intent, PICK_REQUEST)
-                    } catch (e: Exception) {
-                        pendingPick = null
-                        result.error("pick_failed", e.message, null)
+                    // Build 2098 (post-2097 audit M9): a second
+                    // pick no longer supersedes the first — the
+                    // new call answers "busy" (the Dart side
+                    // treats it as a benign no-op, like a cancel)
+                    // and the pending slot and its future stay
+                    // completely untouched, so the first pick's
+                    // file can never be delivered to the second
+                    // call. Same pattern pickImageFile already
+                    // used.
+                    if (pendingPick != null) {
+                        result.error("busy", "an OpenVPN file pick is already open", null)
+                    } else {
+                        pendingPick = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        }
+                        try {
+                            startActivityForResult(intent, PICK_REQUEST)
+                        } catch (e: Exception) {
+                            pendingPick = null
+                            result.error("pick_failed", e.message, null)
+                        }
                     }
                 }
                 "pickTextFile" -> {
@@ -1121,17 +1911,106 @@ class MainActivity : FlutterActivity() {
                     // OpenVPN pick — {name, content} or null on
                     // cancel — on its own request code and result,
                     // so the two flows can never cross answers.
-                    pendingTextPick?.error("superseded", "a newer pick replaced this one", null)
-                    pendingTextPick = result
-                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
+                    // Build 2098 (post-2097 audit M9): no
+                    // supersede — a second pick answers "busy"
+                    // and leaves the pending slot untouched,
+                    // exactly like pickImageFile (see
+                    // openVpnPickFile above).
+                    if (pendingTextPick != null) {
+                        result.error("busy", "a text file pick is already open", null)
+                    } else {
+                        pendingTextPick = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        }
+                        try {
+                            startActivityForResult(intent, PICK_TEXT_REQUEST)
+                        } catch (e: Exception) {
+                            pendingTextPick = null
+                            result.error("pick_failed", e.message, null)
+                        }
+                    }
+                }
+                "pickImageFile" -> {
+                    if (pendingImagePick != null) {
+                        result.error("busy", "an image pick is already open", null)
+                    } else {
+                        pendingImagePick = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "image/*"
+                        }
+                        // Build 2098 (post-2097 audit M7): the
+                        // launch is guarded like its sibling
+                        // pickers — an unguarded throw used to
+                        // leave pendingImagePick set with no
+                        // result ever delivered, so the Dart
+                        // side's SystemUiFlight never ended and
+                        // the app never re-locked for the rest
+                        // of the session.
+                        try {
+                            @Suppress("DEPRECATION")
+                            startActivityForResult(intent, PICK_IMAGE_REQUEST)
+                        } catch (e: Exception) {
+                            pendingImagePick = null
+                            result.error("pick_failed", e.message, null)
+                        }
+                    }
+                }
+            "shareText" -> {
+                    // Build 2095 (V2Ray journey audit #20):
+                    // the system share sheet for the backup
+                    // JSON — clipboard was the only way out.
+                    val text = call.argument<String>("text") ?: ""
+                    val title = call.argument<String>("title") ?: ""
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                        if (title.isNotEmpty()) {
+                            putExtra(Intent.EXTRA_SUBJECT, title)
+                        }
                     }
                     try {
-                        startActivityForResult(intent, PICK_TEXT_REQUEST)
+                        startActivity(
+                            Intent.createChooser(
+                                intent,
+                                title.ifEmpty { "Share" },
+                            ),
+                        )
+                        result.success(null)
                     } catch (e: Exception) {
-                        pendingTextPick = null
-                        result.error("pick_failed", e.message, null)
+                        result.error("share_failed", e.message, null)
+                    }
+                }
+                "saveTextFile" -> {
+                    // Build 2095 (V2Ray journey audit #19):
+                    // the backup as a real file, placed by
+                    // the user through the document creator.
+                    // Build 2098 (post-2097 audit M9): no
+                    // supersede — a second save answers "busy"
+                    // and leaves the pending slot (and its
+                    // content) untouched, exactly like
+                    // pickImageFile (see openVpnPickFile above).
+                    if (pendingSave != null) {
+                        result.error("busy", "a file save is already open", null)
+                    } else {
+                        pendingSave = result
+                        pendingSaveContent = call.argument<String>("content") ?: ""
+                        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "application/json"
+                            putExtra(
+                                Intent.EXTRA_TITLE,
+                                call.argument<String>("name") ?: "ember-backup.json",
+                            )
+                        }
+                        try {
+                            startActivityForResult(intent, SAVE_REQUEST)
+                        } catch (e: Exception) {
+                            pendingSave = null
+                            result.error("save_failed", e.message, null)
+                        }
                     }
                 }
                 "openVpnSaveCredentials" -> {
@@ -1183,6 +2062,57 @@ class MainActivity : FlutterActivity() {
                         null
                     }
                 }
+                // Build 2116 (B7-1): the native VPN-slot
+                // claim (EngineClaim) — the shell reads the
+                // owner on foreground to re-arbitrate, and
+                // clears a marker whose engine is not live.
+                "engineClaimOwner" -> {
+                    result.success(EngineClaim.owner(this))
+                }
+                "engineClaimClear" -> {
+                    EngineClaim.clear(this)
+                    result.success(true)
+                }
+                // Build 2125 (audit A25-17 / P-24): the
+                // shell corrects a STALE marker to name the
+                // engine its own live-state evidence says is
+                // actually running — a rewrite, never a
+                // displacement (see EngineClaim.rewrite).
+                "engineClaimRewrite" -> {
+                    val name = call.argument<String>("name") ?: ""
+                    if (name.isNotEmpty()) EngineClaim.rewrite(this, name)
+                    result.success(true)
+                }
+                // Build 2116 (E-7): generic Keystore-backed
+                // secrets (the GitHub sync token) — the
+                // vault's single-value entries.
+                "secretStore" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    val value = call.argument<String>("value") ?: ""
+                    inBackgroundErr(result, "vault_failed") {
+                        if (key.isNotEmpty()) {
+                            OpenVpnVault.saveSecret(this, key, value)
+                        }
+                        true
+                    }
+                }
+                "secretLoad" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    inBackground(result) {
+                        if (key.isEmpty()) {
+                            null
+                        } else {
+                            OpenVpnVault.loadSecret(this, key)
+                        }
+                    }
+                }
+                "secretDelete" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    inBackground(result) {
+                        if (key.isNotEmpty()) OpenVpnVault.deleteSecret(this, key)
+                        null
+                    }
+                }
                 // The phone's main processor type (arm64-v8a, armeabi-v7a, ...).
                 "abi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull() ?: "")
                 "openUrl" -> {
@@ -1194,8 +2124,248 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                // Build 2075: the in-app updater's install leg.
+                // The Dart side downloads the new APK into the
+                // app's own files dir; installing it needs a
+                // FileProvider URI (a raw file:// URI is refused
+                // on modern Android) and, on Android 8+, the
+                // per-app "install unknown apps" grant, which has
+                // its own settings page.
+                "canInstallPackages" -> {
+                    result.success(
+                        Build.VERSION.SDK_INT < 26 ||
+                            packageManager.canRequestPackageInstalls()
+                    )
+                }
+                "openInstallSettings" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            startActivity(
+                                Intent(
+                                    android.provider.Settings
+                                        .ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:$packageName"),
+                                )
+                            )
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        CrashLog.append(this, "openInstallSettings", e)
+                        result.success(false)
+                    }
+                }
+                // Build 2098 (Item C): the installed package's
+                // own versionCode, for the updater. The Dart
+                // side used to trust only the APP_BUILD dart
+                // define; a build recipe that ever forgot the
+                // define would silently compare releases
+                // against the stale default (2071) — the
+                // package's own number cannot go missing.
+                "appBuildNumber" -> {
+                    try {
+                        val info = packageManager.getPackageInfo(packageName, 0)
+                        val code = if (android.os.Build.VERSION.SDK_INT >= 28) {
+                            info.longVersionCode
+                        } else {
+                            @Suppress("DEPRECATION") info.versionCode.toLong()
+                        }
+                        result.success(code.toInt())
+                    } catch (e: Exception) {
+                        result.success(null)
+                    }
+                }
+                // Build 2129 (leg 6, delta §6(b)): signing-cert
+                // SHA-256 for the updater's pre-install check.
+                // Canonicalisation (BOTH methods, identical):
+                // SHA-256 over the DER bytes of the FIRST signer
+                // (apkContentsSigners[0] on API 28+, signatures[0]
+                // below), lowercase hex. The archive side reads
+                // the file WITHOUT installing it
+                // (getPackageArchiveInfo); the own side reads the
+                // running package. Any failure answers null —
+                // the Dart side treats null as "cannot verify"
+                // and refuses the download.
+                "apkSigningCertSha256" -> {
+                    val path = call.argument<String>("path") ?: ""
+                    result.success(signingCertSha256(archive = path))
+                }
+                "ownSigningCertSha256" -> {
+                    result.success(signingCertSha256(archive = null))
+                }
+                "installApk" -> {
+                    val path = call.argument<String>("path") ?: ""
+                    try {
+                        val file = java.io.File(path)
+                        if (!file.isFile) {
+                            result.error("apk_missing", "the downloaded file is gone", null)
+                        } else {
+                            val uri = androidx.core.content.FileProvider
+                                .getUriForFile(this, "$packageName.fileprovider", file)
+                            val intent = Intent(Intent.ACTION_VIEW)
+                                .setDataAndType(
+                                    uri,
+                                    "application/vnd.android.package-archive",
+                                )
+                                .addFlags(
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                        Intent.FLAG_ACTIVITY_NEW_TASK
+                                )
+                            startActivity(intent)
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        CrashLog.append(this, "installApk", e)
+                        result.error("install_failed", e.javaClass.simpleName, null)
+                    }
+                }
+                // Build 2077 (feature queue #7, biometric half):
+                // fingerprint / face unlock for the app lock.
+                // No new dependency: the framework BiometricPrompt
+                // (API 28+) and BiometricManager (API 29+) — the
+                // local_auth plugin is not in the offline pub
+                // cache and the Jetpack biometric library is not
+                // in the offline Gradle cache, so neither is added.
+                // The PIN always stays the fallback: a false
+                // answer (cancel, mismatch, lockout, error) only
+                // means "use the PIN pad".
+                "biometricsAvailable" -> {
+                    result.success(canUseBiometrics())
+                }
+                "biometricAuthenticate" -> {
+                    if (Build.VERSION.SDK_INT < 28) {
+                        result.success(false)
+                    } else {
+                        showBiometricPrompt(result)
+                    }
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    /**
+     * Build 2077: true when a strong biometric is enrolled
+     * (fingerprint or face). API 30+ asks for BIOMETRIC_STRONG
+     * explicitly; API 29 uses the no-arg check (deprecated in
+     * 30); below 29 there is no BiometricManager at all.
+     */
+    /**
+     * Build 2129 (leg 6): the SHA-256 (lowercase hex) of the
+     * first signing certificate of an APK — the one at
+     * [archive] when given, else this app's own installed
+     * package. One canonicalisation for both callers (see the
+     * channel handlers): API 28+ reads signingInfo's
+     * apkContentsSigners; API 26/27 (minSdk) reads the
+     * deprecated signatures array — the same first signer in
+     * the same DER form. Null on any failure (missing file,
+     * unparseable package, no signer): the updater refuses
+     * rather than guesses.
+     */
+    private fun signingCertSha256(archive: String?): String? {
+        return try {
+            val flags = if (Build.VERSION.SDK_INT >= 28) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                PackageManager.GET_SIGNATURES
+            }
+            val info = if (archive != null) {
+                packageManager.getPackageArchiveInfo(archive, flags)
+            } else {
+                packageManager.getPackageInfo(packageName, flags)
+            } ?: return null
+            val certBytes: ByteArray = if (Build.VERSION.SDK_INT >= 28) {
+                val signing = info.signingInfo ?: return null
+                signing.apkContentsSigners?.firstOrNull()?.toByteArray()
+            } else {
+                @Suppress("DEPRECATION")
+                info.signatures?.firstOrNull()?.toByteArray()
+            } ?: return null
+            val digest = java.security.MessageDigest
+                .getInstance("SHA-256")
+                .digest(certBytes)
+            digest.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun canUseBiometrics(): Boolean {
+        if (Build.VERSION.SDK_INT < 29) return false
+        return try {
+            val manager = getSystemService(BiometricManager::class.java)
+                ?: return false
+            if (Build.VERSION.SDK_INT >= 30) {
+                manager.canAuthenticate(
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG,
+                ) == BiometricManager.BIOMETRIC_SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                manager.canAuthenticate() ==
+                    BiometricManager.BIOMETRIC_SUCCESS
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Build 2077: shows the system biometric prompt and
+     * answers the result exactly once. A non-match
+     * (onAuthenticationFailed) deliberately does NOT answer —
+     * the system prompt stays up for a retry; the negative
+     * button ("Use PIN") and any error answer false, and the
+     * caller falls back to the PIN pad. The answer-once guard
+     * matters because the negative-button listener and
+     * onAuthenticationError(ERROR_NEGATIVE_BUTTON) can both
+     * fire for one tap.
+     */
+    private fun showBiometricPrompt(result: Result) {
+        var answered = false
+        fun answer(value: Boolean) {
+            if (!answered) {
+                answered = true
+                result.success(value)
+            }
+        }
+        try {
+            val executor = mainExecutor
+            val prompt = BiometricPrompt.Builder(this)
+                .setTitle("Unlock Ralysnd Ember")
+                .setSubtitle("Use your fingerprint or face")
+                .setNegativeButton(
+                    "Use PIN",
+                    executor,
+                    DialogInterface.OnClickListener { _, _ -> answer(false) },
+                )
+                .build()
+            prompt.authenticate(
+                CancellationSignal(),
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(
+                        authResult: BiometricPrompt.AuthenticationResult,
+                    ) {
+                        answer(true)
+                    }
+
+                    override fun onAuthenticationError(
+                        errorCode: Int,
+                        errString: CharSequence,
+                    ) {
+                        answer(false)
+                    }
+
+                    override fun onAuthenticationFailed() {
+                        // The prompt stays up for a retry; the
+                        // result is answered only on success,
+                        // error, or the negative button.
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            CrashLog.append(this, "biometricAuthenticate", e)
+            answer(false)
         }
     }
 
@@ -1386,6 +2556,43 @@ class MainActivity : FlutterActivity() {
             inBackgroundErr(pending, "pick_read_failed") { readPickedProfile(uri) }
             return
         }
+        if (requestCode == PICK_IMAGE_REQUEST) {
+            val pending = pendingImagePick
+            pendingImagePick = null
+            val uri = data?.data
+            if (pending == null) return
+            if (resultCode != RESULT_OK || uri == null) {
+                pending.success(null)
+                return
+            }
+            inBackgroundErr(pending, "pick_read_failed") {
+                val file = java.io.File(cacheDir, "qr-pick-${System.currentTimeMillis()}.img")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
+                } ?: throw IllegalStateException("unreadable")
+                file.absolutePath
+            }
+            return
+        }
+        if (requestCode == SAVE_REQUEST) {
+            val pending = pendingSave
+            val content = pendingSaveContent
+            pendingSave = null
+            pendingSaveContent = ""
+            val uri = data?.data
+            if (pending == null) return
+            if (resultCode != RESULT_OK || uri == null) {
+                pending.success(false)
+                return
+            }
+            inBackgroundErr(pending, "save_write_failed") {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(content.toByteArray(Charsets.UTF_8))
+                } ?: throw IllegalStateException("no output stream")
+                true
+            }
+            return
+        }
         if (requestCode == PICK_TEXT_REQUEST) {
             val pending = pendingTextPick
             pendingTextPick = null
@@ -1482,6 +2689,15 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        // Build 2136 (item 1): the screen-off receiver dies
+        // with the activity that registered it.
+        screenOffReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+            }
+            screenOffReceiver = null
+        }
         // Off, nothing needs the core once the UI is gone.
         if (isFinishing && !CoreService.on) CoreService.stopCore()
         super.onDestroy()
@@ -1491,6 +2707,82 @@ class MainActivity : FlutterActivity() {
         private const val VPN_REQUEST = 7
         private const val PICK_REQUEST = 8
         private const val PICK_TEXT_REQUEST = 9
+        private const val PICK_IMAGE_REQUEST = 11
+        private const val SAVE_REQUEST = 10
+    }
+
+    /**
+     * Build 2085 (audit F-H15): the .ovpn intake for VIEW /
+     * SEND intents — "Open with Ember" from Files, share-to-Ember
+     * from Telegram. Returns {name, content} for a readable
+     * profile, {error} for a named failure ("file-too-large" |
+     * "unreadable"), null when the intent carries no .ovpn file.
+     * The manifest filter is the gate for which intents arrive;
+     * the Dart parser, not this function, is what rejects a
+     * payload that is not a .ovpn profile — so a shared file
+     * whose URI carries no .ovpn name still gets its honest
+     * "Import failed" instead of a silent drop.
+     */
+    /** Build 2095 (whole-app journey audit #38): the config
+     *  link of a VIEW intent, or null. Only the app-specific
+     *  schemes the manifest declares — a content/file URI is
+     *  an .ovpn open, not a link. */
+    private fun extractDeepLink(intent: Intent?): String? {
+        if (intent == null || intent.action != Intent.ACTION_VIEW) {
+            return null
+        }
+        val data = intent.data ?: return null
+        val scheme = data.scheme?.lowercase() ?: return null
+        if (scheme !in setOf(
+                "vless", "vmess", "trojan", "ss", "wireguard", "wg",
+            )
+        ) {
+            return null
+        }
+        return data.toString().takeIf { it.isNotBlank() }
+    }
+
+    private fun extractOvpnIntent(intent: Intent?): Map<String, String>? {
+        if (intent == null) return null
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> {
+                val uri = intent.data ?: return null
+                readOvpnIntentFile(uri)
+            }
+            Intent.ACTION_SEND -> {
+                // A shared file rides EXTRA_STREAM; shared text
+                // rides EXTRA_TEXT (a config pasted into a chat).
+                val streamUri: Uri? = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+                if (streamUri != null) return readOvpnIntentFile(streamUri)
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?.takeIf { it.isNotBlank() } ?: return null
+                mapOf("name" to "shared.ovpn", "content" to text)
+            }
+            else -> null
+        }
+    }
+
+    /** The intent intake's read: the picker's reader (256 KB
+     *  cap, {name, content}), with its named failures mapped
+     *  to the {error} shape Dart renders in plain language. */
+    private fun readOvpnIntentFile(uri: Uri): Map<String, String> {
+        return try {
+            readPickedProfile(uri) ?: mapOf("error" to "unreadable")
+        } catch (e: IllegalStateException) {
+            if (e.message == "file-too-large") mapOf("error" to "file-too-large")
+            else mapOf("error" to "unreadable")
+        } catch (_: Exception) {
+            mapOf("error" to "unreadable")
+        }
     }
 
     /**

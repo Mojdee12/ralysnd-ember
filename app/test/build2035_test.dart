@@ -43,7 +43,6 @@ void main() {
         fallbackGroupMembersOf(all, loose1).map((p) => p.id),
         ['l1', 'l2'],
       );
-      expect(fallbackGroupKey(c), 's2');
     });
 
     test('members order tested by delay, then untested', () {
@@ -81,7 +80,16 @@ void main() {
       );
     });
 
-    test('unsupported protocols and cooling-down members are skipped', () {
+    // Build 2075 pin update: this test used to expect the
+    // TUIC member skipped as "unsupported" — since 2075 the
+    // sing-box sidecar serves TUIC, so it IS an eligible
+    // fallback member (untested, so it sorts last). Build
+    // 2089 pin update: the same now holds for AnyTLS — the
+    // sidecar serves it too, so it joins the untested tail
+    // after TUIC in list order. No parsed protocol is
+    // unserved anymore; what this test still proves is that
+    // cooling-down members are skipped.
+    test('cooling-down members are skipped; every parsed protocol is eligible', () {
       final current = _p('cur', sub: 's1', delay: 100);
       final tuic = _p('tuic', sub: 's1', protocol: Protocol.tuic);
       final anytls = _p('any', sub: 's1', protocol: Protocol.anytls);
@@ -94,7 +102,7 @@ void main() {
           current: current,
           coolingDownIds: {'cool'},
         ).map((p) => p.id),
-        ['ok'],
+        ['ok', 'tuic', 'any'],
       );
     });
 
@@ -115,11 +123,13 @@ void main() {
   });
 
   group('fallback groups setting', () {
-    test('ON by default for a fresh install', () {
-      expect(XraySettings().adaptiveFailover, isTrue);
+    test('OFF by default for a fresh install (build 2114)', () {
+      // Build 2114 (defaults reset): adaptiveFailover is an
+      // Ember extra — default OFF, v2rayNG parity.
+      expect(XraySettings().adaptiveFailover, isFalse);
       expect(
         XraySettings.fromJson({}).adaptiveFailover,
-        isTrue,
+        isFalse,
       );
     });
 
@@ -128,8 +138,15 @@ void main() {
         XraySettings.fromJson({'adaptiveFailover': false}).adaptiveFailover,
         isFalse,
       );
+      // Build 2114: a stored ON in a PRE-reset store is the
+      // shipped default and migrates off once (build2114
+      // test pins that); a store that has had the reset
+      // respects the value it carries.
       expect(
-        XraySettings.fromJson({'adaptiveFailover': true}).adaptiveFailover,
+        XraySettings.fromJson({
+          'adaptiveFailover': true,
+          'defaultsReset2114': true,
+        }).adaptiveFailover,
         isTrue,
       );
       final roundTrip =

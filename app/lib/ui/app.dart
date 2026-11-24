@@ -11,6 +11,8 @@ import '../l10n/app_localizations.dart';
 import 'about_page.dart';
 import 'accounts_page.dart';
 import 'ember/ember_shell.dart';
+import 'ember/ember_theme.dart';
+import 'ember/map_widgets.dart';
 import 'format.dart';
 import 'logs_page.dart';
 import 'overview_page.dart';
@@ -22,7 +24,7 @@ import 'widgets.dart';
 
 ThemeData _theme(Brightness brightness, Locale locale) {
   final scheme = ColorScheme.fromSeed(
-    seedColor: const Color(0xFFFF7A18),
+    seedColor: const Color(0xFFFF7A29),
     brightness: brightness,
   );
   final dark = brightness == Brightness.dark;
@@ -34,11 +36,11 @@ ThemeData _theme(Brightness brightness, Locale locale) {
     colorScheme: scheme,
     fontFamily: font,
     scaffoldBackgroundColor: dark
-        ? const Color(0xFF17181C)
+        ? const Color(0xFF050607)
         : const Color(0xFFFAF6F0),
     cardTheme: CardThemeData(
       elevation: 0,
-      color: dark ? const Color(0xFF212228) : Colors.white,
+      color: dark ? const Color(0xFF17191E) : Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.4)),
@@ -46,27 +48,34 @@ ThemeData _theme(Brightness brightness, Locale locale) {
     ),
     // Ember 2: every stock surface (dialogs, sheets, menus, snackbars,
     // sign-in included) wears the same graphite + ember design system.
+    // Build 2136 (visual review V-25): the stock chrome moves
+    // from the graphite kit ramp to the app's navy ramp, so a
+    // dialog/menu/sheet no longer opens as a grey slab over
+    // navy-glass pages. Colours only — no layout change.
+    // Build 2144 (reskin): the chrome follows the tokens to
+    // the samples' near-black neutrals (dialog/menu = card,
+    // sheet = surface, snackbar = cardSoft).
     dialogTheme: DialogThemeData(
-      backgroundColor: dark ? const Color(0xFF1B1C22) : null,
+      backgroundColor: dark ? const Color(0xFF101216) : null,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
     ),
     bottomSheetTheme: BottomSheetThemeData(
-      backgroundColor: dark ? const Color(0xFF17181C) : null,
+      backgroundColor: dark ? const Color(0xFF0C0D10) : null,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: dark ? const Color(0xFF23242B) : null,
+      backgroundColor: dark ? const Color(0xFF17191E) : null,
       contentTextStyle: TextStyle(
         fontFamily: font,
-        color: dark ? const Color(0xFFF4F1EA) : null,
+        color: dark ? const Color(0xFFF5F5F4) : null,
       ),
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
     ),
     popupMenuTheme: PopupMenuThemeData(
-      color: dark ? const Color(0xFF1C1D23) : null,
+      color: dark ? const Color(0xFF101216) : null,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     ),
     switchTheme: SwitchThemeData(
@@ -77,7 +86,7 @@ ThemeData _theme(Brightness brightness, Locale locale) {
       ),
       trackColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.selected)
-            ? const Color(0xFFFF7A18)
+            ? const Color(0xFFFF7A29)
             : null,
       ),
     ),
@@ -86,13 +95,13 @@ ThemeData _theme(Brightness brightness, Locale locale) {
       // The menu's names semi-bold, the open page's bold.
       selectedLabelTextStyle: TextStyle(
         fontFamily: font,
-        fontSize: 15.5,
+        fontSize: Ember.fontTitle,
         fontWeight: FontWeight.w700,
         color: scheme.onSurface,
       ),
       unselectedLabelTextStyle: TextStyle(
         fontFamily: font,
-        fontSize: 15.5,
+        fontSize: Ember.fontTitle,
         fontWeight: FontWeight.w600,
         color: scheme.onSurfaceVariant,
       ),
@@ -140,15 +149,37 @@ class VpnApp extends StatelessWidget {
       // The theme depends on the resolved language for its font.
       builder: (context, child) {
         final locale = Localizations.localeOf(context);
-        final dark = switch (settings.themeMode) {
-          ThemeMode.dark => true,
-          ThemeMode.light => false,
-          ThemeMode.system =>
-            MediaQuery.platformBrightnessOf(context) == Brightness.dark,
-        };
-        return Theme(
-          data: _theme(dark ? Brightness.dark : Brightness.light, locale),
-          child: child!,
+        // Build 2116 (AP-07): on Android the app IS the
+        // Ember shell, whose tokens are dark-only — a Light
+        // or System choice made stock surfaces (dialogs,
+        // menus, sheets) render white while their Ember
+        // content stayed near-white on top, and the shell
+        // itself never changed. Android therefore always
+        // resolves dark; the desktop shell keeps the
+        // user's theme choice (its pages have real light
+        // themes).
+        final dark = Platform.isAndroid
+            ? true
+            : switch (settings.themeMode) {
+                ThemeMode.dark => true,
+                ThemeMode.light => false,
+                ThemeMode.system =>
+                  MediaQuery.platformBrightnessOf(context) ==
+                      Brightness.dark,
+              };
+        // Build 2092 (UI audit 2026-11-16 item 20): clamp the
+        // text scale at 1.3 app-wide — surfaces hard-code row
+        // and bar heights, and an unbounded system font scale
+        // clipped them with no recourse.
+        final media = MediaQuery.of(context);
+        return MediaQuery(
+          data: media.copyWith(
+            textScaler: media.textScaler.clamp(maxScaleFactor: 1.3),
+          ),
+          child: Theme(
+            data: _theme(dark ? Brightness.dark : Brightness.light, locale),
+            child: child!,
+          ),
         );
       },
       home: Shell(core: core, settings: settings),
@@ -436,18 +467,59 @@ class _LostBanner extends StatelessWidget {
   const _LostBanner();
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    color: StatusColors.bad.withValues(alpha: 0.14),
-    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 10),
-    child: Row(
-      children: [
-        const Icon(Icons.link_off_rounded, size: 18, color: StatusColors.bad),
-        const SizedBox(width: 10),
-        Expanded(child: Text(AppLocalizations.of(context).coreLost)),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    // Build 2116 (AP-12): in the Ember shell the banner is
+    // a glass strip in the token red at the app's 16dp
+    // margin scale — it was a flat square strip in a
+    // fourth red (#E5484D at 14%) with 28dp padding, laid
+    // over the map. The desktop shell keeps its flat strip.
+    final emberHosted =
+        Platform.isAndroid || MediaQuery.sizeOf(context).width < 640;
+    if (!emberHosted) {
+      return Container(
+        width: double.infinity,
+        color: StatusColors.bad.withValues(alpha: 0.14),
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 10),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.link_off_rounded,
+              size: 18,
+              color: StatusColors.bad,
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(AppLocalizations.of(context).coreLost)),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: MapGlass(
+        radius: 16,
+        tint: Ember.red.withValues(alpha: 0.12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.link_off_rounded,
+                size: 18,
+                color: Ember.red,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  AppLocalizations.of(context).coreLost,
+                  style: Ember.body,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _NoCore extends StatelessWidget {
@@ -464,6 +536,14 @@ class _NoCore extends StatelessWidget {
         problem != null &&
         (problem.problem == CoreProblem.portInUse ||
             problem.problem == CoreProblem.refused);
+    // Build 2116 (AP-11): hosted by the Ember shell this
+    // screen wears the Ember treatment (orange spinner,
+    // Ember.heading, EmberButtons) like every other Ember
+    // error state — it was legacy Material inside an
+    // EmberBackground. The desktop shell keeps its
+    // Material treatment below.
+    final emberHosted =
+        Platform.isAndroid || MediaQuery.sizeOf(context).width < 640;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 460),
@@ -471,54 +551,100 @@ class _NoCore extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (problem == null || problem.problem == CoreProblem.starting) ...[
-              const CircularProgressIndicator(),
+              CircularProgressIndicator(
+                color: emberHosted ? Ember.orange : null,
+              ),
               const SizedBox(height: 16),
-              Text(l.startingCore, style: theme.textTheme.titleMedium),
+              Text(
+                l.startingCore,
+                style: emberHosted
+                    ? Ember.heading
+                    : theme.textTheme.titleMedium,
+              ),
             ] else ...[
               Icon(
                 Icons.power_off_rounded,
                 size: 48,
-                color: theme.colorScheme.onSurfaceVariant,
+                color: emberHosted
+                    ? Ember.dim
+                    : theme.colorScheme.onSurfaceVariant,
               ),
               const SizedBox(height: 16),
-              Text(l.cantReachCore, style: theme.textTheme.titleLarge),
+              Text(
+                l.cantReachCore,
+                style: emberHosted
+                    ? Ember.heading
+                    : theme.textTheme.titleLarge,
+              ),
               const SizedBox(height: 8),
               Text(
                 describeProblem(l, problem),
                 textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                style: emberHosted
+                    ? Ember.dimStyle
+                    : theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
               ),
               const SizedBox(height: 20),
-              Wrap(
-                spacing: 12,
-                alignment: WrapAlignment.center,
-                children: [
-                  if (portTaken && core.moveStoppedCore != null)
-                    FilledButton.icon(
-                      onPressed: () async {
-                        final port = await showPortDialog(
-                          context,
-                          taken: problem.detail,
-                        );
-                        if (port != null && context.mounted) {
-                          await runShowingErrors(
+              if (emberHosted)
+                Wrap(
+                  spacing: 12,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    if (portTaken && core.moveStoppedCore != null)
+                      EmberButton(
+                        label: l.changePort,
+                        icon: Icons.settings_ethernet_rounded,
+                        onTap: () async {
+                          final port = await showPortDialog(
                             context,
-                            () => core.setAppPort(port),
+                            taken: problem.detail,
                           );
-                        }
-                      },
-                      icon: const Icon(Icons.settings_ethernet_rounded),
-                      label: Text(l.changePort),
+                          if (port != null && context.mounted) {
+                            await runShowingErrors(
+                              context,
+                              () => core.setAppPort(port),
+                            );
+                          }
+                        },
+                      ),
+                    EmberButton(
+                      label: l.retry,
+                      icon: Icons.refresh_rounded,
+                      onTap: core.retry,
                     ),
-                  FilledButton.tonalIcon(
-                    onPressed: core.retry,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: Text(l.retry),
-                  ),
-                ],
-              ),
+                  ],
+                )
+              else
+                Wrap(
+                  spacing: 12,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    if (portTaken && core.moveStoppedCore != null)
+                      FilledButton.icon(
+                        onPressed: () async {
+                          final port = await showPortDialog(
+                            context,
+                            taken: problem.detail,
+                          );
+                          if (port != null && context.mounted) {
+                            await runShowingErrors(
+                              context,
+                              () => core.setAppPort(port),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.settings_ethernet_rounded),
+                        label: Text(l.changePort),
+                      ),
+                    FilledButton.tonalIcon(
+                      onPressed: core.retry,
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: Text(l.retry),
+                    ),
+                  ],
+                ),
             ],
           ],
         ),

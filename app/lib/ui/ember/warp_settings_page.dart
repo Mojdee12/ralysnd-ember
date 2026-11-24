@@ -8,10 +8,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../xray/warp_args.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
+import 'ember_dialogs.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
 
@@ -28,9 +30,19 @@ class WarpSettingsPage extends StatefulWidget {
 }
 
 class _WarpSettingsPageState extends State<WarpSettingsPage> {
-  late final WarpProfile _w = widget.xray.warpProfile;
+  // Build 2095 (whole-app journey audit #21): the page
+  // edits a COPY — the old alias mutated the live profile
+  // with every toggle, so leaving without Save still
+  // changed the engine's settings. _persist commits.
+  late final WarpProfile _w = widget.xray.warpProfile.copy();
   final Map<String, TextEditingController> _fields = {};
   bool _renewing = false;
+
+  /// Build 2092 (item 8): Save shows its busy state and
+  /// cannot stack; Reset identity likewise.
+  bool _saving = false;
+  bool _resetting = false;
+  bool _logExpanded = false;
 
   /// The last renewal's outcome, shown inline under the
   /// identity actions (build 2056): Renew used to call
@@ -79,12 +91,21 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
       // Exact text, like the profile editor's fields.
       ..finalMask = _fields['finalMask']?.text ?? ''
       ..dialMode = _fields['dialMode']?.text ?? '';
+    // Build 2095 (audit #21): commit the copy to the live
+    // profile — this is the only door edits leave through.
+    widget.xray.warpProfile.absorb(_w);
     await widget.xray.saveWarpProfile();
   }
 
   Future<void> _save() async {
-    await _persist();
-    if (mounted) Navigator.of(context).pop();
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await _persist();
+      if (mounted) Navigator.of(context).pop();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   Widget _text(String key, String label, {String? hint}) => Padding(
@@ -95,7 +116,10 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
       textDirection: TextDirection.ltr,
       decoration: emberField(context, hint ?? label).copyWith(
         labelText: label,
-        labelStyle: const TextStyle(color: Ember.faint, fontSize: 13),
+        labelStyle: const TextStyle(
+          color: Ember.faint,
+          fontSize: Ember.fontBody,
+        ),
         floatingLabelStyle: const TextStyle(color: Ember.orange),
       ),
     ),
@@ -112,8 +136,10 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
       decoration: BoxDecoration(
         color: Ember.field,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Ember.line),
+        // Build 2144: the dropdown shell takes the shared
+        // control radius and the hairline line token.
+        borderRadius: BorderRadius.circular(Ember.radiusControl),
+        border: Border.all(color: MapUi.line),
       ),
       child: Row(
         children: [
@@ -167,43 +193,66 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
         ),
       );
 
-  // Build 2074 (audit item 15): sections are MapGlass, like
-  // the sibling settings surfaces — not the legacy GlassCard.
-  // The padding is the old GlassCard default, spelled out.
+  // Build 2145 (composition rebuild, pro6-settings): sections
+  // are hairline GROUPS, not glass — the tracked orange
+  // section label over the form rows, closed by a hairline,
+  // matching the shared MapSettingsPanel language (build
+  // 2145, coordinator decision 6). The form fields keep
+  // their own control chrome; no hero elements are invented
+  // for a profile form. Section titles keep their exact
+  // existing text (finders pin them).
   Widget _section(String title, List<Widget> children) => Padding(
     padding: const EdgeInsets.only(bottom: 14),
-    child: MapGlass(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: Ember.heading.copyWith(fontSize: 14.5)),
-          const SizedBox(height: 13),
-          ...children,
-        ],
-      ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Build 2144 (reskin): section titles are the
+        // samples' tracked orange micro-labels.
+        Text(title, style: Ember.microLabelOrange),
+        const SizedBox(height: 13),
+        ...children,
+        const Divider(color: MapUi.line, height: 1, thickness: 1),
+      ],
     ),
   );
 
   @override
   Widget build(BuildContext context) {
-    final masqueFamily = _w.protocol == 'masque' || _w.protocol == 'gool';
+    final masqueFamily =
+        _w.protocol == 'masque' ||
+        _w.protocol == 'gool' ||
+        _w.protocol == 'mim';
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: Ember.text,
-        title: Text('EmberWarp settings', style: Ember.heading),
+        title: Text(
+          'EmberWarp settings',
+          // Build 2144: the page title in the samples' light
+          // display type (hero style at the display step).
+          style: Ember.hero.copyWith(fontSize: Ember.fontDisplay),
+        ),
         actions: [
           IconButton(
-            onPressed: () => unawaited(_save()),
-            icon: const Icon(Icons.check_rounded, color: Ember.orange),
+            onPressed: _saving ? null : () => unawaited(_save()),
+            icon: _saving
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Ember.orange,
+                    ),
+                  )
+                : const Icon(Icons.check_rounded, color: Ember.orange),
             tooltip: 'Save',
           ),
         ],
       ),
-      body: EmberBackground(
+      body: EmberBackground(banded: true, 
         // Build 2074 (audit item 20): the body listens to the
         // controller, like the sibling pages — the Identity
         // section used to keep its first-render text until an
@@ -214,13 +263,19 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
           builder: (context, _) {
             final ws = widget.xray.warpState;
             return ListView(
-              padding: const EdgeInsets.fromLTRB(18, 6, 18, 24),
+              padding: EdgeInsets.fromLTRB(
+                18,
+                MediaQuery.of(context).padding.top + kToolbarHeight + 6,
+                18,
+                24,
+              ),
               children: [
                 _section('Connection', [
                   _dropdown('Protocol', _w.protocol, const [
                     ('masque', 'MASQUE'),
                     ('wg', 'WireGuard'),
                     ('gool', 'Gool (WG over MASQUE)'),
+                    ('mim', 'MiM (MASQUE over MASQUE)'),
                   ], (v) => setState(() => _w.protocol = v)),
                   if (masqueFamily) ...[
                     _dropdown('Transport', _w.transport, const [
@@ -301,6 +356,56 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
                     style: Ember.caption,
                   ),
                 ]),
+                // Build 2095 (whole-app journey audit #58):
+                // the underlay choice itself lives here too —
+                // it used to exist only on the home card, so
+                // from this page the chain could be shaped but
+                // never switched on.
+                _section('Underlay', [
+                  ListenableBuilder(
+                    listenable: widget.xray,
+                    builder: (context, _) {
+                      final underlay = widget.xray.settings.underlay;
+                      return Wrap(
+                        spacing: 7,
+                        runSpacing: 7,
+                        children: [
+                          EmberChip(
+                            label: 'None',
+                            selected: underlay == 'none',
+                            onTap: () => widget.xray.setUnderlay('none'),
+                          ),
+                          EmberChip(
+                            label: 'Psiphon',
+                            selected: underlay == 'psiphon',
+                            onTap: () => widget.xray.setUnderlay('psiphon'),
+                          ),
+                          EmberChip(
+                            label: 'EmberWarp',
+                            selected: underlay == 'warp',
+                            onTap: () => widget.xray.setUnderlay('warp'),
+                          ),
+                          EmberChip(
+                            label: 'DNSTT',
+                            selected: underlay == 'dnstt',
+                            onTap: () => widget.xray.setUnderlay('dnstt'),
+                          ),
+                          EmberChip(
+                            label: 'OLCRTC',
+                            selected: underlay == 'olcrtc',
+                            onTap: () => widget.xray.setUnderlay('olcrtc'),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'The underlay every V2Ray session dials '
+                    'through. Applies to the next session.',
+                    style: Ember.caption,
+                  ),
+                ]),
                 _section('Chain exit shaping', [
                   _text('dialMode', 'Exit dial mode (exact text)'),
                   _text('finalMask', 'Exit finalmask (JSON)'),
@@ -361,11 +466,32 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
                               },
                       ),
                       EmberChip(
-                        label: 'Reset identity',
-                        onTap: () async {
-                          await widget.xray.resetWarpIdentity();
-                          if (mounted) setState(() {});
-                        },
+                        label: _resetting ? 'Resetting…' : 'Reset identity',
+                        // Build 2092 (item 27): the reset
+                        // discards the saved identity — it
+                        // confirms first and shows busy.
+                        onTap: _resetting
+                            ? null
+                            : () async {
+                                final confirmed = await showEmberConfirm(
+                                  context,
+                                  title: 'Reset identity?',
+                                  message:
+                                      'The saved WARP identity is '
+                                      'discarded. The next connect '
+                                      'registers a fresh one.',
+                                  confirmLabel: 'Reset',
+                                );
+                                if (!confirmed) return;
+                                setState(() => _resetting = true);
+                                try {
+                                  await widget.xray.resetWarpIdentity();
+                                } finally {
+                                  if (mounted) {
+                                    setState(() => _resetting = false);
+                                  }
+                                }
+                              },
                       ),
                     ],
                   ),
@@ -375,15 +501,63 @@ class _WarpSettingsPageState extends State<WarpSettingsPage> {
                   ],
                   if (ws.logTail.isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    Text('Core log (tail)', style: Ember.caption),
-                    const SizedBox(height: 6),
-                    SelectableText(ws.logTail, style: Ember.caption),
+                    // Build 2092 (item 60): the tail is
+                    // capped like the DNSTT page's log —
+                    // last 14 lines, with Show more and Copy.
+                    Builder(
+                      builder: (context) {
+                        final lines = ws.logTail.split('\n');
+                        final clipped = !_logExpanded && lines.length > 14;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Core log (tail)',
+                                    style: Ember.caption,
+                                  ),
+                                ),
+                                if (lines.length > 14)
+                                  MapActionPill(
+                                    icon: _logExpanded
+                                        ? Icons.expand_less_rounded
+                                        : Icons.expand_more_rounded,
+                                    label: _logExpanded
+                                        ? 'Show less'
+                                        : 'Show more',
+                                    onTap: () => setState(
+                                      () => _logExpanded = !_logExpanded,
+                                    ),
+                                  ),
+                                const SizedBox(width: 8),
+                                MapActionPill(
+                                  icon: Icons.copy_rounded,
+                                  label: 'Copy',
+                                  onTap: () => Clipboard.setData(
+                                    ClipboardData(text: ws.logTail),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            SelectableText(
+                              clipped
+                                  ? lines.skip(lines.length - 14).join('\n')
+                                  : ws.logTail,
+                              style: Ember.caption,
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                   ],
                 ]),
                 EmberButton(
-                  label: 'Save',
+                  label: _saving ? 'Saving…' : 'Save',
                   icon: Icons.check_rounded,
-                  onTap: () => unawaited(_save()),
+                  onTap: _saving ? null : () => unawaited(_save()),
                 ),
               ],
             );

@@ -188,18 +188,19 @@ void main() {
       expect(_dart('ui/ember/map_widgets.dart'), contains('maxLines: 3,'));
     });
 
-    test('Resolution order names the 2049 built-in fallback', () {
+    test('Resolution order no longer names a built-in fallback (2101)', () {
+      // Build 2056 pinned the display naming build 2049's
+      // built-in fallback; build 2101 removes the fallback
+      // itself (owner order 2026-11-18 — v2rayNG's shape has
+      // none), so the honest display names only the real
+      // chain. The pin flips: the fallback segment must NOT
+      // come back in either the display or its condition.
       final dart = _dart('ui/ember/ember_settings.dart');
-      expect(dart, contains('(built-in fallback)'));
+      expect(dart, contains('Resolution order:'));
+      expect(dart, isNot(contains('(built-in fallback)')));
       expect(
         dart,
-        contains(
-          "tcpFormOf('https://dns.quad9.net/dns-query')",
-        ),
-      );
-      expect(
-        dart,
-        contains('!s.dnsGroup && !s.dnsFallback && !s.adBlockDoh'),
+        isNot(contains("tcpFormOf('https://dns.quad9.net/dns-query')")),
       );
     });
   });
@@ -213,14 +214,23 @@ void main() {
         'ui/ember/wireguard_pages.dart',
       ]) {
         final dart = _dart(path);
-        expect(dart, isNot(contains('OutlinedButton.icon(')), reason: path);
+        // Build 2082 (verification V-2): the bare form, not
+        // just .icon( — the last survivor was a plain
+        // OutlinedButton("Remove saved") the old pin missed.
+        expect(dart, isNot(contains('OutlinedButton(')), reason: path);
         expect(dart, isNot(contains('FilledButton(')), reason: path);
         expect(dart, contains('MapActionPill('), reason: path);
       }
-      // The Fresh-list buttons keep their orange accent.
+      // Build 2129: the Fresh-list pill (the one primary:true
+      // survivor) is gone — the gomobile core owns its list;
+      // the page's list action is Refresh list now.
       expect(
         _dart('ui/ember/lantern_pages.dart'),
-        contains('primary: true,'),
+        contains('Refresh list'),
+      );
+      expect(
+        _dart('ui/ember/lantern_pages.dart'),
+        isNot(contains('Fresh list')),
       );
     });
 
@@ -241,9 +251,16 @@ void main() {
 
   group('Batch 10 radar + sheets + dialogs', () {
     test('radar: the centre column is the AnimatedBuilder child', () {
+      // PIN UPDATED by batch 4 (pro6 fidelity rollout): the
+      // radar this pin protected is GONE — it was decoration
+      // only (its own doc: the rings said nothing the status
+      // card does not) and the approved pro6-warp composition
+      // has no radar, so WarpHomePage no longer constructs it
+      // and the widget + painter are removed. The pin now
+      // holds the removal.
       final dart = _dart('ui/ember/aether_pages.dart');
-      expect(dart, contains('builder: (context, child) => CustomPaint('));
-      expect(dart, contains('child: child,'));
+      expect(dart, isNot(contains('class WarpRadar')));
+      expect(dart, isNot(contains('WarpRadar(controller')));
     });
 
     test('sheets scroll: add-sub (already), paste, CF targets', () {

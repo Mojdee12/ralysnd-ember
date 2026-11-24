@@ -71,7 +71,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String resets(String date) {
-    return 'ریست در $date';
+    return 'بازنشانی در $date';
   }
 
   @override
@@ -191,7 +191,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get statusNeedsSignIn => 'نیاز به ورود';
 
   @override
-  String get statusReserved => 'رزرو';
+  String get statusReserved => 'رزروشده';
 
   @override
   String get statusUnavailable => 'در دسترس نیست';
@@ -208,7 +208,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get statusEnabled => 'فعال';
 
   @override
-  String get useNow => 'انتخاب';
+  String get useNow => 'استفاده';
 
   @override
   String get signInAgain => 'ورود دوباره';
@@ -220,7 +220,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get reasonQuotaExhausted =>
-      'حجم این ماه تمام شده؛ بعد از ریست ماهانه دوباره استفاده می‌شود.';
+      'حجم این ماه تمام شده؛ بعد از بازنشانی ماهانه دوباره استفاده می‌شود.';
 
   @override
   String get reasonSignInRequired =>
@@ -335,7 +335,7 @@ class AppLocalizationsFa extends AppLocalizations {
   }
 
   @override
-  String get stepTotp => 'کد برنامه احراز هویت (Authenticator) را وارد کنید.';
+  String get stepTotp => 'کد برنامه احراز هویت را وارد کنید.';
 
   @override
   String stepUnblockCode(String email) {
@@ -374,7 +374,7 @@ class AppLocalizationsFa extends AppLocalizations {
       'این حساب رمز ندارد؛ با گوگل یا اپل ساخته شده است. یک رمز بگذارید و بعد با همان رمز اینجا وارد شوید.';
 
   @override
-  String get setPasswordButton => 'ساختن رمز';
+  String get setPasswordButton => 'گذاشتن رمز';
 
   @override
   String get signInTooManyAttempts =>
@@ -869,7 +869,7 @@ class AppLocalizationsFa extends AppLocalizations {
   }
 
   @override
-  String get sleepHour => '۱ ساعت';
+  String get sleepHour => '1 ساعت';
 
   @override
   String get showPublicIp => 'نمایش IP عمومی';
@@ -1049,7 +1049,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get dataUsedTitle => 'حجم مصرف‌شده';
 
   @override
-  String get bypassApps => 'انتخاب برنامه‌ها';
+  String get bypassApps => 'پروکسی به‌ازای هر برنامه';
 
   @override
   String get connectRetrying => 'اتصال برقرار نشد. اینترنت را بررسی کنید.';
@@ -1071,7 +1071,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String exitMismatch(String exit, String chosen) {
-    return '$chosen را انتخاب کردید، اما IP شما مال $exit است.';
+    return '$chosen را انتخاب کردید، اما IP شما در $exit است.';
   }
 
   @override
@@ -1283,7 +1283,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get tunInstallCancelled =>
-      'حالت TUN یک بار اجازه Administrator لازم دارد. این اجازه داده نشد و حالت عوض نشد.';
+      'حالت TUN یک بار به اجازه مدیر سیستم نیاز دارد. این اجازه داده نشد و حالت عوض نشد.';
 
   @override
   String tunInstallFailed(String error) {
@@ -1356,7 +1356,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get tunProgramsHint =>
-      'مستقیم وصل می‌شوند، نه از موزیلا؛ فقط برای برنامه‌هایی که بدون VPN کار می‌کنند.';
+      'مستقیم وصل می‌شوند، نه از Mozilla؛ فقط برای برنامه‌هایی که بدون VPN کار می‌کنند.';
 
   @override
   String get tunProgramsEmpty => 'هنوز برنامه‌ای اضافه نشده است.';
@@ -1475,13 +1475,13 @@ class AppLocalizationsFa extends AppLocalizations {
   String get activeBadge => 'فعال';
 
   @override
-  String get addByPaste => 'افزودن از حافظه چسبان';
+  String get addByPaste => 'افزودن از کلیپ‌بورد';
 
   @override
   String get addByQr => 'اسکن کد QR';
 
   @override
-  String get addFirefoxAccount => 'افزودن حساب فایرفاکس';
+  String get addFirefoxAccount => 'افزودن حساب Firefox';
 
   @override
   String get addManual => 'افزودن دستی';
@@ -1553,10 +1553,10 @@ class AppLocalizationsFa extends AppLocalizations {
   String get directIps => 'آی‌پی‌های مستقیم / CIDR';
 
   @override
-  String get dnsSection => 'دی‌ان‌اس';
+  String get dnsSection => 'DNS';
 
   @override
-  String get doh => 'دی‌ان‌اس رمزگذاری‌شده (DoH)';
+  String get doh => 'DNS رمزنگاری‌شده (DoH)';
 
   @override
   String get dohSub => 'جستجوی نام‌ها از روی HTTPS و داخل تونل انجام می‌شود';
@@ -1565,7 +1565,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get domainStrategy => 'راهبرد دامنه';
 
   @override
-  String get duplicate => 'تکثیر';
+  String get duplicate => 'ایجاد کپی';
 
   @override
   String get editProfile => 'ویرایش کانفیگ';
@@ -1574,7 +1574,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get enableUdp => 'رله UDP';
 
   @override
-  String get fakeDns => 'فیک‌دی‌ان‌اس (FakeDNS)';
+  String get fakeDns => 'DNS جعلی (FakeDNS)';
 
   @override
   String get fieldAddress => 'آدرس';
@@ -1589,7 +1589,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get fieldHeaderType => 'نوع هدر';
 
   @override
-  String get fieldKeepAlive => 'کیپ‌اِلایو پایدار';
+  String get fieldKeepAlive => 'Keep-Alive پایدار';
 
   @override
   String get fieldLocalAddress => 'آدرس محلی (مثل 172.16.0.2/32)';
@@ -1604,16 +1604,16 @@ class AppLocalizationsFa extends AppLocalizations {
   String get fieldName => 'نام';
 
   @override
-  String get fieldNetwork => 'ترنسپورت';
+  String get fieldNetwork => 'ترابرد';
 
   @override
-  String get fieldObfsPassword => 'رمز ابفوسکیشن';
+  String get fieldObfsPassword => 'رمز مبهم‌سازی (Obfs)';
 
   @override
-  String get fieldPassword => 'گذرواژه';
+  String get fieldPassword => 'رمز عبور';
 
   @override
-  String get fieldPath => 'مسیر (Path)';
+  String get fieldPath => 'مسیر';
 
   @override
   String get fieldPeerPublicKey => 'کلید عمومی پیر';
@@ -1643,10 +1643,10 @@ class AppLocalizationsFa extends AppLocalizations {
   String get fieldSecurity => 'امنیت';
 
   @override
-  String get fieldSeed => 'سید (Seed)';
+  String get fieldSeed => 'Seed';
 
   @override
-  String get fieldShortId => 'شورت آی‌دی (sid)';
+  String get fieldShortId => 'شناسه کوتاه (sid)';
 
   @override
   String get fieldUdpRelayMode => 'حالت رله UDP';
@@ -1685,13 +1685,13 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get licenseNote =>
-      'متن‌باز تحت GPLv3؛ بر پایه کلاینت فایرفاکس armanlife. موتور Xray همان Xray-core (مجوز MPL-2.0) با پل tun2socks است.';
+      'متن‌باز تحت GPLv3؛ بر پایه کلاینت Firefox VPN از armanlife. موتور Xray همان Xray-core (مجوز MPL-2.0) با پل tun2socks است.';
 
   @override
   String get linkCopied => 'لینک کپی شد';
 
   @override
-  String get localDns => 'دی‌ان‌اس محلی (برای رابط VPN)';
+  String get localDns => 'DNS محلی (برای رابط VPN)';
 
   @override
   String get looseGroup => 'کانفیگ‌های من';
@@ -1709,7 +1709,8 @@ class AppLocalizationsFa extends AppLocalizations {
   String get mux => 'مالتی‌پلکس (Mux)';
 
   @override
-  String get muxSub => 'اتصال‌ها را روی یک تونل سوار می‌کند';
+  String get muxSub =>
+      'چند اتصال VLESS، VMess، Trojan و Shadowsocks را هم‌زمان روی یک تونل می‌فرستد';
 
   @override
   String get navSubscriptions => 'اشتراک‌ها';
@@ -1744,16 +1745,37 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get pasteHint =>
-      'یک یا چند لینک اشتراک (vless ،vmess ،trojan ،ss، وایرگارد، hysteria2 ،tuic) یا متن کامل یک اشتراک.';
+      'یک یا چند لینک کانفیگ (vless، vmess، trojan، ss، wireguard، hysteria2، tuic)، یک لینک اشتراک (https://…)، یا متن کامل یک اشتراک.';
 
   @override
-  String get perAppProxy => 'مسیریابی per-app';
+  String get perAppProxy => 'مسیریابی به‌ازای هر برنامه';
 
   @override
   String get pingAll => 'پینگ همه';
 
   @override
   String get pingLabel => 'پینگ';
+
+  @override
+  String get manualConfigsGroup => 'کانفیگ‌های دستی';
+
+  @override
+  String bestPingResult(String name, int ms) {
+    return 'بهترین: $name · $ms ms';
+  }
+
+  @override
+  String lastPingLabel(String when) {
+    return 'آخرین پینگ: $when';
+  }
+
+  @override
+  String get notTestedYet => 'هنوز تست نشده';
+
+  @override
+  String tabSummary(int subs, int servers) {
+    return '$subs اشتراک · $servers سرور';
+  }
 
   @override
   String get presetBypassIran => 'دور زدن ایران';
@@ -1779,7 +1801,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get recommendedServer => 'سرور پیشنهادی';
 
   @override
-  String get recommendedServerSub => 'سرور پیشنهادی • کمترین پینگ';
+  String get recommendedServerSub => 'پیشنهادی • کمترین پینگ';
 
   @override
   String remainingGb(String gb) {
@@ -1792,7 +1814,7 @@ class AppLocalizationsFa extends AppLocalizations {
   }
 
   @override
-  String get remoteDns => 'دی‌ان‌اس ریموت';
+  String get remoteDns => 'DNS راه دور';
 
   @override
   String get removeAccount => 'حذف حساب';
@@ -1807,7 +1829,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get restoreOk => 'داده‌ها بازیابی شد';
 
   @override
-  String get routingPreset => 'پیش‌فرض مسیریابی';
+  String get routingPreset => 'پیش‌تنظیم مسیریابی';
 
   @override
   String get saveAction => 'ذخیره';
@@ -1828,7 +1850,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get sectionSecurity => 'امنیت';
 
   @override
-  String get sectionTransport => 'ترنسپورت';
+  String get sectionTransport => 'ترابرد';
 
   @override
   String get secureConnection => 'اتصال امن برقرار است';
@@ -1855,7 +1877,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get smartRoutingSub =>
-      'سایت‌های منطقه‌ای مستقیم می‌روند؛ روشن بودنش سهمیه را ذخیره می‌کند';
+      'سایت‌های منطقه‌ای مستقیم می‌روند؛ با روشن بودنش در حجم صرفه‌جویی می‌شود';
 
   @override
   String get sniffing => 'اسنیفینگ';
@@ -1902,7 +1924,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get tagline => 'امن • سریع • خصوصی';
 
   @override
-  String get testAllDelays => 'تست تأخیر همه';
+  String get testAllDelays => 'تست همه';
 
   @override
   String get tuicNote =>
@@ -1919,7 +1941,7 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String usedPercent(String percent) {
-    return '٪$percent استفاده شده';
+    return '$percent٪ استفاده شده';
   }
 
   @override
@@ -1932,7 +1954,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get subUpdateFailed => 'به‌روزرسانی ناموفق بود';
 
   @override
-  String get infoRow => 'اینفو';
+  String get infoRow => 'اطلاعات';
 
   @override
   String get connectAction => 'اتصال';
@@ -1950,7 +1972,7 @@ class AppLocalizationsFa extends AppLocalizations {
   String get modePsiphon => 'سایفون';
 
   @override
-  String get psiphonRegionAuto => 'خودکار (سریع‌ترین)';
+  String get psiphonRegionAuto => 'خودکار';
 
   @override
   String get psiphonExitRegion => 'منطقهٔ خروجی';

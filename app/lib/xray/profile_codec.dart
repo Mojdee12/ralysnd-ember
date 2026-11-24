@@ -33,30 +33,34 @@ Map<String, String> _transportParams(Profile p) {
   }
   if (p.serviceName.isNotEmpty) q['serviceName'] = p.serviceName;
   if (p.mode.isNotEmpty) q['mode'] = p.mode;
-  if (p.security.isNotEmpty) {
-    q['security'] = p.security;
-    if (p.sni.isNotEmpty) q['sni'] = p.sni;
-    if (p.alpn.isNotEmpty) q['alpn'] = p.alpn;
-    if (p.fingerprint.isNotEmpty) q['fp'] = p.fingerprint;
-    if (p.cipherSuites.isNotEmpty) q['cs'] = p.cipherSuites;
-    if (p.echConfigList.isNotEmpty) q['ech'] = p.echConfigList;
-    // TLS certificate pin (build 2047): the stored value
-    // round-trips into the link when valid; anything else —
-    // including a corrupt stored value — writes nothing, as
-    // before (a profile without a pin has no such parameter).
-    if (isValidTlsCertPin(p.tlsCertPin)) {
-      q['pinnedPeerCertSha256'] = p.tlsCertPin;
-    }
+  if (p.security.isNotEmpty) q['security'] = p.security;
+  // Build 2095 (third-pass audit 4b-1): the TLS fields emit
+  // whenever they are SET — they used to ride inside the
+  // security block, so a VLESS/Trojan profile whose stored
+  // security was empty (or not yet normalized) silently
+  // lost its SNI/ALPN/fingerprint/pin on share. Only the
+  // REALITY set stays gated, on reality itself.
+  if (p.sni.isNotEmpty) q['sni'] = p.sni;
+  if (p.alpn.isNotEmpty) q['alpn'] = p.alpn;
+  if (p.fingerprint.isNotEmpty) q['fp'] = p.fingerprint;
+  if (p.cipherSuites.isNotEmpty) q['cs'] = p.cipherSuites;
+  if (p.echConfigList.isNotEmpty) q['ech'] = p.echConfigList;
+  // TLS certificate pin (build 2047): the stored value
+  // round-trips into the link when valid; anything else —
+  // including a corrupt stored value — writes nothing, as
+  // before (a profile without a pin has no such parameter).
+  if (isValidTlsCertPin(p.tlsCertPin)) {
+    q['pinnedPeerCertSha256'] = p.tlsCertPin;
+  }
+  if (p.security == 'reality') {
     if (p.publicKey.isNotEmpty) q['pbk'] = p.publicKey;
     if (p.shortId.isNotEmpty) q['sid'] = p.shortId;
     if (p.spiderX.isNotEmpty) q['spx'] = p.spiderX;
     // REALITY PQ verification (build 2057, audit F-M13).
-    if (p.security == 'reality' && p.pqv.isNotEmpty) {
-      q['pqv'] = p.pqv;
-    }
-    // No allowInsecure parameter (build 2048): the core removed
-    // the feature, so a shared link must not carry it.
+    if (p.pqv.isNotEmpty) q['pqv'] = p.pqv;
   }
+  // No allowInsecure parameter (build 2048): the core removed
+  // the feature, so a shared link must not carry it.
   // gRPC authority (build 2057, audit §6 codec drop).
   if (p.network == 'grpc' && p.grpcAuthority.isNotEmpty) {
     q['authority'] = p.grpcAuthority;
@@ -110,7 +114,10 @@ String profileToLink(Profile p) {
         // stored values, not the old hardcoded '0'/'auto' — a
         // non-zero alterId or a non-auto cipher survives sharing.
         'aid': p.aid.toString(),
-        'scy': p.scy.isNotEmpty ? p.scy : 'auto',
+        // Build 2095 (audit 4b-2): scy verbatim — the old
+        // '' -> 'auto' transform rewrote the stored value
+        // on every share.
+        'scy': p.scy,
         'net': p.network,
         'type': p.headerType,
         'host': p.host,
@@ -123,7 +130,17 @@ String profileToLink(Profile p) {
         // VMess gRPC mode + ECH (build 2057, audit §6 codec
         // drops): the mode re-imports as gun without this, and
         // the ECH list was never written for VMess.
-        if (p.network == 'grpc' && p.mode.isNotEmpty) 'mode': p.mode,
+        // Build 2095 (audit 4b-2): mode unconditional (the
+        // reader no longer gates it on grpc either), plus
+        // the fields the JSON never carried: gRPC authority,
+        // the REALITY set and flow.
+        if (p.mode.isNotEmpty) 'mode': p.mode,
+        if (p.grpcAuthority.isNotEmpty) 'authority': p.grpcAuthority,
+        if (p.publicKey.isNotEmpty) 'pbk': p.publicKey,
+        if (p.shortId.isNotEmpty) 'sid': p.shortId,
+        if (p.spiderX.isNotEmpty) 'spx': p.spiderX,
+        if (p.pqv.isNotEmpty) 'pqv': p.pqv,
+        if (p.flow.isNotEmpty) 'flow': p.flow,
         if (p.echConfigList.isNotEmpty) 'ech': p.echConfigList,
         // Anti-filter shaping (build 2057, audit §6 codec drop).
         if (p.afUnfilter) 'afUnfilter': true,
@@ -140,16 +157,39 @@ String profileToLink(Profile p) {
       };
       return 'vmess://${base64.encode(utf8.encode(jsonEncode(j)))}';
     case Protocol.shadowsocks:
-      final cred = base64.encode(utf8.encode('${p.method}:${p.uuidOrPassword}'))
+      // Build 2095 (fourth-pass audit 3.6): SIP002
+      // userinfo is base64URL — the standard alphabet's
+      // '+'/'/' break strict parsers in other clients.
+      final cred = base64Url
+          .encode(utf8.encode('${p.method}:${p.uuidOrPassword}'))
           .replaceAll('=', '');
       final plugin = p.plugin.isNotEmpty ? '?plugin=${_enc(p.plugin)}' : '';
       return 'ss://$cred@${_authorityOf(p)}$plugin#$name';
     case Protocol.hysteria2:
       final q = <String, String>{};
       if (p.sni.isNotEmpty) q['sni'] = p.sni;
-      if (p.obfs.isNotEmpty) {
-        q['obfs'] = p.obfs;
-        if (p.obfsPassword.isNotEmpty) q['obfs-password'] = p.obfsPassword;
+      if (p.obfs.isNotEmpty) q['obfs'] = p.obfs;
+      // Build 2095 (audit 4b-3): the obfs password emits on
+      // its own — it used to ride inside the obfs-type
+      // block, so a profile with a password but no type
+      // lost the password on share.
+      if (p.obfsPassword.isNotEmpty) q['obfs-password'] = p.obfsPassword;
+      // Build 2126 (D1): the gecko packet-size band rides
+      // the link in the 3x-ui camelCase params, so a
+      // shared profile keeps its band.
+      if (p.geckoMinPacketSize > 0) {
+        q['geckoMinPacketSize'] = '${p.geckoMinPacketSize}';
+      }
+      if (p.geckoMaxPacketSize > 0) {
+        q['geckoMaxPacketSize'] = '${p.geckoMaxPacketSize}';
+      }
+      // Build 2095 (audit 4b-3): ALPN and the uTLS
+      // fingerprint ride the link (a fingerprint that is a
+      // certificate pin rides as pinSHA256 below instead).
+      if (p.alpn.isNotEmpty) q['alpn'] = p.alpn;
+      if (p.fingerprint.isNotEmpty &&
+          !isValidTlsCertPin(p.fingerprint)) {
+        q['fp'] = p.fingerprint;
       }
       // Bandwidth (build 2053, audit F-H6): the `up`/`down`
       // parameters are the standard Hy2 link fields — the
@@ -200,10 +240,22 @@ String profileToLink(Profile p) {
       if (p.awgJmax.isNotEmpty) q['jmax'] = p.awgJmax;
       if (p.awgS1.isNotEmpty) q['s1'] = p.awgS1;
       if (p.awgS2.isNotEmpty) q['s2'] = p.awgS2;
+      if (p.awgS3.isNotEmpty) q['s3'] = p.awgS3;
+      if (p.awgS4.isNotEmpty) q['s4'] = p.awgS4;
       if (p.awgH1.isNotEmpty) q['h1'] = p.awgH1;
       if (p.awgH2.isNotEmpty) q['h2'] = p.awgH2;
       if (p.awgH3.isNotEmpty) q['h3'] = p.awgH3;
       if (p.awgH4.isNotEmpty) q['h4'] = p.awgH4;
+      // Build 2098 (Item A): the signature family rides
+      // the share link too, URL-encoded by _query.
+      if (p.awgI1.isNotEmpty) q['i1'] = p.awgI1;
+      if (p.awgI2.isNotEmpty) q['i2'] = p.awgI2;
+      if (p.awgI3.isNotEmpty) q['i3'] = p.awgI3;
+      if (p.awgI4.isNotEmpty) q['i4'] = p.awgI4;
+      if (p.awgI5.isNotEmpty) q['i5'] = p.awgI5;
+      if (p.awgJ1.isNotEmpty) q['j1'] = p.awgJ1;
+      if (p.awgJ2.isNotEmpty) q['j2'] = p.awgJ2;
+      if (p.awgJ3.isNotEmpty) q['j3'] = p.awgJ3;
       final qs = _query(q);
       return 'wireguard://${_enc(p.secretKey)}@${_authorityOf(p)}?$qs#$name';
     case Protocol.anytls:
@@ -238,7 +290,9 @@ String profileToLink(Profile p) {
       // form carries `:password` fine. Without credentials: the
       // bare host:port form.
       if (p.username.isNotEmpty || p.uuidOrPassword.isNotEmpty) {
-        final cred = base64
+        // Build 2095 (audit 3.6): base64URL userinfo,
+        // like the ss branch.
+        final cred = base64Url
             .encode(utf8.encode('${p.username}:${p.uuidOrPassword}'))
             .replaceAll('=', '');
         return 'socks://$cred@${_authorityOf(p)}#$name';
@@ -253,42 +307,144 @@ String profileToLink(Profile p) {
         return 'http://$cred@${_authorityOf(p)}#$name';
       }
       return 'http://${_authorityOf(p)}#$name';
+    case Protocol.naive:
+      // NaiveProxy (build 2075): the project's own link form,
+      // the same one the parser reads.
+      final q = <String, String>{};
+      if (p.sni.isNotEmpty) q['sni'] = p.sni;
+      final qs = _query(q);
+      final cred = p.uuidOrPassword.isNotEmpty
+          ? '${_enc(p.username)}:${_enc(p.uuidOrPassword)}'
+          : _enc(p.username);
+      return 'naive+https://$cred@${_authorityOf(p)}${qs.isEmpty ? '' : '?$qs'}#$name';
+    case Protocol.snell:
+      // Snell (build 2075): the panel form the parser reads.
+      final q = <String, String>{'version': '${p.snellVersion}'};
+      if (p.obfs.isNotEmpty) q['obfs'] = p.obfs;
+      if (p.obfsPassword.isNotEmpty) q['obfs-host'] = p.obfsPassword;
+      return 'snell://${_enc(p.uuidOrPassword)}@${_authorityOf(p)}?${_query(q)}#$name';
+    case Protocol.mieru:
+      // Mieru (build 2075): the URI form the parser reads.
+      final q = <String, String>{};
+      // Build 2095 (audit 4b-4): the parser accepts only
+      // tcp/udp — clamp the export to the same set instead
+      // of writing a transport the reader would drop.
+      if (p.network == 'tcp' || p.network == 'udp') {
+        q['transport'] = p.network;
+      }
+      final qs = _query(q);
+      final cred = p.uuidOrPassword.isNotEmpty
+          ? '${_enc(p.username)}:${_enc(p.uuidOrPassword)}'
+          : _enc(p.username);
+      return 'mieru://$cred@${_authorityOf(p)}${qs.isEmpty ? '' : '?$qs'}#$name';
+    case Protocol.tailscale:
+      // Tailscale (build 2075): no cross-app link standard
+      // exists; this form round-trips through Ember's own
+      // parser (the auth key as userinfo, 'tailnet' as the
+      // placeholder host — the endpoint needs no server).
+      return 'tailscale://${_enc(p.tailscaleAuthKey)}@tailnet#$name';
+    case Protocol.openconnect:
+      // OpenConnect (build 2075): the userinfo@authority
+      // shape, round-tripped by Ember's parser.
+      final cred = p.uuidOrPassword.isNotEmpty
+          ? '${_enc(p.username)}:${_enc(p.uuidOrPassword)}'
+          : _enc(p.username);
+      return 'openconnect://$cred@${_authorityOf(p)}#$name';
+    case Protocol.sudoku:
+      // Sudoku (build 2127, H2): Ember's own round-trip
+      // form — the key as userinfo, the tuning as query
+      // params under the core's own option names; read
+      // back by the parser's _sudoku.
+      final o = p.sudokuOpts;
+      final q = <String, String>{};
+      if (o['aeadMethod'] is String && (o['aeadMethod'] as String).isNotEmpty) {
+        q['aead_method'] = o['aeadMethod'] as String;
+      }
+      if (o['paddingMin'] is num) {
+        q['padding_min'] = '${(o['paddingMin'] as num).toInt()}';
+      }
+      if (o['paddingMax'] is num) {
+        q['padding_max'] = '${(o['paddingMax'] as num).toInt()}';
+      }
+      if (o['tableType'] is String && (o['tableType'] as String).isNotEmpty) {
+        q['table_type'] = o['tableType'] as String;
+      }
+      if (o['pureDownlink'] is bool) {
+        q['pure_downlink'] = (o['pureDownlink'] as bool) ? '1' : '0';
+      }
+      if (o['customTable'] is String &&
+          (o['customTable'] as String).isNotEmpty) {
+        q['custom_table'] = o['customTable'] as String;
+      }
+      if (o['httpMask'] == true) {
+        q['http_mask'] = '1';
+        if (o['httpMaskMode'] is String &&
+            (o['httpMaskMode'] as String).isNotEmpty) {
+          q['http_mask_mode'] = o['httpMaskMode'] as String;
+        }
+        if (o['httpMaskHost'] is String &&
+            (o['httpMaskHost'] as String).isNotEmpty) {
+          q['http_mask_host'] = o['httpMaskHost'] as String;
+        }
+        if (o['httpMaskPathRoot'] is String &&
+            (o['httpMaskPathRoot'] as String).isNotEmpty) {
+          q['http_mask_path'] = o['httpMaskPathRoot'] as String;
+        }
+      }
+      final qs = _query(q);
+      return 'sudoku://${_enc(p.uuidOrPassword)}@${_authorityOf(p)}'
+          '${qs.isEmpty ? '' : '?$qs'}#$name';
   }
 }
 
 /// The subscription-refresh identity of a profile (build 2047):
-/// its share link without the display name — and without a
-/// user-added certificate pin. The pin is the user's local edit,
-/// like the label and the star, not part of the provider's
-/// identity: if it stayed in the identity, a pinned subscription
-/// profile would never match its refreshed self, and the refresh
-/// would drop its pin, totals, star and label together. A profile
-/// without a pin is identical to [profileToLink] minus the name.
+/// its share link without the display name — and without
+/// the user's local edits (a certificate pin, the
+/// anti-filter shaping). Those are the user's, like the
+/// label and the star, not part of the provider's
+/// identity: if they stayed in the identity, an edited
+/// subscription profile would never match its refreshed
+/// self, and the refresh would drop its pin, shaping,
+/// totals, star and label together.
 String profileIdentityLink(Profile p) {
   final link = profileToLink(p).split('#').first;
-  if (!isValidTlsCertPin(p.tlsCertPin)) return link;
-  // Query-param links (vless/trojan): drop the pin parameter.
-  // Hysteria2 pins ride `pinSHA256` (build 2053) — dropped the
-  // same way, so a user-added pin never breaks refresh identity.
+  // Build 2095 (third-pass audit 4c-1): the anti-filter
+  // shaping values are the user's local edits too (the
+  // editor sets them per profile) — with them in the
+  // identity, a shaped profile never matched its refreshed
+  // self and the refresh dropped the shaping, the totals
+  // and the star together. They are stripped alongside
+  // the pin, unconditionally.
+  const stripParams = {
+    'pinnedPeerCertSha256',
+    'pinSHA256',
+    'afUnfilter',
+    'afEch',
+    'afMixedSni',
+    'afTcpNoise',
+    'afFragment',
+    // Build 2096 (post-2095 audit M12): the editor-set
+    // Aether options are the user's local edits too —
+    // with them in the identity, an edited profile never
+    // matched its refreshed self and lost its totals,
+    // star and label on the next refresh.
+    'cs',
+    'dialMode',
+    'fm',
+  };
+  bool keptParam(String e) =>
+      !stripParams.contains(e.split('=').first);
   final q = link.indexOf('?');
-  if (q >= 0) {
-    final kept = link
-        .substring(q + 1)
-        .split('&')
-        .where(
-          (e) =>
-              !e.startsWith('pinnedPeerCertSha256=') &&
-              !e.startsWith('pinSHA256='),
-        )
-        .toList();
+  if (q >= 0 && !link.startsWith('vmess://')) {
+    final kept = link.substring(q + 1).split('&').where(keptParam).toList();
     return kept.isEmpty
         ? link.substring(0, q)
         : '${link.substring(0, q)}?${kept.join('&')}';
   }
-  // VMess links carry the pin inside the base64 JSON: decode,
-  // drop the key, re-encode. The JSON is Ember's own encoding,
-  // so the re-encoded form matches the fresh profile's link
-  // exactly (same key order, same values).
+  // VMess links carry the fields inside the base64 JSON:
+  // decode, drop the keys, re-encode. The JSON is Ember's
+  // own encoding, so the re-encoded form matches the fresh
+  // profile's link exactly (same key order, same values).
   if (link.startsWith('vmess://')) {
     try {
       final j = (jsonDecode(
@@ -296,10 +452,51 @@ String profileIdentityLink(Profile p) {
       ) as Map)
           .cast<String, dynamic>();
       j.remove('pinnedPeerCertSha256');
+      // Build 2097 (post-2096 audit C-L5): the provider
+      // name is presentation, not identity — the fragment
+      // strip above removes it for every other protocol,
+      // but the VMess JSON carries it INSIDE the document
+      // as 'ps', so a provider-side rename changed the
+      // identity and the refresh carry lost the node's
+      // totals, star and label.
+      j.remove('ps');
+      // Build 2096 (audit M12): the VMess JSON route
+      // strips the same user-edit fields.
+      j.remove('cs');
+      j.remove('dialMode');
+      j.remove('fm');
+      j.remove('afUnfilter');
+      j.remove('afEch');
+      j.remove('afMixedSni');
+      j.remove('afTcpNoise');
+      j.remove('afFragment');
       return 'vmess://${base64.encode(utf8.encode(jsonEncode(j)))}';
     } catch (_) {
       return link;
     }
   }
   return link;
+}
+
+/// Build 2096 (post-2095 audit M11): the LEGACY VMess
+/// identity — the identity link with the fields build
+/// 2094's VMess reader dropped (the audit 4b-2 set:
+/// mode, authority, pbk, sid, spx, pqv, flow) blanked. A
+/// profile stored by 2094 carries those fields empty, so
+/// its identity differs from the same node parsed fresh
+/// by 2095+; the refresh carry's primary lookup misses
+/// and the user's totals/star/label/id are lost on the
+/// first refresh. Comparing legacy keys on both sides
+/// finds the match. Used only as a fallback when the
+/// primary identity lookup misses.
+String legacyVmessIdentityLink(Profile p) {
+  final c = Profile.fromJson(p.toJson());
+  c.mode = '';
+  c.grpcAuthority = '';
+  c.publicKey = '';
+  c.shortId = '';
+  c.spiderX = '';
+  c.pqv = '';
+  c.flow = '';
+  return profileIdentityLink(c);
 }

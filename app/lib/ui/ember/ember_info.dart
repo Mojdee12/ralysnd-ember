@@ -6,7 +6,9 @@
 import 'package:flutter/material.dart';
 
 import '../../app_info.dart';
+import '../../core/android_core.dart';
 import '../../l10n/app_localizations.dart';
+import 'ember_updater.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'licenses_page.dart';
@@ -18,6 +20,7 @@ class EmberInfoPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -29,7 +32,7 @@ class EmberInfoPage extends StatelessWidget {
       // (default AppBar, no background).
       body: EmberBackground(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+          padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 14, 18, 18),
           children: [
             GlassCard(
               child: Column(
@@ -50,13 +53,17 @@ class EmberInfoPage extends StatelessWidget {
                   const SizedBox(height: 10),
                   Text('Ralysnd Ember', style: Ember.heading),
                   Text(
-                    '${l.versionRow} ${latDigits(appVersion)}',
+                    // Build 2095 (whole-app journey audit
+                    // #59 + §9 minor): the build number shows
+                    // here too — support answers start with it.
+                    '${l.versionRow} ${latDigits(appVersion)} '
+                    '• Build ${latDigits(appBuildNumber)}',
                     style: Ember.caption,
                   ),
                   const SizedBox(height: 8),
                   const Text(
                     'Built by Rayan Vakili · Ralysnd',
-                    style: TextStyle(fontSize: 13.5, color: Ember.dim),
+                    style: TextStyle(fontSize: Ember.fontBody, color: Ember.dim),
                   ),
                   const SizedBox(height: 6),
                   Text(
@@ -67,6 +74,75 @@ class EmberInfoPage extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(height: 14),
+            // Build 2095 (whole-app journey audit #59): the
+            // repo link and the update check fold into Info —
+            // they used to live only behind other doors.
+            GlassCard(
+              onTap: () => AndroidCore.openUrl(
+                'https://github.com/$githubRepo',
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.code_rounded,
+                    size: 19,
+                    color: Ember.dim,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Source on GitHub — $githubRepo',
+                      style: Ember.body,
+                    ),
+                  ),
+                  const Icon(
+                    Icons.open_in_new_rounded,
+                    size: 16,
+                    color: Ember.dim,
+                  ),
+                ],
+              ),
+            ),
+            if (EmberUpdater.instance != null) ...[
+              const SizedBox(height: 14),
+              ListenableBuilder(
+                listenable: EmberUpdater.instance!,
+                builder: (context, _) {
+                  final u = EmberUpdater.instance!;
+                  return GlassCard(
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.system_update_rounded,
+                          size: 19,
+                          color: Ember.dim,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            u.state == EmberUpdateState.available
+                                ? 'Build '
+                                      '${latDigits('${u.release!.build}')} '
+                                      'is available'
+                                : u.state == EmberUpdateState.upToDate
+                                ? 'You are on the latest build'
+                                : 'Check for updates',
+                            style: Ember.body,
+                          ),
+                        ),
+                        EmberButton(
+                          label: 'Check',
+                          onTap: u.busy
+                              ? null
+                              : () => u.check(manual: true),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
             const SizedBox(height: 14),
             // Build 2074 (audit item 26): the whole card is the
             // navigation row it looks like — not only the small
@@ -86,12 +162,11 @@ class EmberInfoPage extends StatelessWidget {
                   Expanded(
                     child: Text('Open Source Licenses', style: Ember.body),
                   ),
-                  EmberChip(
-                    label: 'View',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const LicensesPage()),
-                    ),
-                  ),
+                  // Build 2092 (item 55): one navigation
+                  // target — the card itself. The chip is a
+                  // visual affordance now, not a second
+                  // nested tap target to the same page.
+                  const EmberChip(label: 'View'),
                 ],
               ),
             ),

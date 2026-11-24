@@ -3,9 +3,11 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:io';
 
 import 'link_parser.dart';
+import 'profile_validation.dart';
 import 'sha256.dart';
 import 'xray_models.dart';
 
@@ -100,7 +102,10 @@ SubBodyFormat detectSubBodyFormat(String body) {
         // detector, because the parser reads it first.
         if (outs is List &&
             outs.any(
-              (o) => o is Map && o.containsKey('type') && !o.containsKey('protocol'),
+              (o) =>
+                  o is Map &&
+                  o.containsKey('type') &&
+                  !o.containsKey('protocol'),
             )) {
           return SubBodyFormat.singBox;
         }
@@ -131,8 +136,7 @@ String emptyBodyMessage(SubBodyFormat format) => switch (format) {
   SubBodyFormat.jsonUnknown =>
     'The server returned JSON Ember cannot read as a '
         'subscription — use the panel\u2019s subscription (/sub/) link.',
-  SubBodyFormat.unknown =>
-    'The subscription held no configs Ember can read.',
+  SubBodyFormat.unknown => 'The subscription held no configs Ember can read.',
 };
 
 /// Maps a raw fetch failure to a typed, user-ready exception
@@ -144,7 +148,9 @@ SubFetchException classifyFetchError(
   String? certSha256,
 }) {
   if (e is SubFetchException) return e;
-  if (e is HandshakeException || e is CertificateException || e is TlsException) {
+  if (e is HandshakeException ||
+      e is CertificateException ||
+      e is TlsException) {
     return SubFetchException(
       kind: SubFetchErrorKind.certificate,
       message:
@@ -217,9 +223,7 @@ String subFetchErrorText(Object e, {required String fallback}) =>
 /// accepting it here would be a silent lie; a repeated name
 /// (case-insensitive) keeps the LAST value; at most 10
 /// headers — a panel needs one or two.
-({Map<String, String> headers, String? error}) parseCustomHeaders(
-  String text,
-) {
+({Map<String, String> headers, String? error}) parseCustomHeaders(String text) {
   final headers = <String, String>{};
   final seenNames = <String>{};
   final lines = text.split('\n');
@@ -273,23 +277,18 @@ String subFetchErrorText(Object e, {required String fallback}) =>
   return (headers: headers, error: null);
 }
 
-/// Renders a headers map back to the one-per-line form the
-/// add sheet edits (round-trips through [parseCustomHeaders]).
-String formatCustomHeaders(Map<String, String> headers) =>
-    headers.entries.map((e) => '${e.key}: ${e.value}').join('\n');
 
 /// The fetch [XrayController] runs for a subscription; a
 /// typedef so tests can inject a fake (build 2050, audit
 /// F-M20 — the fetcher previously had no seam and no tests).
-typedef SubscriptionFetcher =
-    Future<SubResult> Function(
-      String url, {
-      String certPin,
-      String hwid,
-      Map<String, String> headers,
-      String fallbackUrl,
-      Map<String, String> hosts,
-    });
+typedef SubscriptionFetcher = Future<SubResult> Function(
+  String url, {
+  String certPin,
+  String hwid,
+  Map<String, String> headers,
+  String fallbackUrl,
+  Map<String, String> hosts,
+});
 
 /// A built-in subscription preset (build 2032): a public feed
 /// the user may add with one tap. Presets are VISIBLE and
@@ -346,9 +345,6 @@ const v2goPresets = <SubPreset>[
   ),
 ];
 
-/// The per-country v2go feed URL for an ISO country code.
-String v2goCountryUrl(String countryCode) =>
-    'https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Country/${countryCode.toUpperCase()}.txt';
 
 /// Fetches [url] and parses the result.
 ///
@@ -376,6 +372,7 @@ Future<SubResult> fetchSubscription(
   Map<String, String> headers = const {},
   String fallbackUrl = '',
   Map<String, String> hosts = const {},
+  Duration responseTimeout = const Duration(seconds: 30),
 }) async {
   final uri = _validateSubUrl(url);
   try {
@@ -385,6 +382,7 @@ Future<SubResult> fetchSubscription(
       hwid: hwid,
       headers: headers,
       hosts: hosts,
+      responseTimeout: responseTimeout,
     );
   } on SubFetchException catch (e) {
     final fb = fallbackUrl.trim();
@@ -402,6 +400,7 @@ Future<SubResult> fetchSubscription(
       hwid: hwid,
       headers: headers,
       hosts: hosts,
+      responseTimeout: responseTimeout,
     );
     return SubResult(
       profiles: result.profiles,
@@ -434,12 +433,29 @@ Uri _validateSubUrl(String url) {
   return uri;
 }
 
+/// True when [text] is a subscription URL rather than a share
+/// link (build 2094): an http(s) URL that names a document ON
+/// a server — it carries a path (the token usually rides in
+/// it) and/or a query. An HTTP-proxy share link
+/// (`http://user:pass@host:port`) names the proxy itself and
+/// carries neither, so it stays with the link parser, which
+/// reads it as a proxy profile. The paste importer routes
+/// subscription URLs to the fetcher; before build 2094 they
+/// fell through to the link parser and silently added nothing.
+bool isSubscriptionUrl(String text) {
+  final uri = Uri.tryParse(text.trim());
+  if (uri == null || uri.host.isEmpty) return false;
+  if (uri.scheme != 'http' && uri.scheme != 'https') return false;
+  return uri.hasQuery || uri.pathSegments.any((s) => s.isNotEmpty);
+}
+
 Future<SubResult> _fetchOnce(
   Uri uri, {
   required String certPin,
   required String hwid,
   required Map<String, String> headers,
   required Map<String, String> hosts,
+  required Duration responseTimeout,
 }) async {
   final pin = certPin.replaceAll(':', '').trim().toLowerCase();
   // The fingerprint of the certificate the server presented,
@@ -495,7 +511,13 @@ Future<SubResult> _fetchOnce(
       if (entry.key.toLowerCase() == 'user-agent') continue;
       request.headers.set(entry.key, entry.value);
     }
-    final response = await request.close();
+    // Build 2094: the wait for the response HEADERS is
+    // bounded too — connectionTimeout covers only the socket
+    // connect and the 30 s below covers the body, so a server
+    // that accepted the connection and then never answered
+    // hung the add sheet's spinner forever. A timeout here
+    // classifies as the timeout kind, like the others.
+    final response = await request.close().timeout(responseTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw SubFetchException(
         kind: SubFetchErrorKind.http,
@@ -506,12 +528,47 @@ Future<SubResult> _fetchOnce(
         statusCode: response.statusCode,
       );
     }
-    final info = _parseUserInfo(response.headers.value('subscription-userinfo'));
+    final info = _parseUserInfo(
+      response.headers.value('subscription-userinfo'),
+    );
     final title = response.headers.value('profile-title');
-    final body = await response
-        .transform(const SystemEncoding().decoder)
-        .join()
-        .timeout(const Duration(seconds: 30));
+    // Build 2095 (fourth-pass audit 1.1): the body is
+    // byte-capped as it arrives — counted AFTER the
+    // client's automatic decompression, so a gzip bomb
+    // hits the same bound as a plain oversized body. A
+    // feed that turns hostile after being added can no
+    // longer OOM the app on every auto-refresh.
+    final builder = BytesBuilder(copy: false);
+    final bodyClock = Stopwatch()..start();
+    // The stream timeout bounds an IDLE body (a server
+    // that sends headers and then nothing) — the clock
+    // below bounds the total; both survived from the
+    // pre-2095 join().timeout() semantics (verification
+    // loop catch: the first rewrite checked the clock
+    // only when a chunk arrived).
+    await for (final chunk in response.timeout(
+      const Duration(seconds: 30),
+    )) {
+      // The pre-2095 total bound survives the rewrite: a
+      // slow-drip body gets the same 30 s overall, not a
+      // fresh window per chunk.
+      if (bodyClock.elapsed > const Duration(seconds: 30)) {
+        throw const SubFetchException(
+          kind: SubFetchErrorKind.timeout,
+          message: 'The subscription server took too long to answer.',
+        );
+      }
+      builder.add(chunk);
+      if (builder.length > kMaxSubscriptionBodyBytes) {
+        throw const SubFetchException(
+          kind: SubFetchErrorKind.format,
+          message:
+              'That subscription is too large to import '
+              'safely (over 16 MB of configs).',
+        );
+      }
+    }
+    final body = const SystemEncoding().decode(builder.toBytes());
     final profiles = parseSubscription(body);
     if (profiles.isEmpty) {
       throw SubFetchException(
@@ -558,5 +615,9 @@ String? _decodeTitle(String? title) {
   if (value.toLowerCase().startsWith('base64:')) {
     value = b64decode(value.substring(7)) ?? value;
   }
-  return value.isEmpty ? null : value;
+  // Build 2095 (fourth-pass audit 1.5): the title becomes
+  // a stored subscription name — strip control characters
+  // at this entry point like every other name route.
+  final clean = sanitizeProfileName(value);
+  return clean.isEmpty ? null : clean;
 }

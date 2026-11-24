@@ -166,7 +166,10 @@ void main() {
       expect(w.transport, 'h2');
       expect(w.scan, 'balanced');
       expect(w.ipVersion, 'v4');
-      expect(w.fragment, isTrue);
+      // Build 2114 (defaults reset): fragment defaults OFF
+      // now — an Ember extra, v2rayNG parity; the dossier's
+      // ON default is superseded by the owner's order.
+      expect(w.fragment, isFalse);
     });
 
     test('corrupt stored values read as defaults', () {
@@ -182,7 +185,9 @@ void main() {
       expect(w.transport, 'h2');
       expect(w.scan, 'balanced');
       expect(w.ipVersion, 'v4');
-      expect(w.fragment, isTrue);
+      // Build 2114: the corrupt value reads as the default,
+      // which is OFF since the defaults reset.
+      expect(w.fragment, isFalse);
       expect(w.ech, isFalse);
     });
 
@@ -194,12 +199,19 @@ void main() {
       expect(args, containsAllInOrder(['--bind', '127.0.0.1:20850']));
     });
 
-    test('H2 default: --h2 + --fragment + SNI; H3 drops both', () {
-      final h2 = buildWarpArgs(WarpProfile());
+    test('H2 with fragment on: --h2 + --fragment + SNI; H3 drops both', () {
+      // Build 2114: fragment defaults OFF (defaults reset),
+      // so the argv composition is graded with it explicitly
+      // on — H3 must drop the flag even then.
+      final h2 = buildWarpArgs(WarpProfile()..fragment = true);
       expect(h2, contains('--h2'));
       expect(h2, contains('--fragment'));
       expect(h2, containsAllInOrder(['--masque-sni', 'www.cloudflare.com']));
-      final h3 = buildWarpArgs(WarpProfile()..transport = 'h3');
+      final h3 = buildWarpArgs(
+        WarpProfile()
+          ..transport = 'h3'
+          ..fragment = true,
+      );
       expect(h3, isNot(contains('--h2')));
       expect(h3, isNot(contains('--fragment')));
     });
@@ -367,10 +379,10 @@ void main() {
       final s = XraySettings()..adBlockDoh = true;
       final dns = dnsOf(s);
       expect((dns['servers'] as List).first, adGuardDohUrl);
-      expect(
-        (dns['hosts'] as Map)['dns.adguard-dns.com'],
-        ['94.140.14.14', '94.140.15.15'],
-      );
+      // Build 2113: upstream's hosts table carries no
+      // dns.adguard-dns.com pin (the pre-2113 Ember table's
+      // entry is gone), so the name has no hosts answer.
+      expect((dns['hosts'] as Map)['dns.adguard-dns.com'], isNull);
     });
 
     test('fallback appends AFTER the primary', () {
@@ -396,6 +408,11 @@ void main() {
       final s = XraySettings()..dnsFallback = true;
       s.fallbackDns = s.remoteDns;
       final servers = dnsOf(s)['servers'] as List;
+      // Build 2113: the primary is the single stored entry
+      // (the 2111 appended pair is gone), so the section
+      // holds exactly that one entry — the fallback, equal
+      // to the primary, appears exactly once.
+      expect(servers.where((e) => e == s.fallbackDns).length, 1);
       expect(servers.length, 1);
     });
 
@@ -465,7 +482,6 @@ void main() {
       expect(opened, isNotNull);
       expect(opened!.expired, isTrue);
       expect(opened.link, inner);
-      expect(protectedShareExpiryHint(link), isNotNull);
     });
 
     test('unlock replaces protected lines inside a mixed paste', () {

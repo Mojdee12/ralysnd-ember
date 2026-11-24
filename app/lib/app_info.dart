@@ -23,8 +23,12 @@ const appBuildNumber = String.fromEnvironment(
 );
 
 /// The GitHub repository, "owner/name", for the source link and the update
-/// check.
-const githubRepo = 'armanlife/firefox-vpn-client';
+/// check. Build 2087 (analysis A4): the app's own project —
+/// Mojdee12/ralysnd-ember, the same repo the build-2075 updater
+/// reads. The upstream armanlife project this codebase descends
+/// from was named here before, so the legacy About page's source
+/// link branded the app as somebody else's project.
+const githubRepo = 'Mojdee12/ralysnd-ember';
 
 /// A newer release on GitHub.
 class Release {

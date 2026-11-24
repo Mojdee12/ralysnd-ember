@@ -1053,7 +1053,7 @@
   "modeV2ray": "V2Ray",
   "msUnit": "ms",
   "mux": "Mux",
-  "muxSub": "Multiplexes connections over one tunnel",
+  "muxSub": "Multiplexes VLESS, VMess, Trojan and Shadowsocks connections over one tunnel",
   "navSubscriptions": "Subscriptions",
   "noAccountYet": "No account yet — add one to connect",
   "noAccountsYet": "No accounts yet",
@@ -1064,10 +1064,42 @@
   "noUsageInfo": "No usage reported by this subscription",
   "nothingImported": "Nothing could be imported",
   "optimalChip": "Optimal",
-  "pasteHint": "One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic) or a whole subscription body.",
+  "pasteHint": "One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic), a subscription link (https://…), or a whole subscription body.",
   "perAppProxy": "Per-app routing",
   "pingAll": "Ping all",
   "pingLabel": "Ping",
+  "manualConfigsGroup": "Manual configs",
+  "bestPingResult": "Best: {name} · {ms} ms",
+  "@bestPingResult": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
+  "lastPingLabel": "Last ping: {when}",
+  "@lastPingLabel": {
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
+  "notTestedYet": "Not tested yet",
+  "tabSummary": "{subs} subscriptions · {servers} servers",
+  "@tabSummary": {
+    "placeholders": {
+      "subs": {
+        "type": "int"
+      },
+      "servers": {
+        "type": "int"
+      }
+    }
+  },
   "presetBypassIran": "Bypass Iran",
   "presetBypassLan": "Bypass LAN",
   "presetDirectAll": "All direct",
@@ -1169,7 +1201,7 @@
   "resetStats": "Reset statistics",
   "mapHome": "Home",
   "modePsiphon": "Psiphon",
-  "psiphonRegionAuto": "Automatic (fastest)",
+  "psiphonRegionAuto": "Automatic",
   "psiphonExitRegion": "Exit region",
   "psiphonLocalProxies": "Local proxies",
   "psiphonVpnMode": "VPN",

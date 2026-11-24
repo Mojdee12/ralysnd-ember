@@ -135,8 +135,11 @@ void main() {
     });
 
     test('primaryResolver and group members follow the transport', () {
+      // Build 2113: the default remote is v2rayNG's
+      // Cloudflare DoH again, so its DoQ form is the mapped
+      // one.one.one.one form; the mapping itself is unchanged.
       final s = XraySettings()..remoteDnsProto = 'doq';
-      expect(primaryResolver(s), 'quic+local://dns.google');
+      expect(primaryResolver(s), 'quic+local://one.one.one.one');
       expect(resolverUnderTransport('https://dns.google/dns-query', 'doq'),
           'quic+local://dns.google');
       expect(resolverUnderTransport('https://dns.google/dns-query', 'doh'),
@@ -172,18 +175,24 @@ void main() {
       }
     });
 
-    test('DoQ default shape keeps the 2049 TCP fallback behind it', () {
+    test('DoQ default shape: the mapped single entry, no TCP fallback (2101, 2113)',
+        () {
+      // Build 2049 kept a TCP fallback behind the DoQ primary;
+      // build 2101 removes it (owner order 2026-11-18). Build
+      // 2113: the default remote is the single Cloudflare DoH
+      // entry again (the 2111 pair and its append are gone),
+      // so the DoQ default is its one quic+local form — still
+      // no TCP fallback.
       final doq = XraySettings()..remoteDnsProto = 'doq';
       expect(dnsServersOf(doq), [
-        'quic+local://dns.google',
-        'tcp://9.9.9.9',
+        'quic+local://one.one.one.one',
       ]);
       final doqGroup = XraySettings()
         ..remoteDnsProto = 'doq'
         ..dnsGroup = true;
       expect(dnsServersOf(doqGroup), [
-        'quic+local://dns.google',
         'quic+local://one.one.one.one',
+        'quic+local://dns.google',
         'quic+local://dns.quad9.net',
       ]);
     });

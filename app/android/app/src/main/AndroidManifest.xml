@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Build 2077: the app lock's fingerprint / face unlock
+         (framework BiometricPrompt); a normal permission,
+         granted automatically at install. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Build 2065: the boot flag for auto-connect (BootReceiver
          only records that a boot happened; it starts nothing). -->
@@ -7,6 +11,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Build 2075: the in-app updater installs the APK it
+         downloaded from the app's GitHub Releases feed; Android
+         gates that behind this permission plus the per-app
+         "install unknown apps" grant (checked at install time). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- The apps a user can route: also the system's, which have no icon
          (Google Play services, the download manager). The app is not on
          Google Play, whose rules limit this permission. -->
@@ -19,6 +28,7 @@
         android:name=".EmberApplication"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
@@ -42,7 +52,87 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Build 2085 (audit F-H15): "Open with Ember" for
+                 .ovpn files from Files/Telegram, and share-to-Ember
+                 from Telegram. VIEW matches a file URI whose path
+                 ends .ovpn (either scheme, with or without the MIME
+                 type the sending app reports — Files sends one,
+                 some senders send none); SEND matches the MIME
+                 types a shared .ovpn file or pasted config text
+                 arrives with. MainActivity reads the file (the
+                 picker's 256 KB cap) and forwards {name, content}
+                 to Dart, which imports it through the same path
+                 the file/paste buttons use — the Dart parser, not
+                 the filter, is what rejects a non-.ovpn payload. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:pathPattern=".*\\.ovpn" />
+                <data android:scheme="content" android:pathPattern=".*\\.OVPN" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.ovpn" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.OVPN" />
+                <data android:scheme="file" android:pathPattern=".*\\.ovpn" />
+                <data android:scheme="file" android:pathPattern=".*\\.OVPN" />
+                <data android:scheme="file" android:mimeType="*/*" android:pathPattern=".*\\.ovpn" />
+                <data android:scheme="file" android:mimeType="*/*" android:pathPattern=".*\\.OVPN" />
+            </intent-filter>
+            <!-- Build 2102 (wg-ipv6-import-diagnosis.md,
+                 I1): "Open with Ember" for .conf files too —
+                 builds ≤2101 declared only the .ovpn filter,
+                 so Ember was never offered for a WireGuard
+                 config in Files/Telegram. The payload rides
+                 the same intake as .ovpn; the Dart side
+                 content-routes it to the WireGuard importer
+                 (ember_shell._importOpenVpnIntent). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:pathPattern=".*\\.conf" />
+                <data android:scheme="content" android:pathPattern=".*\\.CONF" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.conf" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.CONF" />
+                <data android:scheme="file" android:pathPattern=".*\\.conf" />
+                <data android:scheme="file" android:pathPattern=".*\\.CONF" />
+                <data android:scheme="file" android:mimeType="*/*" android:pathPattern=".*\\.conf" />
+                <data android:scheme="file" android:mimeType="*/*" android:pathPattern=".*\\.CONF" />
+            </intent-filter>
+            <!-- Build 2095 (whole-app journey audit #38):
+                 config links open in Ember — the app-specific
+                 schemes only. A generic https filter is
+                 deliberately NOT declared: unverified, it would
+                 make Ember a candidate for every web link;
+                 subscription URLs are imported by paste, scan
+                 or file inside the app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vless" />
+                <data android:scheme="vmess" />
+                <data android:scheme="trojan" />
+                <data android:scheme="ss" />
+                <data android:scheme="wireguard" />
+                <data android:scheme="wg" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/x-openvpn-profile" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
+        <!-- Build 2075: serves the downloaded update APK to the
+             system installer (see res/xml/ember_file_paths.xml). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/ember_file_paths" />
+        </provider>
         <!-- The VPN: runs the Go core and carries the phone's traffic. -->
         <service
             android:name=".CoreService"
@@ -101,13 +191,35 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="A VPN that carries the device's traffic through the Psiphon core." />
         </service>
-        <!-- The Lantern engine's VPN (build 2024): the radiance
-             core runs as a subprocess (liblantern.so) serving a
-             local SOCKS proxy that the TUN bridge exits through.
-             Never up at the same time as the other engines; the
-             app turns one off before another on. -->
+        <!-- The AmneziaWG engine's VPN (build 2104): WG
+             Tunnel's backend (com.wgtunnel:backend) declares
+             its OWN services from its artifact manifest — its
+             VpnService (main process, not a foreground
+             service) and its VpnCompanionService (specialUse
+             foreground service carrying the notification) —
+             so Ember declares none for this engine. Builds
+             2100–2103 declared .AwgVpnService here in a
+             dedicated :awg process; that declaration, the
+             process and the service are deleted (named loss,
+             BUILD-LOG-2.md). Never up at the same time as the
+             other engines; the app turns one off before
+             another on. -->
+        <!-- The Lantern engine's VPN (build 2024; gomobile
+             swap build 2129): the official Lantern client's
+             gomobile core (liblantern_gojni.so) runs in-process
+             through the lantern-plugin.dex bindings.
+             Build 2129: the service runs in its OWN process
+             (:lantern), mirroring the :psiphon precedent — two
+             gomobile Go runtimes in one process are
+             unsupported, and Mozilla's already lives in the
+             main process. All main-process interaction is
+             intent- and file-based (see LanternVpnService's
+             published state file). Never up at the same time
+             as the other engines; the app turns one off before
+             another on. -->
         <service
             android:name=".LanternVpnService"
+            android:process=":lantern"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">

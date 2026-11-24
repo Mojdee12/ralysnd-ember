@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
 	"github.com/armanlife/firefox-vpn-client/core/internal/serverlist"
@@ -94,7 +95,17 @@ func ResolveWithStateAndCountry(proxyFlag, countryFilter string, countries []ser
 	if stateFile != "" {
 		persisted, err := loadProxySelection(stateFile)
 		if err == nil {
-			if avoided != nil && avoided(persisted.Addr) && len(countries) > 0 {
+			if persistedSelectionExpired(stateFile) {
+				// Build 2114 (mozilla-regression-plan.md
+				// mechanism 2): a persisted choice older than
+				// the TTL is not reused — the exit it names was
+				// never re-measured, and a decayed exit would
+				// otherwise be kept forever. The file is
+				// re-saved by the connect this selection feeds,
+				// so the TTL runs from the last successful
+				// connect, not from the first.
+				logx.Info("persisted proxy selection is older than %s; selecting afresh proxy=%s", selectionPersistTTL, persisted.Addr)
+			} else if avoided != nil && avoided(persisted.Addr) && len(countries) > 0 {
 				logx.Info("persisted proxy failed recently; selecting another server of the location proxy=%s", persisted.Addr)
 			} else if proxyCandidateMatchesCountry(persisted, countryFilter) {
 				if matched, ok := findProxyCandidate(persisted.Addr, countries); ok {
@@ -251,6 +262,25 @@ func availableCountryCodes(candidates []Candidate) string {
 	return strings.Join(codes, ",")
 }
 
+// selectionPersistTTL is how long a persisted server choice is
+// trusted: the selection file is re-saved on every successful
+// connect, so an entry older than this has not carried a
+// connection for that long and is picked afresh instead of
+// reused (build 2114).
+const selectionPersistTTL = 24 * time.Hour
+
+// persistedSelectionExpired reports whether the selection file
+// at path was last saved more than selectionPersistTTL ago. A
+// file whose mtime cannot be read is NOT expired: the shipped
+// reuse behaviour stands rather than a fresh pick on a guess.
+func persistedSelectionExpired(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) > selectionPersistTTL
+}
+
 func loadProxySelection(path string) (Candidate, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -366,6 +396,18 @@ func canonicalProxyAddr(raw string) (string, error) {
 		host = net.JoinHostPort(proxyURL.Hostname(), "443")
 	}
 	return strings.ToLower(host), nil
+}
+
+// CanonicalProxyAddr is canonicalProxyAddr for callers
+// outside the package (build 2116, 2105-R11): the service
+// walk's tried-set keys on the same canonical host:port
+// the failover strike/avoidance maps use, so one server
+// spelled two ways (case, scheme, default port, trailing
+// slash) is one entry everywhere — the walk used to key
+// its tried-set by the raw string and could retry a
+// differently-spelled duplicate.
+func CanonicalProxyAddr(raw string) (string, error) {
+	return canonicalProxyAddr(raw)
 }
 
 func connectProxyHosts(countries []serverlist.Country) []string {

@@ -2435,7 +2435,12 @@ class _LowQuotaNoticeState extends State<_LowQuotaNotice> {
               Align(
                 alignment: AlignmentDirectional.centerEnd,
                 child: TextButton.icon(
-                  onPressed: () => showSignInDialog(context, widget.core),
+                  onPressed: () => showSignInDialog(
+                    context,
+                    widget.core,
+                    browserFallbackOffer:
+                        widget.settings.signinBrowserFallbackOffer,
+                  ),
                   icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
                   label: Text(l.addAccount),
                 ),

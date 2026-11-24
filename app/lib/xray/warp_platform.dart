@@ -44,18 +44,34 @@ class WarpCoreState {
 class WarpPlatform {
   static const _channel = MethodChannel('app/android');
 
+  /// The last start() channel failure's text (build 2116,
+  /// AB-10): start() keeps its bool contract, but the
+  /// exception is no longer swallowed — state() surfaces
+  /// it when the core reports no error of its own.
+  static String lastStartError = '';
+
   /// Spawns the core with [args]. Returns once the process
   /// exists; readiness completes asynchronously — poll [state]
   /// until [WarpCoreState.ready] (the native wait is a single
-  /// SOCKS greeting, up to 45 s).
-  static Future<bool> start(List<String> args, {int port = 20850}) async {
+  /// SOCKS greeting, up to 45 s). [greetingWaitMs] overrides
+  /// the native readiness budget (build 2087): the chain
+  /// path's identity-registration run passes the chain grace
+  /// (150 s), because registration precedes its first scan.
+  static Future<bool> start(
+    List<String> args, {
+    int port = 20850,
+    int? greetingWaitMs,
+  }) async {
     try {
       final v = await _channel.invokeMethod<bool>('warpStart', {
         'args': args,
         'port': port,
+        if (greetingWaitMs != null) 'greetingWaitMs': greetingWaitMs,
       });
+      if (v == true) lastStartError = '';
       return v ?? false;
-    } catch (_) {
+    } catch (e) {
+      lastStartError = '$e';
       return false;
     }
   }
@@ -72,7 +88,7 @@ class WarpPlatform {
     try {
       final m = await _channel.invokeMapMethod<String, dynamic>('warpState');
       if (m == null) return const WarpCoreState();
-      return WarpCoreState(
+      final s = WarpCoreState(
         available: m['available'] as bool? ?? false,
         running: m['running'] as bool? ?? false,
         ready: m['ready'] as bool? ?? false,
@@ -82,8 +98,23 @@ class WarpPlatform {
         error: m['error'] as String? ?? '',
         logTail: m['logTail'] as String? ?? '',
       );
-    } catch (_) {
-      return const WarpCoreState();
+      // Build 2116 (AB-10): surface a swallowed start
+      // failure the core never got to report.
+      if (!s.running && s.error.isEmpty && lastStartError.isNotEmpty) {
+        return WarpCoreState(
+          available: s.available,
+          running: s.running,
+          ready: s.ready,
+          stage: s.stage == 'idle' ? 'error' : s.stage,
+          identityPresent: s.identityPresent,
+          renewNeeded: s.renewNeeded,
+          error: lastStartError,
+          logTail: s.logTail,
+        );
+      }
+      return s;
+    } catch (e) {
+      return WarpCoreState(stage: 'error', error: '$e');
     }
   }
 

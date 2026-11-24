@@ -69,7 +69,3 @@ String latDigits(Object value) {
   return out.replaceAll('٫', '.');
 }
 
-/// Byte counts, fully English like every other display in the app
-/// (2006): Latin digits and Latin unit letters. Kept as a separate
-/// name for the call sites that adopted it in 2005; it is [fmtBytes].
-String fmtBytesLocal(int bytes) => fmtBytes(bytes);

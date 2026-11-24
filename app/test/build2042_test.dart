@@ -18,16 +18,19 @@ import 'package:firefox_vpn/xray/xray_models.dart';
 
 void main() {
   group('Auto-reconnect settings (build 2042)', () {
-    test('defaults are on, 10 s, 5 attempts', () {
+    test('defaults are off (build 2114), 10 s, 5 attempts', () {
+      // Build 2114 (defaults reset): auto-reconnect is an
+      // Ember extra — default OFF, v2rayNG parity. The
+      // delay/attempts defaults are unchanged.
       final s = XraySettings();
-      expect(s.autoReconnect, isTrue);
+      expect(s.autoReconnect, isFalse);
       expect(s.reconnectDelaySeconds, 10);
       expect(s.reconnectMaxAttempts, 5);
     });
 
     test('an old store without the keys reads the defaults', () {
       final s = XraySettings.fromJson({});
-      expect(s.autoReconnect, isTrue);
+      expect(s.autoReconnect, isFalse);
       expect(s.reconnectDelaySeconds, 10);
       expect(s.reconnectMaxAttempts, 5);
     });

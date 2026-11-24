@@ -25,31 +25,25 @@ const _k = <int>[
 
 int _rotr(int x, int n) => ((x >> n) | (x << (32 - n))) & 0xffffffff;
 
-/// The SHA-256 of [bytes] as 64 lowercase hex characters.
-String sha256Hex(List<int> bytes) {
-  final h = <int>[
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-  ];
-  // Padding: message || 0x80 || zeros || 64-bit big-endian bit length.
-  final bitLen = bytes.length * 8;
-  final padded = <int>[...bytes, 0x80];
-  while (padded.length % 64 != 56) {
-    padded.add(0);
-  }
-  for (var i = 7; i >= 0; i--) {
-    padded.add((bitLen >> (8 * i)) & 0xff);
-  }
+List<int> _initialState() => <int>[
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+  0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
+
+/// One 64-byte block of [block] starting at [offset], folded
+/// into the running state [h] (build 2116: extracted from
+/// sha256Hex so the streaming [Sha256] shares the exact
+/// compression the known-answer tests pin).
+void _compress(List<int> h, List<int> block, int offset) {
   final w = List<int>.filled(64, 0);
-  for (var block = 0; block < padded.length; block += 64) {
-    for (var t = 0; t < 16; t++) {
-      final o = block + t * 4;
-      w[t] =
-          (padded[o] << 24) |
-          (padded[o + 1] << 16) |
-          (padded[o + 2] << 8) |
-          padded[o + 3];
-    }
+  for (var t = 0; t < 16; t++) {
+    final o = offset + t * 4;
+    w[t] =
+        (block[o] << 24) |
+        (block[o + 1] << 16) |
+        (block[o + 2] << 8) |
+        block[o + 3];
+  }
     for (var t = 16; t < 64; t++) {
       final s0 = _rotr(w[t - 15], 7) ^ _rotr(w[t - 15], 18) ^ (w[t - 15] >> 3);
       final s1 = _rotr(w[t - 2], 17) ^ _rotr(w[t - 2], 19) ^ (w[t - 2] >> 10);
@@ -81,6 +75,71 @@ String sha256Hex(List<int> bytes) {
     h[5] = (h[5] + f) & 0xffffffff;
     h[6] = (h[6] + g) & 0xffffffff;
     h[7] = (h[7] + hh) & 0xffffffff;
+}
+
+String _hexOf(List<int> h) =>
+    h.map((v) => v.toRadixString(16).padLeft(8, '0')).join();
+
+/// The SHA-256 of [bytes] as 64 lowercase hex characters.
+String sha256Hex(List<int> bytes) {
+  final h = _initialState();
+  // Padding: message || 0x80 || zeros || 64-bit big-endian bit length.
+  final bitLen = bytes.length * 8;
+  final padded = <int>[...bytes, 0x80];
+  while (padded.length % 64 != 56) {
+    padded.add(0);
   }
-  return h.map((v) => v.toRadixString(16).padLeft(8, '0')).join();
+  for (var i = 7; i >= 0; i--) {
+    padded.add((bitLen >> (8 * i)) & 0xff);
+  }
+  for (var block = 0; block < padded.length; block += 64) {
+    _compress(h, padded, block);
+  }
+  return _hexOf(h);
+}
+
+/// Streaming SHA-256 (build 2116): the same compression as
+/// [sha256Hex], fed in chunks — for hashing a body while it
+/// downloads (the updater's feed-digest verification), where
+/// holding the whole file in memory is not an option.
+class Sha256 {
+  final List<int> _h = _initialState();
+  final List<int> _pending = <int>[];
+  int _length = 0;
+  bool _done = false;
+
+  void add(List<int> chunk) {
+    if (_done) throw StateError('Sha256 already finalized');
+    _length += chunk.length;
+    var data = chunk;
+    if (_pending.isNotEmpty) {
+      data = <int>[..._pending, ...chunk];
+      _pending.clear();
+    }
+    var offset = 0;
+    while (data.length - offset >= 64) {
+      _compress(_h, data, offset);
+      offset += 64;
+    }
+    if (offset < data.length) _pending.addAll(data.sublist(offset));
+  }
+
+  /// The digest as 64 lowercase hex characters. Finalizes
+  /// the hash — no further [add] calls.
+  String hex() {
+    if (_done) throw StateError('Sha256 already finalized');
+    _done = true;
+    final bitLen = _length * 8;
+    final tail = <int>[..._pending, 0x80];
+    while (tail.length % 64 != 56) {
+      tail.add(0);
+    }
+    for (var i = 7; i >= 0; i--) {
+      tail.add((bitLen >> (8 * i)) & 0xff);
+    }
+    for (var block = 0; block < tail.length; block += 64) {
+      _compress(_h, tail, block);
+    }
+    return _hexOf(_h);
+  }
 }

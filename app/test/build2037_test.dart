@@ -62,17 +62,22 @@ void main() {
         tcpFormOf('https://dns.quad9.net/dns-query'),
         'tcp://9.9.9.9',
       );
+      // Build 2113: upstream's table carries no
+      // dns.adguard-dns.com pin, so the host form is used.
       expect(
         tcpFormOf('https://dns.adguard-dns.com/dns-query'),
-        'tcp://94.140.14.14',
+        'tcp://dns.adguard-dns.com',
       );
       expect(
         tcpFormOf('https://dns.alidns.com/dns-query'),
         'tcp://223.5.5.5',
       );
+      // Build 2113: upstream's table carries no doh.dns.sb
+      // pin either (dns.sb is pinned, doh.dns.sb is not), so
+      // the host form is used.
       expect(
         tcpFormOf('https://doh.dns.sb/dns-query'),
-        'tcp://185.222.222.222',
+        'tcp://doh.dns.sb',
       );
     });
 
@@ -100,29 +105,41 @@ void main() {
         'tcp://1.1.1.1',
       );
       final ad = _tcp()..adBlockDoh = true;
-      expect(primaryResolver(ad), 'tcp://94.140.14.14');
+      // Build 2113: no AdGuard pin in upstream's table, so
+      // the TCP form is the host form.
+      expect(primaryResolver(ad), 'tcp://dns.adguard-dns.com');
     });
 
     test('primaryResolver: an unknown stored proto falls back to DoH', () {
-      final s = XraySettings()..remoteDnsProto = 'tls';
-      expect(primaryResolver(s), 'https://dns.google/dns-query');
+      // The fallback-to-DoH behavior is unchanged; the test
+      // runs on the explicit Cloudflare DoH value (build
+      // 2111's shipped default is plain 1.1.1.1, which passes
+      // through the same unmapped path).
+      final s = XraySettings()
+        ..remoteDns = 'https://cloudflare-dns.com/dns-query'
+        ..remoteDnsProto = 'tls';
+      expect(primaryResolver(s), 'https://cloudflare-dns.com/dns-query');
       s.remoteDnsProto = 'doh';
-      expect(primaryResolver(s), 'https://dns.google/dns-query');
+      expect(primaryResolver(s), 'https://cloudflare-dns.com/dns-query');
       s.remoteDnsProto = 'doq';
-      expect(primaryResolver(s), 'quic+local://dns.google');
+      expect(primaryResolver(s), 'quic+local://one.one.one.one');
     });
 
     test('DNS section in TCP mode: tcp:// primary, pins kept', () {
       final servers = dnsServersOf(_tcp());
-      // Build 2049: the built-in fallback adds Quad9 over TCP
-      // in the default shape (see build2049_fix_test.dart).
-      expect(servers, ['tcp://8.8.8.8', 'tcp://9.9.9.9']);
+      // Build 2049's built-in fallback (Quad9 over TCP behind
+      // the primary) is REMOVED in build 2101 by the owner's
+      // order — the primary stands alone now.
+      expect(servers, ['tcp://8.8.8.8']);
       final cfg = decode(buildTunnelConfig(_vless(), _tcp()));
       final dns = cfg['dns'] as Map<String, dynamic>;
-      expect(dns['tag'], 'dns-in');
+      // Build 2103 (diagnosis D2/E2): the DNS section's tag
+      // is v2rayNG's own 'dns-module' now, pinned to the
+      // proxy by an explicit routing rule.
+      expect(dns['tag'], 'dns-module');
       expect(
         (dns['hosts'] as Map<String, dynamic>)['dns.google'],
-        ['8.8.8.8', '8.8.4.4'],
+        ['8.8.8.8', '8.8.4.4', '2001:4860:4860::8888', '2001:4860:4860::8844'],
       );
     });
 
@@ -153,37 +170,45 @@ void main() {
 
     test('fakeDNS still rides first under the TCP transport', () {
       final s = _tcp()..fakeDns = true;
-      // Build 2049: the built-in TCP fallback follows (see
-      // build2049_fix_test.dart).
-      expect(dnsServersOf(s), ['fakedns', 'tcp://8.8.8.8', 'tcp://9.9.9.9']);
+      // Build 2101: no built-in fallback follows anymore
+      // (removed by the owner's order; see build2101_test.dart).
+      expect(dnsServersOf(s), ['fakedns', 'tcp://8.8.8.8']);
     });
 
     test('settings: the TCP choice round-trips; old JSON defaults to DoH', () {
       final s = XraySettings()..remoteDnsProto = 'tcp';
       final back = XraySettings.fromJson(s.toJson());
       expect(back.remoteDnsProto, 'tcp');
-      expect(primaryResolver(back), 'tcp://8.8.8.8');
+      // Build 2101: the default remote is Cloudflare now, so
+      // its TCP form is the 1.1.1.1 pin.
+      expect(primaryResolver(back), 'tcp://1.1.1.1');
       final old = XraySettings.fromJson({'remoteDns': 'https://dns.google/dns-query'});
       expect(old.remoteDnsProto, 'doh');
     });
 
     test('DoH/DoQ regression: nothing changes when TCP is not chosen', () {
-      // Build 2049 amended this shape: the default config now
-      // also carries the built-in TCP fallback after the
-      // primary (see build2049_fix_test.dart); the DoH/DoQ
-      // primary mapping itself is unchanged.
+      // Build 2049 amended this shape with its built-in TCP
+      // fallback; build 2101 (owner order 2026-11-18) removes
+      // the fallback AND moves the default remote to
+      // v2rayNG's Cloudflare DoH. Build 2111 moved the
+      // default to plain 1.1.1.1 with the DoH appended;
+      // build 2113 removes the append and restores the
+      // Cloudflare DoH default, so the section carries the
+      // single stored entry; under DoQ it maps to the one
+      // quic+local form, so DoQ mode stays pure DoQ.
       expect(dnsServersOf(XraySettings()), [
-        'https://dns.google/dns-query',
-        'tcp://9.9.9.9',
+        'https://cloudflare-dns.com/dns-query',
       ]);
       final doq = XraySettings()..remoteDnsProto = 'doq';
-      expect(dnsServersOf(doq), ['quic+local://dns.google', 'tcp://9.9.9.9']);
+      expect(dnsServersOf(doq), [
+        'quic+local://one.one.one.one',
+      ]);
       final doqGroup = XraySettings()
         ..remoteDnsProto = 'doq'
         ..dnsGroup = true;
       expect(dnsServersOf(doqGroup), [
-        'quic+local://dns.google',
         'quic+local://one.one.one.one',
+        'quic+local://dns.google',
         'quic+local://dns.quad9.net',
       ]);
     });

@@ -36,6 +36,18 @@ const storeDamagedMessage =
     'this section started fresh. The damaged file was kept '
     'aside.';
 
+/// The user-facing sentence for a store file that exists
+/// but could not be READ (a filesystem error — the intact
+/// case, build 2097, post-2096 audit C-L7): the section
+/// starts from defaults in memory, but no save may
+/// overwrite the original until it is gone or readable —
+/// the M14 rule AppSettings got in build 2096, extended
+/// to the engine stores.
+const storeUnreadableMessage =
+    'The saved data could not be read, so changes are '
+    'kept in memory only — the original file is not '
+    'overwritten.';
+
 class AtomicJsonStore {
   AtomicJsonStore(this.file);
 
@@ -140,4 +152,20 @@ class AtomicJsonStore {
     await tmp.writeAsBytes(bytes, flush: true);
     await tmp.rename(file.path);
   }
+}
+
+/// Build 2096 (post-2095 audit M15): the defensive
+/// schemaVersion read shared by all four store gates. A
+/// foreign / hand-edited / synced document may carry the
+/// version as a string ("1"); the gates used to cast
+/// `as num?` and throw — in the Xray store the throw
+/// landed before profile decode, leaving empty in-memory
+/// state whose load-time migration then saved the empty
+/// document OVER the real store. Anything unparsable
+/// reads as version 1 (this build's own version).
+int storeSchemaVersion(Map<String, dynamic> doc) {
+  final v = doc['schemaVersion'];
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v.trim()) ?? 1;
+  return 1;
 }

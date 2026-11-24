@@ -106,6 +106,58 @@ object OpenVpnVault {
         file(context, key).delete()
     }
 
+    // Build 2116 (E-7): generic single-value secrets under
+    // the same Keystore key — the GitHub sync token's home
+    // now, instead of the plaintext app-settings document.
+    // Their own directory, so a secret's file name can
+    // never collide with a credential entry's.
+    private fun secretFile(context: Context, key: String): File {
+        val safe = key.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return File(
+            File(context.filesDir, "secrets").apply { mkdirs() },
+            "$safe.json",
+        )
+    }
+
+    /** Saves (or replaces) the secret for [key]. Throws on failure. */
+    fun saveSecret(context: Context, key: String, value: String) {
+        val cipher = Cipher.getInstance(TRANSFORM)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+        val plain = JSONObject()
+            .put("v", value)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        val sealed = cipher.doFinal(plain)
+        val doc = JSONObject()
+            .put("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .put("data", Base64.encodeToString(sealed, Base64.NO_WRAP))
+        AtomicFile.writeText(secretFile(context, key), doc.toString())
+    }
+
+    /** The stored secret for [key], or null when none is
+     *  saved (or it cannot be decrypted on this device). */
+    fun loadSecret(context: Context, key: String): String? {
+        val target = secretFile(context, key)
+        if (!target.exists()) return null
+        return try {
+            val doc = JSONObject(target.readText())
+            val cipher = Cipher.getInstance(TRANSFORM)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                secretKey(),
+                GCMParameterSpec(128, Base64.decode(doc.getString("iv"), Base64.NO_WRAP)),
+            )
+            val plain = cipher.doFinal(Base64.decode(doc.getString("data"), Base64.NO_WRAP))
+            JSONObject(String(plain, Charsets.UTF_8)).optString("v")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun deleteSecret(context: Context, key: String) {
+        secretFile(context, key).delete()
+    }
+
     /**
      * What the store can actually prove about an entry
      * (build 2027). NONE: nothing stored. OK: the stored

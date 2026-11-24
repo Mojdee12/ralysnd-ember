@@ -75,6 +75,12 @@ void main() {
             },
           );
       c = XrayController();
+      // Build 2114: the stall watchdog defaults OFF now
+      // (defaults reset) — this group grades the watchdog
+      // itself (the handover arm must prove a stand-down
+      // against a LIVE watchdog, not a disabled one), so
+      // the setup turns it on.
+      c.settings.stallWatchdog = true;
       c.profiles = [_vless()];
       c.select(c.profiles.single);
     });

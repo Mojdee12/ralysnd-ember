@@ -185,8 +185,18 @@ func (e *proxyConnectHTTPError) Redacted() string {
 	return sanitized.Error()
 }
 
+// errPerTunnelFailure marks a failure that belongs to ONE
+// tunnel of a per-connection session (build 2105, h1): the dial
+// for that tunnel failed. There is no shared session to rebuild
+// and no pass to renew over it — the session's stated design is
+// that an ordinary per-connection failure stays per-connection.
+var errPerTunnelFailure = errors.New("per-tunnel connection failed")
+
 func shouldRebuildProxySession(err error) bool {
 	if errors.Is(err, errSessionSaturated) {
+		return false
+	}
+	if errors.Is(err, errPerTunnelFailure) {
 		return false
 	}
 	if errors.Is(err, errProxySessionUnhealthy) {

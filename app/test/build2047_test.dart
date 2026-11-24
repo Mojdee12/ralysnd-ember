@@ -139,15 +139,6 @@ void main() {
       );
     });
 
-    test('the summary names the pin count', () {
-      expect(tlsCertPinSummary(pinValue()), '1 pinned certificate');
-      expect(
-        tlsCertPinSummary('${pinValue()},${pinValue(char: 'b')}'),
-        '2 pinned certificates',
-      );
-      expect(tlsCertPinSummary('bogus'), isEmpty);
-      expect(tlsCertPinSummary(''), isEmpty);
-    });
   });
 
   group('The parser keeps a valid pin (build 2047)', () {

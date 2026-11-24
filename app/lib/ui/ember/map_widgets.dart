@@ -6,10 +6,13 @@
 /// and the pages feed it state. Sibling of the desktop build's
 /// map_widgets.dart, re-proportioned for portrait.
 
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../../core/android_core.dart';
 import 'ember_theme.dart';
 import 'world_map.dart';
 
@@ -19,7 +22,23 @@ import 'world_map.dart';
 /// on the baked dots. Used as the shell's ground layer and by
 /// [EmberBackground] on pushed pages.
 class MapBackdropVisual extends StatelessWidget {
-  const MapBackdropVisual({super.key});
+  const MapBackdropVisual({super.key, this.banded = false, this.faint = false});
+
+  /// Build 2145 (UI-review fix A3): on text-heavy surfaces the
+  /// map reads only as a faint TOP BAND — a scrim settles the
+  /// dot field to plain near-black below the band, the way the
+  /// approved pro6 settings sample grounds its rows. The map
+  /// compositions (the Mozilla / V2Ray homes) keep banded off.
+  final bool banded;
+
+  /// Home fidelity round R1 (owner order 2026-11-23): the
+  /// approved pro3 home sample's map is a FINE, FAINT halftone
+  /// — the baked raster read at full strength renders coarse
+  /// and loud behind the hero. On the Home tab a scrim settles
+  /// the whole field (deepest toward the bottom, where the
+  /// hero type sits) so the dots read as the sample's quiet
+  /// texture while the live actors stay lit above it.
+  final bool faint;
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -44,9 +63,36 @@ class MapBackdropVisual extends StatelessWidget {
             width: 360 * t.cover,
             height: 180 * t.cover,
             child: Image.asset(
-              'assets/backdrop/map_backdrop.png',
+              // Build 2116 (B12-1/AP-03): the backdrop is a
+              // WebP now (was a 10.4 MB 4680px PNG decoded at
+              // full size on every page — ≈44 MB of RGBA for
+              // a 360×180-unit field).
+              // Build 2118 (appearance fix round): the 2116
+              // asset was 2048px wide (5.7 px/unit) decoded at
+              // cacheWidth 1440 (4 px/unit), while the portrait
+              // cover transform displays ~9.4 px/unit on the
+              // golden surface and ~13.3 on a 1080p phone —
+              // the dots upscaled 2×+ and read as coarse
+              // blocks. The asset is 3200px now (8.9 px/unit,
+              // re-baked with finer, greyer dots) and the
+              // decode cap rises to 2880 to match.
+              // Batch 2 (fidelity rollout, owner order
+              // 2026-11-23): the HOME variant of the field —
+              // the same geography and projection baked on a
+              // 0.5-unit lattice with a smaller core and a
+              // warm taupe palette (tool/bake_backdrop_home.py),
+              // so under the faint scrim the Home backdrop
+              // reads as the pro3 sample's fine halftone
+              // instead of the shared bake's coarser grain.
+              // [faint] is only ever true on the shell's Home
+              // tab, so every other backdrop keeps the shared
+              // asset byte-for-byte.
+              faint
+                  ? 'assets/backdrop/map_backdrop_home.webp'
+                  : 'assets/backdrop/map_backdrop.webp',
               fit: BoxFit.fill,
               filterQuality: FilterQuality.medium,
+              cacheWidth: 2880,
             ),
           ),
           // A gentle top shade so the brand panel and chips
@@ -56,11 +102,60 @@ class MapBackdropVisual extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Color(0x40060B14), Color(0x00060B14)],
+                colors: [Color(0x40000000), Color(0x00000000)],
                 stops: [0, 0.35],
               ),
             ),
           ),
+          // Build 2145 (UI-review fix A3): the banded scrim —
+          // the dot field stays at full strength only in the
+          // top band, then settles through a soft ramp to the
+          // plain base color, so body text and rows below sit
+          // on near-black, not on texture.
+          if (banded)
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0x00000000),
+                    Color(0x00000000),
+                    Color(0xF2050607),
+                    Color(0xFF050607),
+                  ],
+                  stops: [0, 0.20, 0.42, 0.60],
+                ),
+              ),
+            ),
+          // R1: the faint-home scrim (see [faint]).
+          // R2: one notch stronger at every stop — the R1
+          // renders still read slightly louder than the
+          // samples' halftone. [faint] is only ever true on
+          // the shell's Home tab, so no other backdrop moves.
+          // Batch 2 (owner's halftone note on the accepted
+          // R2): the ramp steepens below the map band — the
+          // top eases a touch (0x7A) so the fine halftone of
+          // the Home bake still reads where the arc flies,
+          // and the lower stops deepen hard (0xC2 / 0xE6) so
+          // the field dissolves under the hero the way the
+          // pro3 sample's does, instead of showing through it.
+          if (faint)
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0x7A050607),
+                    Color(0x90050607),
+                    Color(0xC2050607),
+                    Color(0xE6050607),
+                  ],
+                  stops: [0, 0.32, 0.64, 1],
+                ),
+              ),
+            ),
         ],
       );
     },
@@ -75,6 +170,21 @@ class MapBackdropVisual extends StatelessWidget {
 /// samples' glowing gradient rim (the V2Ray panel, the locations
 /// sheet). The blur sits in its own RepaintBoundary so ticking
 /// siblings never re-run it.
+/// Build 2092 (UI audit 2026-11-16 items 39, 59): the
+/// engine-home top spacer, derived from the page's OWN
+/// viewport height (the home ListView's LayoutBuilder
+/// constraints) — not the full device height. The old
+/// device-height figure ignored the ≈348 dp chip header and
+/// ≈120 dp bottom bar, so the spacer ate roughly half the
+/// visible page and pushed the first card toward the fold.
+/// R1 (pro3/pro5 home): the chip header is GONE from the
+/// Home tab and the samples compose a tall quiet map band
+/// above the hero — the fraction rises to 0.36, capped at
+/// 260 dp, so the hero block lands in the page's lower half
+/// like the samples instead of crowding the pin zone.
+double emberHomeTopGap(double pageHeight) =>
+    (pageHeight * 0.36).clamp(0.0, 260.0);
+
 class MapGlass extends StatelessWidget {
   const MapGlass({
     super.key,
@@ -181,10 +291,10 @@ class MapGlass extends StatelessWidget {
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 colors: [
-                  Color(0x007CA2D6),
-                  Color(0x6680A7D8),
+                  Color(0x00FFFFFF),
+                  Color(0x4DFFFFFF),
                   Color(0x40FFB066),
-                  Color(0x007CA2D6),
+                  Color(0x00FFFFFF),
                 ],
                 stops: [0, 0.35, 0.75, 1],
               ),
@@ -249,9 +359,12 @@ class MapGlass extends StatelessWidget {
                 spreadRadius: 1,
               ),
             if (luminous)
+              // Build 2119 (audit F-14): the luminous
+              // shadow softens with the ring (0.16/24 ->
+              // 0.12/20).
               BoxShadow(
-                color: Ember.orange.withValues(alpha: 0.16),
-                blurRadius: 24,
+                color: Ember.orange.withValues(alpha: 0.12),
+                blurRadius: 20,
                 spreadRadius: 1,
               ),
             if (glow)
@@ -273,10 +386,55 @@ class MapGlass extends StatelessWidget {
   }
 }
 
+/// One frosted-glass backdrop for a whole scrolling list
+/// (build 2095, owner-reported appearance fix —
+/// screenshots Screenshot_2026-11-17-04-46-05-797 (the
+/// model: the V2Ray header panel on its blurred glass) and
+/// Screenshot_2026-11-17-04-46-01-557 (the problem: the
+/// config rows below it rendering almost directly on the
+/// dotted map, names and subtitles hard to read)).
+///
+/// The header panels read clearly because MapGlass blurs
+/// what is behind them (sigma 10) under the panel fill.
+/// The list rows cannot each carry that blur — a live
+/// BackdropFilter per row in a scrolling list is the
+/// standing jank source (builds 2074/2092) — so the list
+/// region gets ONE backdrop filter behind the whole
+/// scroll view instead: the map behind the rows is frosted
+/// once, the rows keep their own fills and borders on top,
+/// and scrolling never re-runs the filter (the backdrop
+/// under these tabs is static). Blur only, no tint: each
+/// surface above keeps exactly the colours it had.
+class MapListFrost extends StatelessWidget {
+  const MapListFrost({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ClipRect(
+            child: BackdropFilter(
+              filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+        child,
+      ],
+    );
+  }
+}
+
 /// The luminous gradient ring of the big panels: a 1.1 px
 /// orange-leaning stroke drawn OVER the glass edge. (Painting
 /// the gradient as a backing box instead would bleed through
 /// the translucent fill and wash the whole panel brown.)
+/// Build 2119 (audit F-14): the stroke alphas soften one
+/// notch — at the 2118 weights the rim read as a lit frame
+/// around every panel rather than a rim-light.
 class _LuminousRingPainter extends CustomPainter {
   const _LuminousRingPainter(this.radius);
 
@@ -291,7 +449,7 @@ class _LuminousRingPainter extends CustomPainter {
       ..shader = const LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [Color(0xFFFFC38A), Color(0xB3FF8A3D), Color(0x7FE65116)],
+        colors: [Color(0xD9FFC38A), Color(0x99FF8A3D), Color(0x66FF7A29)],
       ).createShader(rect);
     canvas.drawRRect(
       RRect.fromRectAndRadius(
@@ -319,6 +477,14 @@ class MapBrandPanel extends StatelessWidget {
   Widget build(BuildContext context) => MapGlass(
     radius: 14,
     rim: true,
+    // Build 2121 (owner device verdict 2026-11-19 21:57):
+    // the 2118 enlargement of this panel (luminous rim,
+    // tile 34, title 15, more air) is REVERTED — on the
+    // owner's phone the badge read too big and reached
+    // into the middle of the screen. Back to the pre-2118
+    // compact footprint (tile 30, title 13); the restored
+    // panel's measured full-text width is ~177 dp in
+    // Roboto (the version line governs at 117.6 dp).
     padding: const EdgeInsets.fromLTRB(9, 7, 12, 7),
     child: Row(
       mainAxisSize: MainAxisSize.min,
@@ -341,35 +507,44 @@ class MapBrandPanel extends StatelessWidget {
           child: const Center(child: EmberShieldMark(size: 18)),
         ),
         const SizedBox(width: 8),
-        Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Ralysnd Ember',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: MapUi.text,
-                height: 1.15,
+        // Build 2092 (UI audit item 36): the text column flexes
+        // and ellipsises — at 320 dp / large font the panel's
+        // fixed intrinsic width overflowed the header Row.
+        Flexible(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Ralysnd Ember',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: Ember.fontBody,
+                  fontWeight: FontWeight.w600,
+                  color: MapUi.text,
+                  height: 1.15,
+                ),
               ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              versionLine.toUpperCase(),
-              style: const TextStyle(
+              const SizedBox(height: 2),
+              Text(
+                versionLine.toUpperCase(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
                 // Build 2058 (audit §5 micro-type): 8.5 px in
                 // low-contrast slate carried real info — floored
                 // at 9.5 px, colour lifted.
                 // Build 2074 (audit item 23): floored at 11 px;
                 // the colour already sits a step above dim.
-                fontSize: 11,
+                fontSize: Ember.fontMicro,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.9,
-                color: Color(0xFF93A8BE),
+                  color: Color(0xFFA8A8AE),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ],
     ),
@@ -393,6 +568,7 @@ class MapEngineChip extends StatelessWidget {
     required this.highlight,
     required this.onTap,
     this.icon,
+    this.connecting = false,
   });
 
   final String name;
@@ -401,14 +577,37 @@ class MapEngineChip extends StatelessWidget {
   final VoidCallback onTap;
   final IconData? icon;
 
+  /// Build 2092 (UI audit 2026-11-16 item 35): the engine is
+  /// connecting — a half state (dimmed ember border, amber
+  /// dot, no ACTIVE pill, no glow), distinct from both idle
+  /// and connected. The chips used to declare ACTIVE for the
+  /// whole connecting window while the bottom bar said
+  /// "Connecting…" — two state languages for one moment.
+  final bool connecting;
+
   @override
   Widget build(BuildContext context) {
     final lit = active;
     // Build 2058 (audit §5 shared widgets): the visible chip
-    // stays 128×30, but the tap target is 44 dp tall — the
-    // outer InkWell owns the tap over the full 44 px box and the
-    // glass is centred inside it, so the glass keeps its
-    // approved size while a finger lands the navigation.
+    // stays 128×30, but the tap target is taller than the
+    // glass — the outer InkWell owns the tap over the full
+    // box and the glass is centred inside it, so the glass
+    // keeps its approved size while a finger lands the
+    // navigation.
+    // Build 2083 (owner order, 2026-11-15: the right rail's
+    // gaps read too large on his phone): the box is 36 px,
+    // not 2058's 44 — with the rail's 3 px run spacing the
+    // glass-to-glass gap is 9 px instead of 19. The glass
+    // itself is unchanged at 128×30.
+    // Build 2137 (visual review V-09, reconciled with the
+    // 2083 order): the tap box grows 36 → 39 px. The
+    // review's 42–44 px figure assumed the old 3 px run
+    // spacing could still be spent as compensation — build
+    // 2092 already set the rail's runSpacing to 0, so the
+    // glass-to-glass gap is exactly the box slack: at 39 px
+    // it is 9 px (was 6), the +3 px the review allows; any
+    // taller box would widen the gap past that and break
+    // the 2083 order. The glass stays 128×30, centred.
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -416,17 +615,26 @@ class MapEngineChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         child: SizedBox(
           width: 128,
-          height: 44,
+          height: 39,
           child: Center(
             child: MapGlass(
               radius: 10,
+              // Build 2092 (UI audit item 15): chips render the
+              // static glass (blur: false) — the header stacked
+              // ~10 live backdrop blurs; the fill/border are
+              // identical, only the live filter goes.
+              blur: false,
               // The live engine's chip glows: a solid ember border and a
               // soft orange shadow around the glass, beside its ACTIVE tag.
+              // Build 2092 (item 35): connecting wears the same
+              // border at half strength — a half state, no glow.
               glow: active,
               tint: lit ? Ember.orange : null,
               borderColor: lit
                   ? Ember.orange.withValues(alpha: 0.65)
-                  : const Color(0x2E4B6B94),
+                  : connecting
+                  ? Ember.orange.withValues(alpha: 0.3)
+                  : const Color(0x2EFFFFFF),
               child: SizedBox(
                 // 2025 (Gemini audit v5, item 2): 106 -> 120 so the
                 // longest names ("Mozilla", "Settings") keep their full
@@ -451,9 +659,13 @@ class MapEngineChip extends StatelessWidget {
                           width: 6,
                           height: 6,
                           decoration: BoxDecoration(
+                            // Build 2092 (item 35): the connecting
+                            // dot is amber at half strength.
                             color: active
                                 ? const Color(0xFFFFA04A)
-                                : const Color(0xFF54687F),
+                                : connecting
+                                ? Ember.amber.withValues(alpha: 0.55)
+                                : const Color(0xFF6E6E73),
                             shape: BoxShape.circle,
                             boxShadow: active
                                 ? [
@@ -472,13 +684,13 @@ class MapEngineChip extends StatelessWidget {
                         child: Text(
                           name,
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: Ember.fontMicro,
                             fontWeight: highlight
                                 ? FontWeight.w600
                                 : FontWeight.w500,
                             color: highlight
                                 ? Ember.orange
-                                : const Color(0xFFD9E4F2),
+                                : const Color(0xFFE8E8EA),
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -502,10 +714,17 @@ class MapEngineChip extends StatelessWidget {
                               // Build 2058 (audit §5 micro-type):
                               // 7.5 px in low-contrast slate carried
                               // real info — floored at 9.5 px.
-                              fontSize: 9.5,
+                              // Build 2092 (UI audit item 52): the
+                              // micro-text floor is 11 sp.
+                              fontSize: Ember.fontMicro,
                               fontWeight: FontWeight.w800,
-                              letterSpacing: 0.7,
-                              color: Colors.white,
+                              letterSpacing: 0.5,
+                              // Build 2136 (visual review V-08):
+                              // dark text on the ember gradient —
+                              // white measured 1.78–2.61:1 on it;
+                              // #1A1206 (7.11:1) is what every
+                              // other gradient capsule uses.
+                              color: Color(0xFF1A1206),
                             ),
                           ),
                         ),
@@ -558,7 +777,7 @@ class MapNavPill extends StatelessWidget {
               Text(
                 label,
                 style: const TextStyle(
-                  fontSize: 12,
+                  fontSize: Ember.fontSmall,
                   fontWeight: FontWeight.w600,
                   color: MapUi.text,
                 ),
@@ -634,7 +853,7 @@ class MapGhostButton extends StatelessWidget {
                   Text(
                     label,
                     style: TextStyle(
-                      fontSize: 11.5,
+                      fontSize: Ember.fontMicro,
                       fontWeight: FontWeight.w700,
                       color: color,
                     ),
@@ -717,7 +936,9 @@ class MapActionPill extends StatelessWidget {
                 Text(
                   label,
                   style: TextStyle(
-                    fontSize: 10.5,
+                    // Build 2092 (UI audit item 52): pill labels
+                    // at the 11 sp informational floor.
+                    fontSize: Ember.fontMicro,
                     fontWeight: FontWeight.w700,
                     color: color,
                   ),
@@ -752,7 +973,7 @@ class MapPanelHeader extends StatelessWidget {
         child: Text(
           title,
           style: const TextStyle(
-            fontSize: 15.5,
+            fontSize: Ember.fontTitle,
             fontWeight: FontWeight.w700,
             color: MapUi.text,
             letterSpacing: 0.3,
@@ -763,6 +984,7 @@ class MapPanelHeader extends StatelessWidget {
       ...actions,
       if (onClose != null)
         IconButton(
+          tooltip: 'Close',
           onPressed: onClose,
           icon: const Icon(Icons.close_rounded, size: 19),
           color: MapUi.dim,
@@ -813,28 +1035,23 @@ class MapValueChip extends StatelessWidget {
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
       decoration: BoxDecoration(
-        gradient: lit
-            ? const LinearGradient(
-                colors: [Color(0xFFFF9E42), Color(0xFFE65116)],
-              )
-            : null,
-        color: lit ? null : MapUi.insetFill,
+        // Build 2119 (audit F-18): the lit capsule wears
+        // the design system's one gradient token — this
+        // chip used to hard-code a second stop pair
+        // (FF9E42→E65116) that drifted from Ember.gradient.
+        // Batch 5 (fidelity rollout): the lit capsule is
+        // FLAT orange now, no gradient and no glow — the
+        // same unification fix A7 (build 2145) applied to
+        // EmberChip's selected state; the pro6/pro7 samples
+        // carry no gradient fills anywhere.
+        color: lit ? Ember.orange : MapUi.insetFill,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: lit ? Colors.transparent : MapUi.line),
-        boxShadow: lit
-            ? [
-                BoxShadow(
-                  color: Ember.orange.withValues(alpha: 0.30),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ]
-            : null,
       ),
       child: Text(
         text,
         style: TextStyle(
-          fontSize: 11.5,
+          fontSize: Ember.fontMicro,
           fontWeight: FontWeight.w700,
           color: lit ? const Color(0xFF1A1206) : MapUi.dim,
         ),
@@ -866,24 +1083,22 @@ class MapSettingsPanel extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => MapGlass(
-    luminous: true,
-    padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+  Widget build(BuildContext context) => Padding(
+    // Build 2145 (composition rebuild, pro6-settings sample):
+    // the panel GLASS is retired — a settings section is now an
+    // editorial hairline GROUP: the tracked orange section
+    // title over the rows, no fill, no border, no shadow. The
+    // rows (MapSettingRow) already carry their own hairlines;
+    // the group's horizontal inset comes from the host list's
+    // padding, so rows align with the page's hero title exactly
+    // as the sample's index does. Same widget, same API, same
+    // children — only the container composition changed.
+    padding: const EdgeInsets.fromLTRB(0, 10, 0, 2),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title.toUpperCase(),
-          style: const TextStyle(
-            // Build 2074 (audit item 23): colour lifted one step
-            // toward dim (size already at the ~11 sp floor).
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 1.1,
-            color: Color(0xFF7E93A8),
-          ),
-        ),
-        const SizedBox(height: 4),
+        Text(title.toUpperCase(), style: Ember.microLabelOrange),
+        const SizedBox(height: 6),
         ...children,
       ],
     ),
@@ -911,9 +1126,12 @@ class MapSettingRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final row = ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 50),
+      // Build 2118 (appearance fix round): the sample settings
+      // rows breathe more than the app's 50 dp / 7 dp rhythm —
+      // a small step up (52 / 8), shared by every settings panel.
+      constraints: const BoxConstraints(minHeight: 52),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 7),
+        padding: const EdgeInsets.symmetric(vertical: 8),
         child: Row(
           children: [
             Expanded(
@@ -924,7 +1142,7 @@ class MapSettingRow extends StatelessWidget {
                   Text(
                     label,
                     style: const TextStyle(
-                      fontSize: 13.5,
+                      fontSize: Ember.fontBody,
                       fontWeight: FontWeight.w500,
                       color: MapUi.text,
                     ),
@@ -934,8 +1152,12 @@ class MapSettingRow extends StatelessWidget {
                     Text(
                       subtitle!,
                       style: const TextStyle(
-                        fontSize: 10,
-                        color: MapUi.faint,
+                        // Build 2092 (UI audit item 38): row
+                        // subtitles carry real explanations —
+                        // 11 sp in dim (6.6:1), not 10 sp faint
+                        // (3.44:1).
+                        fontSize: Ember.fontMicro,
+                        color: MapUi.dim,
                         height: 1.3,
                       ),
                       // Build 2056 (audit Batch 9): the _XraySection
@@ -986,31 +1208,60 @@ class MapBarCell extends StatelessWidget {
     mainAxisSize: MainAxisSize.min,
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(
-        label.toUpperCase(),
-        style: const TextStyle(
-          // Build 2058 (audit §5 micro-type): 8 px in
-          // low-contrast slate carried real info — floored at
-          // 9.5 px, colour lifted.
-          // Build 2074 (audit item 23): floored at 11 px,
-          // colour lifted one step to dim.
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.9,
-          color: Color(0xFF8FA3BC),
+      // Build 2118 (appearance fix round): the label and the
+      // value scale down to fit instead of wrapping/ellipsizing
+      // — "ACTIVE CONFIG" wrapped onto two lines in its ~85 dp
+      // cell and knocked the telemetry grid out of alignment,
+      // and values like "Amsterdam • Netherlands" ellipsized
+      // where the samples read whole. FittedBox only shrinks
+      // when the cell is too narrow; at natural width nothing
+      // changes.
+      FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Text(
+          label.toUpperCase(),
+          maxLines: 1,
+          softWrap: false,
+          style: const TextStyle(
+            // Build 2058 (audit §5 micro-type): 8 px in
+            // low-contrast slate carried real info — floored at
+            // 9.5 px, colour lifted.
+            // Build 2074 (audit item 23): floored at 11 px,
+            // colour lifted one step to dim.
+            // Build 2083 (owner order, 2026-11-15): 11 -> 10 —
+            // the bottom bar's type read too large on his phone;
+            // still above the 9.5 micro-type floor.
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.9,
+            color: Color(0xFF9A9A9E),
+          ),
         ),
       ),
       const SizedBox(height: 2),
-      Text(
-        value,
-        style: const TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.w600,
-          color: MapUi.text,
-          fontFeatures: [FontFeature.tabularFigures()],
+      // Build 2092 (UI audit item 37): a truncated exit IP or
+      // "City • Country" is recoverable — long-press shows the
+      // full value.
+      Tooltip(
+        message: value,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            value,
+            style: const TextStyle(
+              // Build 2083 (owner order, 2026-11-15): 11.5 -> 10.5,
+              // same bottom-bar tightening as the label above.
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              color: MapUi.text,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+            maxLines: 1,
+            softWrap: false,
+          ),
         ),
-        overflow: TextOverflow.ellipsis,
-        maxLines: 1,
       ),
     ],
   );
@@ -1058,7 +1309,7 @@ class MobileMapBar extends StatelessWidget {
           gradient: const LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0x5580A7D8), Color(0x1A35506E), Color(0x2EE65A1E)],
+            colors: [Color(0x40FFFFFF), Color(0x1AFFFFFF), Color(0x2EE65A1E)],
             stops: [0, 0.45, 1],
           ),
           boxShadow: [
@@ -1103,12 +1354,22 @@ class MobileMapBar extends StatelessWidget {
                               // longest state word, "Connected via
                               // OpenVPN", fits its two lines whole
                               // instead of dropping "OpenVPN".
-                              fontSize: 11.5,
+                              // Build 2083 (owner order, 2026-11-15):
+                              // 11.5 -> 10 — the bottom bar's type
+                              // read too large on his phone.
+                              fontSize: 10,
                               fontWeight: FontWeight.w700,
                               height: 1.15,
-                              color: on ? const Color(0xFFFFA652) : MapUi.dim,
+                              // Build 2092 (UI audit item 12):
+                              // Connected wears the palette token
+                              // Ember.amber, not the one-off
+                              // 0xFFFFA652 (4.35:1, in neither
+                              // palette); long words ellipsize
+                              // instead of clipping mid-word.
+                              color: on ? Ember.amber : MapUi.dim,
                             ),
                             maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -1118,7 +1379,7 @@ class MobileMapBar extends StatelessWidget {
                     width: 1,
                     height: 46,
                     margin: const EdgeInsets.symmetric(horizontal: 11),
-                    color: const Color(0xFF1E3147),
+                    color: const Color(0xFF141518),
                   ),
                   Expanded(flex: 6, child: _CellGrid(cells: cells)),
                 ],
@@ -1135,10 +1396,11 @@ class MobileMapBar extends StatelessWidget {
           style: const TextStyle(
             // Build 2058 (audit §5 micro-type): 8 px floored at
             // 9.5 px, colour lifted.
-            fontSize: 9.5,
+            // Build 2092 (item 52): the floor is 11 sp now.
+            fontSize: Ember.fontMicro,
             fontWeight: FontWeight.w600,
             letterSpacing: 0.8,
-            color: Color(0xFF7E93A8),
+            color: Color(0xFF8E8E93),
           ),
         ),
       ),
@@ -1222,16 +1484,14 @@ class _PowerSwitch extends StatelessWidget {
           height: 30,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(999),
-            gradient: on
-                ? const LinearGradient(
-                    colors: [Color(0xFFFF9E42), Color(0xFFE65116)],
-                  )
-                : null,
-            color: on ? null : const Color(0xFF16222F),
+            // Build 2119 (audit F-18): Ember.gradient, the
+            // one token — not the drifted literal pair.
+            gradient: on ? Ember.gradient : null,
+            color: on ? null : const Color(0xFF0C0D10),
             border: Border.all(
               color: on
                   ? const Color(0xFFFFB066).withValues(alpha: 0.5)
-                  : const Color(0x2E4B6B94),
+                  : const Color(0x2EFFFFFF),
             ),
             boxShadow: on
                 ? [
@@ -1252,7 +1512,7 @@ class _PowerSwitch extends StatelessWidget {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   // OFF: a bright silver thumb (2024, Gemini
-                  // audit v4 — the old slate 0xFF54687F read as
+                  // audit v4 — the old slate 0xFF6E6E73 read as
                   // switched-off hardware, not a control).
                   gradient: on
                       ? const RadialGradient(
@@ -1287,7 +1547,7 @@ class _PowerSwitch extends StatelessWidget {
                 Icon(
                   Icons.power_settings_new_rounded,
                   size: 14,
-                  color: on ? Colors.white : const Color(0xFF54687F),
+                  color: on ? Colors.white : const Color(0xFF6E6E73),
                 ),
               const SizedBox(width: 7),
             ],
@@ -1343,7 +1603,9 @@ class _ShieldFlamePainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0x2EFF7A18), Color(0x05FF7A18)],
+          // Build 2092 (UI audit item 60): the spec orange is
+          // #FF7A29 — the painter's #FF7A18 literals aliased.
+          colors: [Color(0x2EFF7A29), Color(0x05FF7A29)],
         ).createShader(unit),
     );
     canvas.drawPath(
@@ -1371,7 +1633,7 @@ class _ShieldFlamePainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFFFFC46B), Color(0xFFFF7A18), Color(0xFFFF4A17)],
+          colors: [Color(0xFFFFC46B), Color(0xFFFF7A29), Color(0xFFFF4A17)],
           stops: [0, 0.5, 1],
         ).createShader(unit),
     );
@@ -1395,4 +1657,111 @@ class _ShieldFlamePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Overlay-attack protection (build 2075, feature item 30):
+/// while a sensitive surface is mounted — a config QR, the
+/// scanner, the profile editor, the account pages — the
+/// window refuses overlay windows (Android 12+'s
+/// setHideOverlayWindows), so a malicious overlay cannot
+/// sit on top of what the user is reading or tapping. The
+/// guard lifts when the surface unmounts. Older Android
+/// versions ignore the call (the platform side guards it).
+///
+/// Build 2140: the guard counts only while its surface is
+/// VISIBLE. The shell keeps every tab page mounted in an
+/// IndexedStack, signalling the selected tab through
+/// TickerMode (build 2050); the accounts page's root guard
+/// therefore never disposed, and its share of the count
+/// held FLAG_SECURE (build 2095) app-wide, on every page,
+/// forever — screenshots were blocked everywhere, not just
+/// on sensitive surfaces. A guard now holds its share only
+/// while the surrounding TickerMode is enabled: pushed
+/// routes and the lock page have no disabled TickerMode
+/// above them, so they keep the original mount-lifetime
+/// behaviour, while a hidden-but-mounted tab page holds
+/// nothing.
+class OverlayGuard extends StatefulWidget {
+  final Widget child;
+
+  const OverlayGuard({super.key, required this.child});
+
+  /// Nested sensitive surfaces (the editor opening a QR
+  /// dialog) count up and down — the window guard lifts
+  /// only when the last VISIBLE one goes away.
+  static int depth = 0;
+
+  @override
+  State<OverlayGuard> createState() => _OverlayGuardState();
+}
+
+class _OverlayGuardState extends State<OverlayGuard> {
+  /// Whether THIS guard currently holds a share of
+  /// [OverlayGuard.depth] (build 2140): a share is held
+  /// only while the surface is visible (see the class
+  /// doc), and released when it hides or unmounts.
+  bool _counted = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // TickerMode.valuesOf registers a dependency on the
+    // surrounding TickerMode, so this runs again whenever
+    // the shell selects or deselects the tab this surface
+    // lives on. With no TickerMode ancestor (pushed
+    // routes, the lock page) it defaults to enabled.
+    _setCounted(TickerMode.valuesOf(context).enabled);
+  }
+
+  void _setCounted(bool visible) {
+    if (visible == _counted) return;
+    _counted = visible;
+    if (visible) {
+      if (++OverlayGuard.depth == 1) {
+        AndroidCore.setOverlayGuard(true);
+        // Build 2095 (audit #45): the same surfaces also blank
+        // the recents thumbnail / screenshots.
+        AndroidCore.setSecureFlag(true);
+      }
+    } else {
+      if (--OverlayGuard.depth == 0) {
+        AndroidCore.setOverlayGuard(false);
+        AndroidCore.setSecureFlag(false);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _setCounted(false);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+/// Build 2095 (third-pass audit 5-4): copies a SECRET (a
+/// share link, a subscription URL, a whole backup) with a
+/// timed self-clear — the clipboard is world-readable on
+/// Android, and a copied credential used to sit there until
+/// something overwrote it. The clear fires only when the
+/// clipboard still holds this exact text (the user may
+/// have copied something else since).
+Timer? _sensitiveClipboardTimer;
+
+Future<void> copySensitive(String text) async {
+  await Clipboard.setData(ClipboardData(text: text));
+  _sensitiveClipboardTimer?.cancel();
+  _sensitiveClipboardTimer = Timer(const Duration(seconds: 60), () async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      if (data?.text == text) {
+        await Clipboard.setData(const ClipboardData(text: ''));
+      }
+    } catch (_) {
+      // The clipboard is best-effort; a failed clear is
+      // not worth an error surface.
+    }
+  });
 }

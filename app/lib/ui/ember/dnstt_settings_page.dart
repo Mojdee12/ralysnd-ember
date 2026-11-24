@@ -41,6 +41,10 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
   /// loading state instead of silently swapping the line.
   bool _refreshing = false;
 
+  /// Build 2092 (item 8): Save shows its busy state and
+  /// cannot stack.
+  bool _saving = false;
+
   /// Build 2074 (DNSTT audit d): the client log tail can be
   /// expanded past its 6-line clip.
   bool _logExpanded = false;
@@ -99,13 +103,19 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
       );
       return;
     }
-    await widget.xray.saveDnsttSettings(
-      resolverType: _resolverType,
-      resolver: _v('resolver'),
-      domain: _v('domain'),
-      pubkey: _v('pubkey'),
-    );
-    if (mounted) Navigator.of(context).pop();
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await widget.xray.saveDnsttSettings(
+        resolverType: _resolverType,
+        resolver: _v('resolver'),
+        domain: _v('domain'),
+        pubkey: _v('pubkey'),
+      );
+      if (mounted) Navigator.of(context).pop();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   Widget _text(String key, String label, {String? hint}) => Padding(
@@ -117,7 +127,7 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
       onChanged: (_) => setState(() {}),
       decoration: emberField(context, hint ?? label).copyWith(
         labelText: label,
-        labelStyle: const TextStyle(color: Ember.faint, fontSize: 13),
+        labelStyle: const TextStyle(color: Ember.faint, fontSize: Ember.fontBody),
         floatingLabelStyle: const TextStyle(color: Ember.orange),
       ),
     ),
@@ -140,19 +150,25 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
       child: Row(
         children: [
           Text(label, style: Ember.dimStyle),
-          const Spacer(),
-          DropdownButton<String>(
-            value: value,
-            dropdownColor: Ember.card,
-            underline: const SizedBox.shrink(),
-            style: Ember.body,
-            items: [
-              for (final (v, name) in options)
-                DropdownMenuItem(value: v, child: Text(name)),
-            ],
-            onChanged: (v) {
-              if (v != null) onChanged(v);
-            },
+          const SizedBox(width: 12),
+          // Build 2092 (item 21): the dropdown flexes with
+          // the row instead of overflowing it at 320 dp or
+          // large font scales.
+          Expanded(
+            child: DropdownButton<String>(
+              value: value,
+              isExpanded: true,
+              dropdownColor: Ember.card,
+              underline: const SizedBox.shrink(),
+              style: Ember.body,
+              items: [
+                for (final (v, name) in options)
+                  DropdownMenuItem(value: v, child: Text(name)),
+              ],
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
+            ),
           ),
         ],
       ),
@@ -165,11 +181,12 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
   Widget _section(String title, List<Widget> children) => Padding(
     padding: const EdgeInsets.only(bottom: 14),
     child: MapGlass(
+        blur: false,
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Ember.heading.copyWith(fontSize: 14.5)),
+          Text(title, style: Ember.heading.copyWith(fontSize: Ember.fontTitle)),
           const SizedBox(height: 13),
           ...children,
         ],
@@ -203,6 +220,7 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
         : 'Client is not running. It starts with the next '
               'V2Ray session while DNSTT is the underlay.';
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -211,154 +229,180 @@ class _DnsttSettingsPageState extends State<DnsttSettingsPage> {
         title: Text('DNSTT settings', style: Ember.heading),
         actions: [
           IconButton(
-            onPressed: () => unawaited(_save()),
-            icon: const Icon(Icons.check_rounded, color: Ember.orange),
+            onPressed: _saving ? null : () => unawaited(_save()),
+            icon: _saving
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Ember.orange,
+                    ),
+                  )
+                : const Icon(Icons.check_rounded, color: Ember.orange),
             tooltip: 'Save',
           ),
         ],
       ),
       body: EmberBackground(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 6, 18, 24),
-          children: [
-            _section('How DNSTT works', [
-              Text(
-                'DNSTT tunnels through DNS queries to your own '
-                'server. A dnstt-server must run there with the '
-                'same tunnel domain and key, forwarding to a '
-                'SOCKS proxy on that server — the client alone '
-                'does nothing. Ember runs the client on '
-                '127.0.0.1:${latDigits(dnsttListenPort)} and dials '
-                'the V2Ray session through it.',
-                style: Ember.caption,
-              ),
-            ]),
-            _section('Server', [
-              _dropdown('Resolver transport', _resolverType, const [
-                ('doh', 'DNS over HTTPS'),
-                ('dot', 'DNS over TLS'),
-                ('udp', 'Plain UDP DNS'),
-              ], (v) => setState(() => _resolverType = v)),
-              _text('resolver', 'Resolver', hint: resolverHint),
-              _text(
-                'domain',
-                'Tunnel domain',
-                hint: 'e.g. t.example.com (delegated to your server)',
-              ),
-              _text(
-                'pubkey',
-                'Server public key',
-                hint: '64 hex digits, from dnstt-server -gen-key',
-              ),
-              Text(
-                _v('pubkey').isEmpty
-                    ? 'The public key is required — the client '
-                          'refuses to start without it.'
-                    : pubkeyOk
-                    ? 'Public key looks valid.'
-                    : 'Not a valid key yet: it must be exactly '
-                          '64 hex digits.',
-                style: Ember.caption.copyWith(
-                  color: _v('pubkey').isNotEmpty && !pubkeyOk
-                      ? Ember.orange
-                      : null,
-                ),
-              ),
-            ]),
-            _section('Client', [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: Text(stateLine, style: Ember.caption)),
-                  // Build 2074 (DNSTT audit c): the refresh shows
-                  // its loading state while the state is read.
-                  if (_refreshing)
-                    const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Ember.orange,
-                        ),
-                      ),
-                    )
-                  else
-                    IconButton(
-                      onPressed: () => unawaited(_refreshState()),
-                      icon: const Icon(
-                        Icons.refresh_rounded,
-                        size: 18,
-                        color: MapUi.dim,
-                      ),
-                      tooltip: 'Refresh',
-                    ),
-                ],
-              ),
-              if (_state.logTail.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                // Build 2074 (DNSTT audit d): the log tail is
-                // no longer hard-clipped to 6 lines with the
-                // end hidden — it expands, and it can be copied,
-                // like the app's other log surfaces.
+        // Build 2092 (item 21): the page listens to the
+        // controller while visible (the warp settings
+        // pattern) — a settings change made elsewhere no
+        // longer leaves this page showing stale values.
+        child: ListenableBuilder(
+          listenable: widget.xray,
+          builder: (context, _) => ListView(
+            padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 6, 18, 24),
+            children: [
+              _section('How DNSTT works', [
                 Text(
-                  _state.logTail,
+                  'DNSTT tunnels through DNS queries to your own '
+                  'server. A dnstt-server must run there with the '
+                  'same tunnel domain and key, forwarding to a '
+                  'SOCKS proxy on that server — the client alone '
+                  'does nothing. Ember runs the client on '
+                  '127.0.0.1:${latDigits(dnsttListenPort)} and dials '
+                  'the V2Ray session through it.',
                   style: Ember.caption,
-                  maxLines: _logExpanded ? null : 6,
-                  overflow: _logExpanded
-                      ? TextOverflow.visible
-                      : TextOverflow.ellipsis,
                 ),
+              ]),
+              _section('Server', [
+                _dropdown('Resolver transport', _resolverType, const [
+                  ('doh', 'DNS over HTTPS'),
+                  ('dot', 'DNS over TLS'),
+                  ('udp', 'Plain UDP DNS'),
+                ], (v) => setState(() => _resolverType = v)),
+                _text('resolver', 'Resolver', hint: resolverHint),
+                _text(
+                  'domain',
+                  'Tunnel domain',
+                  hint: 'e.g. t.example.com (delegated to your server)',
+                ),
+                _text(
+                  'pubkey',
+                  'Server public key',
+                  hint: '64 hex digits, from dnstt-server -gen-key',
+                ),
+                Text(
+                  _v('pubkey').isEmpty
+                      ? 'The public key is required — the client '
+                            'refuses to start without it.'
+                      : pubkeyOk
+                      ? 'Public key looks valid.'
+                      : 'Not a valid key yet: it must be exactly '
+                            '64 hex digits.',
+                  style: Ember.caption.copyWith(
+                    color: _v('pubkey').isNotEmpty && !pubkeyOk
+                        ? Ember.orange
+                        : null,
+                  ),
+                ),
+              ]),
+              _section('Client', [
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    TextButton.icon(
-                      onPressed: () async {
-                        await Clipboard.setData(
-                          ClipboardData(text: _state.logTail),
-                        );
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Client log copied')),
-                          );
-                        }
-                      },
-                      icon: const Icon(
-                        Icons.copy_rounded,
-                        size: 16,
-                        color: Ember.dim,
+                    Expanded(child: Text(stateLine, style: Ember.caption)),
+                    // Build 2074 (DNSTT audit c): the refresh shows
+                    // its loading state while the state is read.
+                    if (_refreshing)
+                      const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Ember.orange,
+                          ),
+                        ),
+                      )
+                    else
+                      IconButton(
+                        onPressed: () => unawaited(_refreshState()),
+                        icon: const Icon(
+                          Icons.refresh_rounded,
+                          size: 18,
+                          color: MapUi.dim,
+                        ),
+                        tooltip: 'Refresh',
                       ),
-                      label: Text('Copy', style: Ember.caption),
-                    ),
-                    TextButton.icon(
-                      onPressed: () =>
-                          setState(() => _logExpanded = !_logExpanded),
-                      icon: Icon(
-                        _logExpanded
-                            ? Icons.expand_less_rounded
-                            : Icons.expand_more_rounded,
-                        size: 16,
-                        color: Ember.dim,
-                      ),
-                      label: Text(
-                        _logExpanded ? 'Show less' : 'Show more',
-                        style: Ember.caption,
-                      ),
-                    ),
                   ],
                 ),
-              ],
-              const SizedBox(height: 4),
-              Text(
-                complete
-                    ? 'Ready: the next V2Ray session with the '
-                          'DNSTT underlay will start this client.'
-                    : 'Fill in all three server fields to use '
-                          'the DNSTT underlay.',
-                style: Ember.caption,
-              ),
-            ]),
-          ],
+                if (_state.logTail.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  // Build 2074 (DNSTT audit d): the log tail is
+                  // no longer hard-clipped to 6 lines with the
+                  // end hidden — it expands, and it can be copied,
+                  // like the app's other log surfaces.
+                  Text(
+                    _state.logTail,
+                    style: Ember.caption,
+                    maxLines: _logExpanded ? null : 6,
+                    overflow: _logExpanded
+                        ? TextOverflow.visible
+                        : TextOverflow.ellipsis,
+                  ),
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        // Build 2092 (item 51): 48 dp floor.
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(0, 48),
+                        ),
+                        onPressed: () async {
+                          await Clipboard.setData(
+                            ClipboardData(text: _state.logTail),
+                          );
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Client log copied'),
+                              ),
+                            );
+                          }
+                        },
+                        icon: const Icon(
+                          Icons.copy_rounded,
+                          size: 16,
+                          color: Ember.dim,
+                        ),
+                        label: Text('Copy', style: Ember.caption),
+                      ),
+                      TextButton.icon(
+                        // Build 2092 (item 51): 48 dp floor.
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(0, 48),
+                        ),
+                        onPressed: () =>
+                            setState(() => _logExpanded = !_logExpanded),
+                        icon: Icon(
+                          _logExpanded
+                              ? Icons.expand_less_rounded
+                              : Icons.expand_more_rounded,
+                          size: 16,
+                          color: Ember.dim,
+                        ),
+                        label: Text(
+                          _logExpanded ? 'Show less' : 'Show more',
+                          style: Ember.caption,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 4),
+                Text(
+                  complete
+                      ? 'Ready: the next V2Ray session with the '
+                            'DNSTT underlay will start this client.'
+                      : 'Fill in all three server fields to use '
+                            'the DNSTT underlay.',
+                  style: Ember.caption,
+                ),
+              ]),
+            ],
+          ),
         ),
       ),
     );

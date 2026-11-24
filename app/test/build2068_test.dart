@@ -167,24 +167,26 @@ void main() {
   group('service nets: a caught start failure writes itself into '
       'the engine log and stops the service', () {
     test('PsiphonVpnService ACTION_START is netted into '
-        'psiphon.log + crash.log', () {
+        'crash.log (build 2091: if-dispatch, not when)', () {
       final branch = segmentOf(
         psiphonService,
-        'ACTION_START -> {',
-        'else -> {',
+        'override fun onStartCommand(',
+        'override fun onDestroy()',
       );
       expect(branch.contains('catch (e: Throwable)'), isTrue);
-      expect(branch.contains('CrashLog.appendToFile('), isTrue);
-      expect(branch.contains('File(workDir(this), "psiphon.log")'), isTrue);
+      expect(branch.contains('CrashLog.appendToFile('), isFalse);
       expect(
         branch.contains(
             'CrashLog.append(this, "PsiphonVpnService.onStartCommand", e)'),
         isTrue,
       );
-      expect(branch.contains('stopSelf()'), isTrue);
+      expect(branch.contains('if (intent?.action == ACTION_START)'), isTrue);
+      expect(branch.contains('if (intent?.action == ACTION_STOP)'), isTrue);
+      expect(branch.contains('stopTunnel()'), isTrue);
       expect(branch.contains('return START_NOT_STICKY'), isTrue);
-      // The net wraps the foreground start itself.
-      expect(branch.contains('startInForeground()'), isTrue);
+      // The net wraps the whole dispatch, including the
+      // foreground start inside startTunnel.
+      expect(psiphonService.contains('startInForeground()'), isTrue);
     });
 
     test('XrayVpnService onStartCommand is netted into xray.log '
@@ -284,12 +286,15 @@ void main() {
     });
 
     test('the Psiphon service steps are breadcrumbed', () {
+      // Build 2091: the stage boundaries are the MLM host's
+      // — the provider tag, the library call's entered/
+      // returned pair, the log open, and the heartbeat.
       for (final tag in [
-        'psiphon:service-onCreate',
-        'psiphon:onStartCommand-start',
-        'psiphon:startInForeground-returned',
-        'psiphon:startTunnel-entered',
+        'psiphon:provider-',
+        'psiphon:startTunneling-entered',
+        'psiphon:startTunneling-returned',
         'psiphon:openLog-completed',
+        'psiphon:heartbeat',
       ]) {
         expect(psiphonService.contains(tag), isTrue, reason: tag);
       }
@@ -321,14 +326,31 @@ void main() {
     test('both readLogs loops include crash.log from filesDir',
         () {
       final psiphon = dartSrc('psiphon/psiphon_controller.dart');
+      // Build 2090 supersession: readLogs moved from a flat name list
+      // to (name, File) sections so the psiphonbox core logs (which
+      // live under filesDir/psiphonbox/) join the viewer; crash.log
+      // remains a section, still resolved from dir.parent.path.
       expect(
-        psiphon.contains("'psiphon.log', 'tunlink.log', 'crash.log'"),
+        psiphon.contains("('crash.log', File('\${dir.parent.path}/crash.log'))"),
         isTrue,
       );
       expect(psiphon.contains("dir.parent.path"), isTrue);
       final xray = dartSrc('xray/xray_controller.dart');
+      // Build 2099 (pin updated, reason named): awg.log joined
+      // the workDir group when the AWG bridge got its log file
+      // (workstream C2); crash.log remains in the same loop,
+      // still resolved from dir.parent.path below.
+      // Build 2100 (W-WG1, reason named): awg-stderr.log joined
+      // the same group when the C-level fd-2 redirect landed —
+      // extend the list, don't rewrite the pin.
+      // Build 2100 (verification iteration 1, L1, reason named):
+      // its .old joins too — rotation runs at every session
+      // start, so a retry after a death moves the panic stack
+      // to .old, and the paste must still show it.
       expect(
-        xray.contains("'xray.log', 'tunlink.log', 'crash.log'"),
+        xray.contains(
+          "'xray.log', 'tunlink.log', 'awg.log', 'awg-stderr.log', 'awg-stderr.log.old', 'crash.log'",
+        ),
         isTrue,
       );
       expect(xray.contains("dir.parent.path"), isTrue);
@@ -388,13 +410,15 @@ void main() {
         expect(out, contains('—— crash.log ——'));
         expect(out, contains('psiphon:start-invoked'));
         expect(out, contains('ExceptionInInitializerError'));
-        // The never-written bridge file still reads as (empty).
-        expect(out, contains('—— tunlink.log ——'));
-        expect(out, contains('(empty)'));
+        // Build 2091: the bridge is in-process now — there
+        // is no tunlink.log any more, and its lines live in
+        // psiphon.log instead. The viewer shows exactly the
+        // two sections.
+        expect(out, isNot(contains('—— tunlink.log ——')));
         // crash.log comes last: the newest evidence ends the page.
         expect(
           out.indexOf('—— crash.log ——'),
-          greaterThan(out.indexOf('—— tunlink.log ——')),
+          greaterThan(out.indexOf('—— psiphon.log ——')),
         );
       });
 

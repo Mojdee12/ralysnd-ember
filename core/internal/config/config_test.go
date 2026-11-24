@@ -60,7 +60,8 @@ func TestLoadKeepsDefaultsForOmittedFields(t *testing.T) {
 func TestLoadRejectsInvalidConfig(t *testing.T) {
 	for name, body := range map[string]string{
 		"country and server":     `{"proxy":{"country":"US","server":"us.example:443"}}`,
-		"bad transport":          `{"proxy":{"transport":"h1"}}`,
+		"bad transport":          `{"proxy":{"transport":"h4"}}`,
+		"bad ip version":         `{"dns":{"ip_version":"ipv5_only"}}`,
 		"threshold too high":     `{"accounts":{"switch_threshold_percent":120}}`,
 		"duration as number":     `{"proxy":{"idle_sleep":20}}`,
 		"duplicate account":      `{"accounts":{"order":[{"id":"a","enabled":true},{"id":"a","enabled":true}]}}`,
@@ -384,5 +385,71 @@ func TestLoadRecoversFromACorruptFile(t *testing.T) {
 				t.Fatalf("the rewritten file must load: %v", err)
 			}
 		})
+	}
+}
+
+// Build 2105: the three Mozilla feature knobs — transport "h1",
+// dns.ip_version, proxy.fast_failover — load, validate, and keep
+// their shipped defaults (h2 / auto / off) when omitted.
+func TestLoadBuild2105MozillaKnobs(t *testing.T) {
+	load := func(t *testing.T, body string) Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), FileName)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, _, err := Load(path)
+		if err != nil {
+			t.Fatalf("load %s: %v", body, err)
+		}
+		return cfg
+	}
+	if cfg := load(t, `{}`); cfg.Proxy.Transport != "h2" || cfg.DNS.IPVersion != "auto" || cfg.Proxy.FastFailover {
+		t.Fatalf("defaults changed: transport=%q ip_version=%q fast_failover=%v",
+			cfg.Proxy.Transport, cfg.DNS.IPVersion, cfg.Proxy.FastFailover)
+	}
+	if cfg := load(t, `{"proxy":{"transport":"h1","fast_failover":true},"dns":{"ip_version":"ipv6_only"}}`); cfg.Proxy.Transport != "h1" || !cfg.Proxy.FastFailover || cfg.DNS.IPVersion != "ipv6_only" {
+		t.Fatalf("2105 values not applied: %+v / %+v", cfg.Proxy, cfg.DNS)
+	}
+	for _, v := range []string{"auto", "ipv6_first", "ipv4_only", "ipv6_only"} {
+		if cfg := load(t, `{"dns":{"ip_version":"`+v+`"}}`); cfg.DNS.IPVersion != v {
+			t.Fatalf("ip_version %q not kept: %q", v, cfg.DNS.IPVersion)
+		}
+	}
+	if d := Default(); d.DNS.IPVersion != "auto" || d.Proxy.FastFailover {
+		t.Fatalf("Default() must ship auto/off, got ip_version=%q fast_failover=%v", d.DNS.IPVersion, d.Proxy.FastFailover)
+	}
+}
+
+// Build 2112 (Ember): the Mozilla session pool ships at 4 —
+// the desktop-shaped default of 1 funnels a whole phone
+// through a single H2 session (mozilla-fix-plan.md, fix A).
+// An explicitly stored value (an existing install's 1) still
+// wins on load; raising those installs is the app-side
+// one-time pin's job, not Load's.
+func TestDefaultUpstreamConnectionsIsFour(t *testing.T) {
+	if got := Default().Proxy.UpstreamConnections; got != 4 {
+		t.Fatalf("Default().Proxy.UpstreamConnections = %d, want 4", got)
+	}
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := os.WriteFile(path, []byte(`{"proxy":{"upstream_connections":1}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proxy.UpstreamConnections != 1 {
+		t.Fatalf("a stored upstream_connections must be kept, got %d", cfg.Proxy.UpstreamConnections)
+	}
+	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proxy.UpstreamConnections != 4 {
+		t.Fatalf("an omitted upstream_connections takes the default 4, got %d", cfg.Proxy.UpstreamConnections)
 	}
 }

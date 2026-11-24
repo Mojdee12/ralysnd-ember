@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Build 2075: the in-app updater hands the downloaded APK to
+     the system installer through this provider.
+     Build 2095 (third-pass audit 5-8): narrowed to the updates
+     folder only — the whole files/ and cache roots used to be
+     exposable through this provider, which includes every
+     secret-bearing store the app keeps.
+     Build 2099: the path is core/updates/, not updates/ — the
+     updater downloads into <dataDir>/updates and dataDir is
+     files/core (CoreService.dataDir), so the 2095 narrowing
+     pointed at a folder the updater never writes to and
+     FileProvider.getUriForFile threw at install time on
+     2096/2097/2098 (owner crash log, 2026-11-17). Pinned by
+     test/build2099_test.dart. -->
+<paths>
+    <files-path name="updates" path="core/updates/" />
+</paths>

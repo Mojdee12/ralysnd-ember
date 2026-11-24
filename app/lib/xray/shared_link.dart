@@ -30,18 +30,6 @@ bool containsProtectedShare(String text) => text
     .split(RegExp(r'[\r\n]'))
     .any((l) => l.trim().startsWith(protectedSharePrefix));
 
-/// The clear-text expiry hint of a protected link (epoch
-/// seconds), or null when absent/unparseable. Advisory only —
-/// the authenticated copy inside decides.
-int? protectedShareExpiryHint(String link) {
-  try {
-    final uri = Uri.parse(link.trim());
-    final exp = int.tryParse(uri.queryParameters['exp'] ?? '');
-    return (exp != null && exp > 0) ? exp : null;
-  } catch (_) {
-    return null;
-  }
-}
 
 bool _expired(int epochSec, DateTime now) =>
     epochSec > 0 &&
@@ -160,4 +148,73 @@ String? unlockProtectedShares(
     }
   }
   return out.join('\n');
+}
+
+/// Build 2095 (feature 15 — device pairing): seals an
+/// arbitrary payload (the backup JSON) with the same
+/// AES-256-GCM / PBKDF2-120k construction as the protected
+/// share links, without the share-link expiry envelope —
+/// a transfer is protected by its password alone.
+const pairingSealedPrefix = 'emberpair:v1:';
+
+String sealPayload(String payload, String password) {
+  final rnd = Random.secure();
+  final salt = Uint8List.fromList(
+    List.generate(_saltBytes, (_) => rnd.nextInt(256)),
+  );
+  final nonce = Uint8List.fromList(
+    List.generate(_nonceBytes, (_) => rnd.nextInt(256)),
+  );
+  final cipher = GCMBlockCipher(AESEngine())
+    ..init(
+      true,
+      AEADParameters(
+        KeyParameter(_deriveKey(password, salt)),
+        128,
+        nonce,
+        Uint8List(0),
+      ),
+    );
+  final plain = Uint8List.fromList(
+    utf8.encode(jsonEncode({'data': payload})),
+  );
+  final sealed = cipher.process(plain);
+  final blob = Uint8List.fromList([...salt, ...nonce, ...sealed]);
+  return '$pairingSealedPrefix${base64Url.encode(blob).replaceAll('=', '')}';
+}
+
+/// Opens a [sealPayload] value; null on a wrong password
+/// or any malformation (GCM's tag covers both).
+String? openSealedPayload(String sealedText, String password) {
+  try {
+    if (!sealedText.startsWith(pairingSealedPrefix)) return null;
+    var data = sealedText.substring(pairingSealedPrefix.length);
+    data = data.padRight((data.length + 3) ~/ 4 * 4, '=');
+    final blob = base64Url.decode(data);
+    if (blob.length < _saltBytes + _nonceBytes + 16) return null;
+    final salt = Uint8List.sublistView(blob, 0, _saltBytes);
+    final nonce = Uint8List.sublistView(
+      blob,
+      _saltBytes,
+      _saltBytes + _nonceBytes,
+    );
+    final sealed = Uint8List.sublistView(blob, _saltBytes + _nonceBytes);
+    final cipher = GCMBlockCipher(AESEngine())
+      ..init(
+        false,
+        AEADParameters(
+          KeyParameter(_deriveKey(password, salt)),
+          128,
+          nonce,
+          Uint8List(0),
+        ),
+      );
+    final plain = cipher.process(sealed);
+    final payload =
+        (jsonDecode(utf8.decode(plain)) as Map).cast<String, dynamic>();
+    final inner = payload['data'] as String? ?? '';
+    return inner.isEmpty ? null : inner;
+  } catch (_) {
+    return null;
+  }
 }

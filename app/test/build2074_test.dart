@@ -288,47 +288,55 @@ void main() {
     });
   });
 
-  group('MasqueCarrier: h3/h2 learning', () {
-    test('the carrier memory is per network, learned from the core\'s own line', () {
+  group('MasqueCarrier: per-network rung memory', () {
+    test('the carrier memory is per network and stores ladder rungs', () {
       final kt = ktSrc('AetherCore.kt');
       final at = kt.indexOf('object MasqueCarrier');
       expect(at, greaterThan(0), reason: 'MasqueCarrier is ported');
-      final carrier = kt.substring(at, kt.indexOf('/**\n * A local Xray', at));
+      final carrier = kt.substring(at, kt.indexOf('/**\n * Which address family', at));
       expect(carrier.contains('private const val PREFS = "masque_carrier"'), isTrue);
-      expect(carrier.contains(r'private val ACCEPTED = Regex("""Accepted \S+ via HTTP/([23])""")'), isTrue,
-          reason: 'the learned line is the core\'s "Accepted … via HTTP/2"');
-      expect(carrier.contains('?.takeIf { it == "h2" || it == "h3" } ?: "h3"'), isTrue,
-          reason: 'an unknown stored carrier falls back to h3');
-      expect(carrier.contains('fun isAccepted(line: String): Boolean'), isTrue);
-      expect(carrier.contains('fun onCoreLog(context: Context, line: String)'), isTrue);
+      // Build 2083: the 2074 "Accepted ... via HTTP/2" line
+      // learner is superseded -- the ladder remembers a rung
+      // only after it carried real data (connectMasque), so
+      // the memory now stores MasqueRung keys; a stored 2074
+      // "h3"/"h2" IS a rung key and resolves unchanged.
+      expect(carrier.contains('fun rememberedRung(context: Context): MasqueRung?'), isTrue,
+          reason: 'the memory reads as a ladder rung');
+      expect(carrier.contains('fun remember(context: Context, rung: MasqueRung)'), isTrue);
       expect(carrier.contains('fun forget(context: Context)'), isTrue);
+      expect(carrier.contains('fun onCoreLog'), isFalse,
+          reason: 'build 2083: no log-line learning remains in the memory');
+      expect(carrier.contains('ACCEPTED'), isFalse,
+          reason: 'build 2083: the Accepted-line regex is gone');
     });
 
-    test('auto resolves at start, learns per line, forgets on a failed auto session', () {
+    test('auto resolves at start; the ladder owns learning and forgetting', () {
       final kt = ktSrc('AetherCore.kt');
       expect(
         kt.contains('if (ridesMasque && options.transport == MasqueCarrier.AUTO)'),
         isTrue,
         reason: 'only masque/gool sessions resolve auto; wg never touches the carrier',
       );
-      expect(kt.contains('val startOn = MasqueCarrier.startOn(context)'), isTrue);
-      expect(kt.contains('options.copy(transport = startOn)'), isTrue,
-          reason: 'the resolved carrier reaches the core through the normal env path');
+      // Build 2083: a direct start on auto runs the remembered
+      // rung whole (fragment/TLS/exit included), not a bare
+      // transport string -- the 2074 startOn resolution is gone.
       expect(
-        kt.contains('MasqueCarrier.onCoreLog(ctx, line)'),
+        kt.contains('(MasqueCarrier.rememberedRung(context) ?: MasqueRung.H3)'),
         isTrue,
-        reason: 'every core log line of a masque/gool session feeds the learner',
+        reason: 'an auto start runs the remembered rung, else HTTP/3',
       );
-      expect(
-        kt.contains('if (autoCarrier != null && !reachedConnected)'),
-        isTrue,
-        reason: 'a session that died without connecting forgets its carrier',
-      );
+      expect(kt.contains('MasqueCarrier.startOn'), isFalse,
+          reason: 'build 2083: startOn is superseded by the rung memory');
+      expect(kt.contains('onCoreLog'), isFalse,
+          reason: 'build 2083: no log line teaches the memory any more');
+      expect(kt.contains('autoStartedCarrier'), isFalse,
+          reason: 'build 2083: the ladder forgets a failed remembered rung itself');
       expect(kt.contains('if (next == AetherStage.CONNECTED) reachedConnected = true'), isTrue,
           reason: 'a connected session keeps what it learned',
       );
     });
   });
+
 
   group('Dart: the Auto transport chip', () {
     test('the MASQUE page offers Auto alongside HTTP/3 and HTTP/2', () {
@@ -344,11 +352,19 @@ void main() {
       );
     });
 
-    test('AetherOptions documents auto and keeps h3 as the default', () {
+    test('AetherOptions documents auto; auto is the default (build 2083)', () {
       final platform = dartSrc('aether/aether_platform.dart');
       expect(platform.contains("/// h3 | h2 | auto — the MASQUE carrier transport"), isTrue);
-      expect(platform.contains("this.transport = 'h3'"), isTrue,
-          reason: 'existing users keep HTTP/3 until they pick Auto',
+      // Build 2083 supersedes the 2074 pin below it in history:
+      // the default is 'auto' (the carrier ladder), and a
+      // stored unmarked 'h3' migrates to it
+      // (migrateMasqueTransport) — an explicit pick is marked
+      // and honored instead.
+      expect(platform.contains("this.transport = 'auto'"), isTrue,
+          reason: 'build 2083: the ladder is the default route to MASQUE',
+      );
+      expect(platform.contains("this.transport = 'h3'"), isFalse,
+          reason: 'build 2083: h3 is a rung of the ladder, not the default',
       );
     });
   });

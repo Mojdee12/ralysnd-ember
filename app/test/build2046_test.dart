@@ -141,19 +141,6 @@ void main() {
       );
     });
 
-    test('the summary names the scheme, mode and RTT', () {
-      expect(
-        vlessEncryptionSummary(encValue()),
-        'mlkem768x25519plus · native · 0-RTT',
-      );
-      expect(
-        vlessEncryptionSummary(
-          encValue(mode: 'xorpub', rtt: '1rtt'),
-        ),
-        'mlkem768x25519plus · xorpub · 1-RTT',
-      );
-      expect(vlessEncryptionSummary('bogus'), isEmpty);
-    });
   });
 
   group('The parser keeps a valid encryption value (build 2046)', () {

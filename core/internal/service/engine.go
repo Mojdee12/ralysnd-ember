@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -66,6 +67,26 @@ func (e *proxyEngine) selection() (proxy.Candidate, string) {
 	return e.selected, e.selectionSource
 }
 
+// selfEgressProxyURL is the http proxy URL of the engine's own
+// listener (build 2114; mozilla-regression-plan.md mechanism 1):
+// the controllers built from this engine renew their Guardian
+// pass through the live tunnel via this endpoint. The address
+// is the listener's own, loopback-normalised the way
+// Daemon.ProxyEndpoint normalises it, and the configured proxy
+// login rides along when one is set.
+func selfEgressProxyURL(p config.Proxy, addr string) string {
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+			addr = net.JoinHostPort("127.0.0.1", port)
+		}
+	}
+	u := url.URL{Scheme: "http", Host: addr}
+	if p.Username != "" {
+		u.User = url.UserPassword(p.Username, p.Password)
+	}
+	return u.String()
+}
+
 // startEngine opens the SOCKS5/HTTP listener and returns an engine that
 // sleeps until first used; it sends nothing to Mozilla. It fails for a
 // taken listen address, with no account, or when every account waits for
@@ -92,9 +113,11 @@ func (d *Daemon) startEngine() (*proxyEngine, error) {
 			Guardian:   cfg.Network.GuardianEndpoint,
 			Timeout:    connectTimeout,
 			UseH3:      cfg.Proxy.Transport == "h3",
+			UseH1:      cfg.Proxy.Transport == "h1",
 			Sessions:   cfg.Proxy.UpstreamConnections,
 			StatusFile: d.paths.Status,
 			Accounts:   d.pool,
+			SelfEgress: selfEgressProxyURL(cfg.Proxy, ln.Addr().String()),
 		},
 		statusFile: d.paths.Status,
 		listener:   ln,
@@ -227,26 +250,86 @@ func (d *Daemon) connectEngine(e *proxyEngine) (*proxy.Controller, error) {
 	}
 	withPass := upstream
 	withPass.Auth, withPass.Pass = auth, pass
-	controller, err := proxy.NewController(withPass)
-	if err != nil && upstream.UseH3 {
-		// Networks that filter QUIC (UDP), as in Iran, often let the same
-		// server through over TCP: HTTP/2 for this engine instead.
-		logx.Warn("HTTP/3 did not connect; using HTTP/2 instead proxy=%s err=%s", selected.Addr, logx.Err(err))
-		upstream.UseH3, withPass.UseH3 = false, false
-		controller, err = proxy.NewController(withPass)
+	// establish builds the controller for the server withPass names,
+	// with the H3→H2 fallback every attempt gets: a network that
+	// filters QUIC lets the same server through over TCP. Inside
+	// the fast-failover walk the shared deadline also gates the
+	// fallback: with under 250 ms of it left, the H3 error
+	// stands and the walk moves on. The gate's margin was
+	// 2 s while an establish could overrun the deadline by a
+	// full per-attempt timeout; since build 2116
+	// (establishWalk) bounds every attempt's COMPLETION by
+	// the deadline, a started fallback is abandoned at the
+	// deadline rather than overrunning, and the gate only
+	// needs to keep a hopeless sliver from being spent.
+	// lastUseH3 tracks the transport the LAST SUCCESSFUL attempt
+	// actually used: an early walk attempt's H3→H2 fallback
+	// mutates the captured configs above, but when a later server
+	// wins over H3 the engine's config must say H3 again —
+	// otherwise the engine persists an H2 upstream for an
+	// H3-proven server while the status still reports h3.
+	lastUseH3 := withPass.UseH3
+	establish := func(cfg proxy.ControllerConfig, deadline time.Time) (*proxy.Controller, error) {
+		controller, err := proxy.NewController(cfg)
+		if err != nil && cfg.UseH3 {
+			if !deadline.IsZero() && time.Until(deadline) < 250*time.Millisecond {
+				return nil, err
+			}
+			logx.Warn("HTTP/3 did not connect; using HTTP/2 instead proxy=%s err=%s", cfg.Server.Addr, logx.Err(err))
+			// The fallback is remembered on the engine's own
+			// config, as before: a later wake does not pay the
+			// H3 attempt again.
+			upstream.UseH3, withPass.UseH3 = false, false
+			cfg.UseH3 = false
+			controller, err = proxy.NewController(cfg)
+			if err == nil {
+				e.fellBackToH2.Store(true)
+			}
+		}
 		if err == nil {
-			e.fellBackToH2.Store(true)
+			lastUseH3 = cfg.UseH3
+		}
+		return controller, err
+	}
+	// Build 2105 (proxy.fast_failover): with the flag on, a server
+	// that does not answer is walked past inside THIS attempt (see
+	// establishWalk); off, the failover argument is nil and the
+	// walk is exactly the shipped single attempt.
+	var walkFailover *proxy.ServerFailover
+	if cfg.Proxy.FastFailover {
+		walkFailover = upstream.Failover
+	}
+	deadline := sessionStart.Add(connectTimeout)
+	controller, winner, fastWalked, _, err := establishWalk(
+		func(c proxy.ControllerConfig, dl time.Time) (*proxy.Controller, error) { return establish(c, dl) },
+		withPass, walkFailover, upstream.Location, deadline)
+	if fastWalked && winner.Addr != selected.Addr {
+		selectionSource = "server_failover"
+	}
+	if fastWalked {
+		selected = winner
+		upstream.Server = winner
+		if winnerURL, urlErr := proxy.NormalizeURL(winner.Addr); urlErr == nil {
+			upstream.ProxyURL = winnerURL
 		}
 	}
 	if err != nil {
 		// A server that keeps failing to connect gives way to another of
 		// the location, saved as the persisted choice that the next wake
-		// selects.
-		if next, ok := upstream.Failover.Failed(upstream.Location, selected, err); ok {
-			e.serverSwitched(next)
+		// selects. When the fast walk already counted these failures
+		// through FailedFast, Failed is not called again — the strikes
+		// must not be counted twice.
+		if !fastWalked {
+			if next, ok := upstream.Failover.Failed(upstream.Location, selected, err); ok {
+				e.serverSwitched(next)
+			}
 		}
 		return nil, fmt.Errorf("establishing upstream proxy session: %w", err)
 	}
+	// The winning attempt's transport is the engine's (see
+	// lastUseH3): an earlier attempt's fallback must not leave
+	// the engine configured for H2 behind an H3 winner.
+	upstream.UseH3 = lastUseH3
 	if server == "" {
 		if err := proxy.SaveSelection(d.paths.Selection, selected); err != nil {
 			logx.Warn("saving proxy selection failed path=%s err=%s", d.paths.Selection, logx.Err(err))
@@ -283,14 +366,175 @@ func (d *Daemon) reconnectEngine(e *proxyEngine) (*proxy.Controller, error) {
 	}
 	cfg := e.upstream
 	cfg.Auth, cfg.Pass = auth, pass
-	controller, err := proxy.NewController(cfg)
+	// Build 2105: the wake path walks too, when fast failover is
+	// on. Fast failover that only worked on an engine's first-ever
+	// connect would be off exactly when a sleeping proxy wakes —
+	// the common case.
+	var walkFailover *proxy.ServerFailover
+	if d.fastFailoverEnabled() {
+		walkFailover = cfg.Failover
+	}
+	controller, winner, walked, switchTo, err := establishWalk(
+		func(c proxy.ControllerConfig, _ time.Time) (*proxy.Controller, error) { return proxy.NewController(c) },
+		cfg, walkFailover, cfg.Location, time.Now().Add(connectTimeout))
 	if err != nil {
-		if next, ok := cfg.Failover.Failed(cfg.Location, cfg.Server, err); ok {
-			e.serverSwitched(next)
+		if walked && switchTo.Addr != "" && switchTo.Addr != cfg.Server.Addr {
+			// The walk crossed a strike threshold: the
+			// failover persisted the switch, and the engine
+			// adopts it in memory too — otherwise every later
+			// wake starts on the avoided server and pays its
+			// failure again, and the wake backoff a selection
+			// change waives never is.
+			e.serverSwitched(switchTo)
+		}
+		if !walked && cfg.Failover != nil {
+			if next, ok := cfg.Failover.Failed(cfg.Location, cfg.Server, err); ok {
+				e.serverSwitched(next)
+			}
 		}
 		return nil, err
 	}
+	if walked && winner.Addr != cfg.Server.Addr {
+		e.serverSwitched(winner)
+		if saveErr := proxy.SaveSelection(d.paths.Selection, winner); saveErr != nil {
+			logx.Warn("saving proxy selection failed path=%s err=%s", d.paths.Selection, logx.Err(saveErr))
+		}
+	}
 	return controller, nil
+}
+
+// errEstablishDeadline marks an establish attempt the
+// shared connect deadline cut off (build 2116, 2105-R7).
+var errEstablishDeadline = errors.New("establishing the proxy session exceeded the connect deadline")
+
+// establishWalk builds a controller for cfg's server and, when
+// failover is non-nil (proxy.fast_failover on), walks the
+// location's other servers inside the same attempt when one does
+// not answer (build 2105): same city first, at most three servers,
+// and no new attempt started with under 5 s of the shared deadline
+// left. Every failure — including the last server's — is counted
+// exactly once, through FailedFast, so the strike bookkeeping, the
+// 15-minute avoidance and the persisted selection stay exactly
+// Failed's, and a caller whose walk ran must not call Failed for
+// the same failure again. Each attempt keeps the standard
+// per-attempt timeout: shrinking the winning attempt's timeout to
+// the time left would be inherited by every session rebuild for
+// the controller's whole life. A nil failover returns after the
+// first attempt, walked=false.
+//
+// Build 2116 (2105-R7): the shared deadline bounds
+// COMPLETIONS, not only starts — every establish, the
+// first included, runs under it: an attempt still running
+// at the deadline is abandoned (a late success is closed,
+// never adopted) and counts as a failure of that server.
+// Up to 2115 the first attempt ran with a zero deadline,
+// so a connect could overrun its budget by a whole
+// per-attempt timeout before the walk even started.
+//
+// On total failure the fourth result is the server the failover
+// switched the persisted selection to when a strike threshold was
+// crossed during the walk (zero when none was): FailedFast
+// persists it, and a caller with a live engine must adopt it in
+// memory too, or every later wake starts on the avoided server.
+func establishWalk(
+	establish func(cfg proxy.ControllerConfig, deadline time.Time) (*proxy.Controller, error),
+	cfg proxy.ControllerConfig,
+	failover *proxy.ServerFailover,
+	location []proxy.Candidate,
+	deadline time.Time,
+) (*proxy.Controller, proxy.Candidate, bool, proxy.Candidate, error) {
+	// runEstablish bounds one attempt's completion by the
+	// shared deadline (build 2116, 2105-R7).
+	runEstablish := func(c proxy.ControllerConfig) (*proxy.Controller, error) {
+		if deadline.IsZero() {
+			return establish(c, deadline)
+		}
+		type outcome struct {
+			ctl *proxy.Controller
+			err error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			ctl, err := establish(c, deadline)
+			done <- outcome{ctl, err}
+		}()
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case o := <-done:
+			return o.ctl, o.err
+		case <-timer.C:
+			go func() {
+				if o := <-done; o.ctl != nil {
+					_ = o.ctl.Close()
+				}
+			}()
+			return nil, errEstablishDeadline
+		}
+	}
+	controller, err := runEstablish(cfg)
+	if err == nil || failover == nil {
+		return controller, cfg.Server, false, proxy.Candidate{}, err
+	}
+	// Build 2116 (2105-R11): the tried-set keys on the
+	// canonical host:port (the failover maps' own key), not
+	// the raw address string — the same server spelled two
+	// ways was retried as if it were two servers. An
+	// address that does not canonicalise keys on itself,
+	// which is the old behaviour for it.
+	triedKey := func(addr string) string {
+		if key, keyErr := proxy.CanonicalProxyAddr(addr); keyErr == nil {
+			return key
+		}
+		return addr
+	}
+	tried := map[string]bool{triedKey(cfg.Server.Addr): true}
+	current := cfg
+	var thresholdNext proxy.Candidate
+	for attempt := 0; attempt < 3 && err != nil; attempt++ {
+		next, moved, crossed := failover.FailedFast(location, current.Server, err, func(addr string) bool {
+			return tried[triedKey(addr)]
+		})
+		if moved && crossed {
+			// This failure itself crossed the strike threshold:
+			// next is the server FailedFast persisted as the
+			// choice. The crossing is reported by FailedFast,
+			// not inferred from Avoided state — the server may
+			// already have been avoided by another path without
+			// this call persisting anything (iteration 4).
+			thresholdNext = next
+		}
+		if !moved || attempt == 2 {
+			break
+		}
+		if time.Until(deadline) < 5*time.Second {
+			break
+		}
+		nextURL, urlErr := proxy.NormalizeURL(next.Addr)
+		if urlErr != nil {
+			break
+		}
+		tried[triedKey(next.Addr)] = true
+		current.Server, current.ProxyURL = next, nextURL
+		controller, err = runEstablish(current)
+	}
+	// The switch is adopted only when its target is itself
+	// usable: a later server of the same walk may have crossed
+	// its own threshold after thresholdNext was persisted, and
+	// adopting an avoided server would pin the engine to it.
+	var switchTo proxy.Candidate
+	if err != nil && thresholdNext.Addr != "" && !failover.Avoided(thresholdNext.Addr) {
+		switchTo = thresholdNext
+	}
+	return controller, current.Server, true, switchTo, err
+}
+
+// fastFailoverEnabled reports the live proxy.fast_failover setting
+// (build 2105) for paths that do not receive the config directly.
+func (d *Daemon) fastFailoverEnabled() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.cfg.Proxy.FastFailover
 }
 
 // serverSwitched makes next, where the failover moved the upstream, the
@@ -325,6 +569,7 @@ func (d *Daemon) runController(engine *proxyEngine, controller *proxy.Controller
 	engine.idle.wakeRetryAt, engine.idle.wakeFailures, engine.idle.wakeLasting = time.Time{}, 0, false
 	engine.idle.mu.Unlock()
 	go controller.RunRenewalLoop()
+	go controller.RunUpstreamFailureLoop()
 	go controller.RunQuotaMonitorLoop()
 	return true
 }

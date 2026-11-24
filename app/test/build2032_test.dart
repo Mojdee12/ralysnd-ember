@@ -155,10 +155,14 @@ void main() {
     });
 
     test('primaryResolver honours the transport choice', () {
+      // Build 2113: the shipped default remote is v2rayNG's
+      // Cloudflare DoH again (the 2111 plain-IP default is
+      // reverted); the transport mapping itself is unchanged.
       final s = XraySettings();
-      expect(primaryResolver(s), 'https://dns.google/dns-query');
+      expect(primaryResolver(s), 'https://cloudflare-dns.com/dns-query');
+      s.remoteDns = 'https://cloudflare-dns.com/dns-query';
       s.remoteDnsProto = 'doq';
-      expect(primaryResolver(s), 'quic+local://dns.google');
+      expect(primaryResolver(s), 'quic+local://one.one.one.one');
       s.adBlockDoh = true;
       expect(primaryResolver(s), 'quic+local://dns.adguard-dns.com');
     });

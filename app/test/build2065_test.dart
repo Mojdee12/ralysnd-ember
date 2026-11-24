@@ -29,7 +29,7 @@ import 'package:firefox_vpn/net/probe.dart';
 import 'package:firefox_vpn/psiphon/psiphon_controller.dart';
 import 'package:firefox_vpn/psiphon/psiphon_strategy.dart';
 import 'package:firefox_vpn/ui/ember/automation_pages.dart';
-import 'package:firefox_vpn/xray/awg_uapi.dart';
+import 'package:firefox_vpn/xray/wg_conf.dart';
 import 'package:firefox_vpn/xray/config_builder.dart';
 import 'package:firefox_vpn/xray/xray_models.dart';
 
@@ -191,36 +191,73 @@ void main() {
     final constants = ktSrc('PsiphonConstants.kt');
     final service = ktSrc('PsiphonVpnService.kt');
 
-    test('server-list freshness + exchange key + anti-hijack DNS '
-        'are in the constants', () {
+    // UPDATED by build 2091: the sidecar config builder is
+    // deleted with the sidecar. The server-list URLs, the
+    // exchange key, and the anti-hijack DNS trio live in
+    // PsiphonConstants.kt again — MLM's set, pinned in full
+    // in test/psiphon_transplant_test.dart.
+    test('server-list freshness + exchange key live in the '
+        'Kotlin constants again', () {
       expect(constants.contains('REMOTE_SERVER_LIST_URLS'), isTrue);
       expect(
         constants.contains('DpXzloJk1Hw6aSzmKKky0xcahsEHubch81Mi6K0XMlU='),
         isTrue,
       );
       expect(constants.contains('208.67.222.222:5353'), isTrue);
-      expect(constants.contains('9.9.9.9:9953'), isTrue);
+      expect(
+        File('lib/psiphon/psiphon_sidecar_config.dart').existsSync(),
+        isFalse,
+      );
     });
 
-    test('the ladder carries budgets and fronting fields '
-        '(fork emissions withdrawn in 2069)', () {
-      expect(service.contains('runLadder'), isTrue);
-      // UPDATED by build 2069 (was: AggressiveEstablishment,
-      // FrontedMeekDialOverrides and
-      // FrontedMeekCDNScanUseBuiltInSpec all present). Those
-      // emissions belonged to the rebuilt fork core; the
-      // transplanted stock core (ralysnd's v2.0.39) contains
-      // NONE of those fields (0 occurrences each in its
-      // string table), so the host must never emit them
-      // again. The pins now assert the EMISSIONS are gone
-      // (withdrawal comments may still name the fields).
-      expect(service.contains('put("AggressiveEstablishment"'), isFalse);
-      expect(service.contains('put("FrontedMeekDialOverrides"'), isFalse);
+    test('the service emits the core config and runs the '
+        'ladder again (build 2091: the 2065 pack is un-shelved)', () {
+      expect(service.contains('buildPsiphonConfig()'), isTrue);
+      expect(service.contains('buildSessionLadder('), isTrue);
+      // The fork-core field emissions withdrawn in 2069 stay
+      // withdrawn — now trivially, with the stock core back.
+      // RE-POINTED by build 2129 (Leg 2, coordinator brief):
+      // two of the keys return as DEFAULT-OFF, owner-chosen
+      // options — AggressiveEstablishment behind the strong-
+      // mode guard only, and FrontedMeekCDNScanUseBuiltInSpec
+      // behind the Shiro-bootstrap guard only. The pins now
+      // assert the guarded shape (exactly one emission each,
+      // inside its guard) instead of blanket absence; the
+      // other two fork keys stay absent outright.
+      final aggAt = service.indexOf('put("AggressiveEstablishment", true)');
+      expect(aggAt, greaterThan(0));
       expect(
-          service.contains('put("FrontedMeekCDNScanUseBuiltInSpec"'), isFalse);
+        'put("AggressiveEstablishment"'.allMatches(service).length,
+        1,
+      );
+      expect(
+        service.substring(0, aggAt).endsWith('if (inStrongMode) {\n                '),
+        isTrue,
+        reason: 'AggressiveEstablishment is emitted only under the '
+            'strong-mode guard',
+      );
+      expect(service.contains('put("FrontedMeekDialOverrides"'), isFalse);
+      final scanAt =
+          service.indexOf('put("FrontedMeekCDNScanUseBuiltInSpec"');
+      expect(scanAt, greaterThan(0));
+      expect(
+        'put("FrontedMeekCDNScanUseBuiltInSpec"'
+            .allMatches(service)
+            .length,
+        1,
+      );
+      expect(
+        service
+            .substring(0, scanAt)
+            .contains('if (shiro) {\n                put("UseIndistinguishableTLS"'),
+        isTrue,
+        reason: 'the CDN-scan spec flag is emitted only inside the '
+            'Shiro-bootstrap block',
+      );
       expect(service.contains('put("FrontedMeekCDNScanSpec"'), isFalse);
-      // Fronting itself survives the transplant through the
-      // stock mechanism: preresolved provider CIDRs.
+      // The clean-IP steering (preresolved CIDRs) is BACK on
+      // rung E (MLM) — a config field again, not a shelved
+      // fork slot.
       expect(
           service.contains('put("DNSResolverPreresolvedIPAddressCIDRs"'),
           isTrue);
@@ -340,8 +377,11 @@ void main() {
     });
   });
 
-  group('item 8 — AWG junk parameters reach the UAPI string', () {
-    test('buildAwgUapi emits jc/jmin/jmax/s1/s2/h1-h4', () {
+  group('item 8 — AWG junk parameters reach the engine hand-off', () {
+    // Build 2104: the hand-off is the canonical .conf text
+    // (wgConfFromProfile) since the WG Tunnel port; the
+    // 2065-era UAPI string went with the old bridge.
+    test('wgConfFromProfile emits Jc/Jmin/Jmax/S1/S2/H1-H4', () {
       final p = Profile(
         id: 'wg1',
         protocol: Protocol.wireguard,
@@ -359,19 +399,19 @@ void main() {
         awgH3: '303',
         awgH4: '404',
       );
-      final uapi = buildAwgUapi(p);
+      final conf = wgConfFromProfile(p);
       for (final part in [
-        'jc=4',
-        'jmin=40',
-        'jmax=70',
-        's1=15',
-        's2=18',
-        'h1=101',
-        'h2=202',
-        'h3=303',
-        'h4=404',
+        'Jc = 4',
+        'Jmin = 40',
+        'Jmax = 70',
+        'S1 = 15',
+        'S2 = 18',
+        'H1 = 101',
+        'H2 = 202',
+        'H3 = 303',
+        'H4 = 404',
       ]) {
-        expect(uapi, contains(part), reason: part);
+        expect(conf, contains(part), reason: part);
       }
     });
 
@@ -393,13 +433,24 @@ void main() {
       }
     });
 
-    test('the service re-applies the AWG config on network change',
-        () {
-      final svc = ktSrc('XrayVpnService.kt');
-      expect(svc.contains('registerAwgNetworkCallback'), isTrue);
-      expect(svc.contains('AwgBackend.setConfig(awgHandle, text)'), isTrue);
-      expect(svc.contains('unregisterAwgNetworkCallback'), isTrue);
-      expect(svc.contains('awgSettingsText = settings'), isTrue);
+    test('network changes reach the engine (build 2104 form)', () {
+      // Build 2100 (W-WG2, named reason): the AWG network
+      // callback moved verbatim to AwgVpnService.kt.
+      // Build 2104: the service is deleted; keeping the
+      // tunnel configured across network changes is the WG
+      // Tunnel backend's own job (its engine watches the
+      // network and re-resolves endpoints). Ember's half of
+      // that contract is the NetworkMonitor it hands the
+      // backend: a callback on the NON-VPN underlay
+      // republishing a truthful snapshot on every change
+      // (verification iteration 1, finding 4: a default-
+      // network callback would report Ember's own VPN as
+      // the underlay once the tunnel is up).
+      final engine = ktSrc('WgTunnelEngine.kt');
+      expect(engine.contains('registerNetworkCallback'), isTrue);
+      expect(engine.contains('NET_CAPABILITY_NOT_VPN'), isTrue);
+      expect(engine.contains('NetworkSnapshot('), isTrue);
+      expect(engine.contains('override val networkState'), isTrue);
     });
   });
 

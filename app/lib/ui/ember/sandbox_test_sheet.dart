@@ -106,7 +106,7 @@ class SandboxTestSheet extends StatelessWidget {
                 Expanded(
                   child: Text(
                     result.title,
-                    style: Ember.heading.copyWith(fontSize: 17),
+                    style: Ember.heading.copyWith(fontSize: Ember.fontHeadline),
                   ),
                 ),
               ],
@@ -195,22 +195,38 @@ class _Row extends StatelessWidget {
   final String? caption;
 
   @override
+  // Build 2092 (item 57): the value column is bounded
+  // (Flexible) and the detail caption capped — a long
+  // verdict detail no longer pushes the label off the row.
   Widget build(BuildContext context) => Row(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Expanded(
         child: Text(label, style: Ember.body.copyWith(color: Ember.dim)),
       ),
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Text(value, style: Ember.body),
-          if (caption != null)
+      const SizedBox(width: 12),
+      Flexible(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
             Text(
-              caption!,
-              style: Ember.body.copyWith(color: Ember.dim, fontSize: 12),
+              value,
+              style: Ember.body,
+              textAlign: TextAlign.right,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
-        ],
+            if (caption != null)
+              Text(
+                caption!,
+                style: Ember.body.copyWith(color: Ember.dim, fontSize: Ember.fontSmall),
+                textAlign: TextAlign.right,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+              ),
+          ],
+        ),
       ),
     ],
   );

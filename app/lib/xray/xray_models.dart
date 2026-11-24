@@ -3,7 +3,12 @@
 /// from the Ralysnd V2Ray client's Kotlin model, extended with
 /// Hysteria2, WireGuard and TUIC profiles.
 
+import 'dart:convert';
+
 import 'dns_hosts.dart';
+import 'profile_validation.dart';
+import 'smart_groups.dart';
+import 'sni_spoof.dart';
 
 enum Protocol {
   vless,
@@ -19,6 +24,27 @@ enum Protocol {
   // native HTTP outbound, so http:// links parse into a real
   // profile instead of being silently skipped from subscriptions.
   http,
+  // The sing-box sidecar protocols (build 2075): the vendored
+  // Xray core has no outbound for these, but the sing-box
+  // sidecar engine (libsingbox.so, SubprocessCore pattern)
+  // speaks them — TUIC v5, Snell and NaiveProxy as outbounds,
+  // Tailscale and OpenConnect as endpoints. See
+  // [ProtocolSidecar.servedBySidecar].
+  snell,
+  naive,
+  tailscale,
+  openconnect,
+  // Mieru (build 2075): sing-box has no Mieru outbound
+  // (verified against sing-box 1.14.4 by config check), so
+  // Mieru rides its own upstream client binary
+  // (libmieru.so) as a second sidecar.
+  mieru,
+  // Sudoku (build 2127, H2): Hiddify's protocol — present
+  // only in Hiddify's sing-box fork, and only under its
+  // with_sudoku build tag — so it rides a third sidecar
+  // binary built from that fork (libsudokubox.so), behind
+  // the sudokuEnabled Settings switch.
+  sudoku,
 }
 
 extension ProtocolLabel on Protocol {
@@ -33,6 +59,12 @@ extension ProtocolLabel on Protocol {
     Protocol.socks => 'SOCKS5',
     Protocol.anytls => 'AnyTLS',
     Protocol.http => 'HTTP',
+    Protocol.snell => 'Snell',
+    Protocol.naive => 'NaiveProxy',
+    Protocol.tailscale => 'Tailscale',
+    Protocol.openconnect => 'OpenConnect',
+    Protocol.mieru => 'Mieru',
+    Protocol.sudoku => 'Sudoku',
   };
 
   /// Xray-core serves every protocol here except TUIC and AnyTLS,
@@ -40,7 +72,66 @@ extension ProtocolLabel on Protocol {
   /// fork's source, build 2033 for AnyTLS); SOCKS is a native
   /// Xray outbound. Unsupported protocols are parsed, stored and
   /// shareable, and refuse to connect with an explanation.
-  bool get supportedByCore => this != Protocol.tuic && this != Protocol.anytls;
+  /// True when the vendored Xray core itself has an outbound
+  /// for this protocol. An explicit list (build 2075 fix):
+  /// the old definition — "everything except TUIC and
+  /// AnyTLS" — silently claimed core support for the five
+  /// sidecar protocols the moment they joined the enum,
+  /// though buildOutbound returns null for every one of
+  /// them. The list below is exactly buildOutbound's switch.
+  bool get supportedByCore =>
+      this == Protocol.vless ||
+      this == Protocol.vmess ||
+      this == Protocol.trojan ||
+      this == Protocol.shadowsocks ||
+      this == Protocol.wireguard ||
+      this == Protocol.hysteria2 ||
+      this == Protocol.socks ||
+      this == Protocol.http;
+}
+
+/// Which engine actually carries a protocol (build 2075).
+extension ProtocolSidecar on Protocol {
+  /// True when the sing-box sidecar engine serves this
+  /// protocol: TUIC v5 (the Xray core never grew a TUIC
+  /// outbound — the sidecar is what makes TUIC connectable
+  /// at all), AnyTLS (build 2089: sing-box 1.14.4 has an
+  /// anytls outbound, verified by `sing-box check` against
+  /// the vendored binary), Snell, NaiveProxy, Tailscale,
+  /// OpenConnect.
+  bool get servedBySingBox =>
+      this == Protocol.tuic ||
+      this == Protocol.anytls ||
+      this == Protocol.snell ||
+      this == Protocol.naive ||
+      this == Protocol.tailscale ||
+      this == Protocol.openconnect;
+
+  /// True when the Mieru sidecar client serves this protocol.
+  bool get servedByMieru => this == Protocol.mieru;
+
+  /// True when the Sudoku sidecar (build 2127, H2: the
+  /// Hiddify-fork binary) serves this protocol. Whether a
+  /// given profile is ACTUALLY served is a settings
+  /// decision too — see XrayController.sudokuServed.
+  bool get servedBySudokuBox => this == Protocol.sudoku;
+
+  /// True when a sidecar engine (not the Xray core) carries
+  /// this profile's session: the connect path starts the
+  /// sidecar first and the tunnel's proxy outbound becomes a
+  /// plain SOCKS outbound aimed at the sidecar's local port.
+  bool get servedBySidecar => servedBySingBox || servedByMieru;
+
+  /// True when SOME engine in the app can connect this
+  /// protocol today: the Xray core, or a 2075 sidecar —
+  /// and, since build 2089, AnyTLS through the sing-box
+  /// sidecar. No parsed protocol is unserved anymore.
+  /// Sudoku counts as served (build 2127): its engine is
+  /// in the app, behind its Settings switch — the switch
+  /// being off is refused in plain words at connect, not
+  /// by pretending the protocol is unknown.
+  bool get connectable =>
+      supportedByCore || servedBySidecar || servedBySudokuBox;
 }
 
 /// The Hysteria2 congestion-control values Ember stores and
@@ -81,7 +172,133 @@ bool _storedBool(Map<String, dynamic> j, String key, bool fallback) {
 
 int _storedInt(Map<String, dynamic> j, String key, int fallback) {
   final v = j[key];
-  return v is num ? v.toInt() : fallback;
+  // Build 2098 (post-2097 audit M12): a JSON number can
+  // itself decode non-finite (1e999 -> Infinity) — the
+  // same throw as the string form below, on the numeric
+  // branch. Non-finite numbers take the fallback.
+  if (v is num) return v.isFinite ? v.toInt() : fallback;
+  // Build 2096 (post-2095 audit M16): a synced or
+  // restored document may carry a number as a string
+  // ("port": "51820"); parse it instead of silently
+  // taking the fallback (which pointed the profile at
+  // :443). The subscription-JSON route got this pin in
+  // build 2095; the store route did not.
+  if (v is String) {
+    final t = v.trim();
+    // Build 2097 (post-2096 audit L-f): a stringified
+    // double ("51820.0" — a synced document whose writer
+    // emitted a float) parses too; build 2096's int-only
+    // parse fell back to 443 for it, silently re-pointing
+    // the profile.
+    // Build 2098 (post-2097 audit M12): 'Infinity' and
+    // 'NaN' also parse as doubles — but they are not finite
+    // and .toInt() on them THROWS UnsupportedError; in the
+    // Xray settings load that throw landed mid-document and
+    // the fingerprint-migration save then persisted the
+    // partial state over the store. Non-finite parses take
+    // the fallback instead.
+    final asInt = int.tryParse(t);
+    if (asInt != null) return asInt;
+    final asDouble = double.tryParse(t);
+    if (asDouble != null && asDouble.isFinite) return asDouble.toInt();
+    return fallback;
+  }
+  return fallback;
+}
+
+/// Names come from third parties (link fragments, VMess
+/// `ps`, Clash names, the profile-title header) and from
+/// the user's own renames, and are interpolated into the
+/// UI and the diagnostics log. Control characters — line
+/// breaks, bidi overrides, zero-width marks — become
+/// spaces; the result is capped so a hostile name cannot
+/// dominate a list row. Defined here (and re-exported by
+/// profile_validation.dart) so the model itself can
+/// sanitize [Profile.localName] at read time (build
+/// 2096, post-2095 audit M5).
+String sanitizeProfileName(String raw) {
+  final buf = StringBuffer();
+  for (final unit in raw.codeUnits) {
+    final isControl =
+        unit < 0x20 ||
+        (unit >= 0x7F && unit <= 0x9F) ||
+        unit == 0xFEFF ||
+        (unit >= 0x202A && unit <= 0x202E) ||
+        (unit >= 0x2066 && unit <= 0x2069) ||
+        unit == 0x200B ||
+        unit == 0x200E ||
+        unit == 0x200F;
+    buf.write(isControl ? ' ' : String.fromCharCode(unit));
+  }
+  var out = buf.toString().trim();
+  if (out.length > 120) out = out.substring(0, 120).trim();
+  return out;
+}
+
+/// A parsed Shadowsocks `shadow-tls` plugin (build 2126,
+/// feature pick 3). The SIP002 plugin string a link carries
+/// is `shadow-tls;host=…;password=…;version=3` —
+/// semicolon-separated options after
+/// the plugin name. [host] is the camouflage TLS server name
+/// the front handshakes with; [password] is the ShadowTLS
+/// password (NOT the Shadowsocks password — the server holds
+/// both); [version] is 1, 2 or 3.
+class ShadowTlsPlugin {
+  const ShadowTlsPlugin({
+    required this.host,
+    required this.password,
+    required this.version,
+  });
+
+  final String host;
+  final String password;
+  final int version;
+}
+
+/// Parses the verbatim SIP002 [plugin] string stored on a
+/// Shadowsocks profile as a shadow-tls plugin, or null when
+/// it is not one the sing-box sidecar can front: a different
+/// plugin name, or a version outside 1–3 (a future version
+/// stays on the unapplied-plugin path rather than being
+/// fronted with a grammar this build cannot prove). An
+/// absent version means 3 — the shadow-tls plugin's own
+/// current default. Host/password completeness is NOT
+/// judged here; singBoxConfigError reports a missing piece
+/// in plain language at connect time.
+ShadowTlsPlugin? parseShadowTlsPlugin(String plugin) {
+  final segments = plugin.split(';').map((e) => e.trim()).toList();
+  if (segments.isEmpty || segments.first.toLowerCase() != 'shadow-tls') {
+    return null;
+  }
+  String opt(String key) {
+    for (final seg in segments.skip(1)) {
+      final eq = seg.indexOf('=');
+      if (eq <= 0) continue;
+      if (seg.substring(0, eq).trim().toLowerCase() != key) continue;
+      var value = seg.substring(eq + 1).trim();
+      try {
+        value = Uri.decodeComponent(value);
+      } catch (_) {
+        // Keep the raw value — a literal % in a password is
+        // legal and must not cost the parse.
+      }
+      return value;
+    }
+    return '';
+  }
+
+  var version = 3;
+  final versionText = opt('version');
+  if (versionText.isNotEmpty) {
+    final parsed = int.tryParse(versionText);
+    if (parsed == null || parsed < 1 || parsed > 3) return null;
+    version = parsed;
+  }
+  return ShadowTlsPlugin(
+    host: opt('host'),
+    password: opt('password'),
+    version: version,
+  );
 }
 
 class Profile {
@@ -107,6 +324,29 @@ class Profile {
   String path;
   String serviceName;
   String mode;
+
+  /// XHTTP `extra` (build 2116, audit G-02): the link's or
+  /// source config's extra xhttpSettings object (downloadSettings,
+  /// xmux, padding…) as JSON text. Stored verbatim as carried;
+  /// the builder decodes it and merges it into xhttpSettings,
+  /// ignoring a value that is not a JSON object — a malformed
+  /// extra must never break a connect. '' = none.
+  String xhttpExtra;
+
+  /// WebSocket early data (build 2116, audit G-03): the link's
+  /// `ed` parameter, emitted as wsSettings `maxEarlyData` with
+  /// the `Sec-WebSocket-Protocol` early-data header name. 0 =
+  /// the link carried none, nothing is emitted.
+  int wsEarlyData;
+
+  /// Extra per-transport headers (build 2116, audit G-17) for
+  /// the ws / httpupgrade / http transports, as a JSON object
+  /// text (header name → value). The Host header is NOT in
+  /// here — it lives in [host]; the JSON-config import splits
+  /// it out, and the builder merges it back. Stored verbatim;
+  /// the builder ignores a value that is not a JSON object.
+  /// '' = none.
+  String transportHeaders;
 
   /// Security: "", tls, reality.
   String security;
@@ -210,6 +450,106 @@ class Profile {
   bool get hasUnsupportedPlugin =>
       protocol == Protocol.shadowsocks && plugin.isNotEmpty;
 
+  /// The profile's ShadowTLS front (build 2126, feature
+  /// pick 3): the parsed `shadow-tls` plugin when the stored
+  /// SIP002 plugin string is one, else null. Parsed at read
+  /// time from [plugin] — no new stored fields. Whether the
+  /// front is APPLIED is a settings decision (the ShadowTLS
+  /// fronting toggle): the sing-box sidecar serves such a
+  /// profile while the toggle is on (see
+  /// XrayController.shadowTlsServed); while it is off the
+  /// plugin stays unapplied, exactly as before.
+  ShadowTlsPlugin? get shadowTlsPlugin =>
+      protocol == Protocol.shadowsocks
+      ? parseShadowTlsPlugin(plugin)
+      : null;
+
+  /// True when this Hysteria2 profile's obfs type is one
+  /// no engine in the app applies (build 2095, fourth-pass
+  /// audit 3.5): `salamander` is built as a finalmask on
+  /// the Xray path, and build 2116 (audit G-01/G-02 rows
+  /// B2-2/B2-7) routes `gecko` profiles to the sing-box
+  /// sidecar, which applies it. Anything else would
+  /// connect WITHOUT obfuscation and fail the handshake
+  /// unexplained. Badged and journaled like the
+  /// Shadowsocks plugin case.
+  bool get hasUnappliedObfs =>
+      protocol == Protocol.hysteria2 &&
+      obfs.isNotEmpty &&
+      obfs != 'salamander' &&
+      obfs != 'gecko';
+
+  /// True when the sing-box sidecar serves this Hysteria2
+  /// profile instead of the Xray core (build 2116, audit
+  /// B2-2/B2-7): the bundled Xray core has no port-hopping
+  /// field and no gecko obfs, the sidecar has both — so a
+  /// profile carrying an `mport` range or gecko obfs is
+  /// served by the sidecar and both are really applied.
+  bool get hy2SidecarServed =>
+      protocol == Protocol.hysteria2 && (hyMport.isNotEmpty || obfs == 'gecko');
+
+  /// The profile-level sidecar truth: the protocol's own
+  /// sidecar routing ([ProtocolSidecar.servedBySidecar])
+  /// plus the per-profile Hysteria2 diversion above. The
+  /// connect path, the pin machinery and the test paths
+  /// decide from THIS, never from the protocol alone.
+  bool get servedBySidecar => protocol.servedBySidecar || hy2SidecarServed;
+
+  /// True when this profile pairs REALITY with a
+  /// transport the core cannot load it on (QUIC/KCP).
+  /// The profile keeps the security its source carried;
+  /// the config builder substitutes TLS at emit time and
+  /// the connect path journals the substitution (build
+  /// 2096, post-2095 audit M1 — build 2095's import
+  /// boundary rewrote the stored value silently instead).
+  bool get hasRealityTransportMismatch =>
+      security == 'reality' && (network == 'quic' || network == 'kcp');
+
+  /// True when the source config carried Hysteria2 port
+  /// hopping no engine applies. Build 2116 (audit B2-2):
+  /// an mport profile is served by the sing-box sidecar,
+  /// which applies the hopping — so this is now always
+  /// false for Hysteria2, and the getter survives only so
+  /// the honesty surface has one place that would light
+  /// up again if a future protocol stored hopping it
+  /// could not apply.
+  bool get hasIgnoredPortHopping =>
+      protocol == Protocol.hysteria2 && hyMport.isNotEmpty && !hy2SidecarServed;
+
+  /// The TCP header-camouflage types the bundled core
+  /// accepts on a plain TCP stream (build 2116, audit
+  /// G-16), keyed by the value a link stores: the same
+  /// registry the KCP/QUIC paths already emit raw into
+  /// this core. `wechat` is the link spelling of the
+  /// core's `wechat-video` header.
+  static const tcpHeaderCamouflage = <String, String>{
+    'srtp': 'srtp',
+    'utp': 'utp',
+    'dtls': 'dtls',
+    'wireguard': 'wireguard',
+    'wechat': 'wechat-video',
+    'wechat-video': 'wechat-video',
+  };
+
+  /// The core header type for this profile's stored
+  /// [headerType] on a TCP stream, or null when there is
+  /// nothing to emit (empty, `http` — which has its own
+  /// request template — or a type the core cannot emit).
+  String? get tcpHeaderType =>
+      network == 'tcp' ? tcpHeaderCamouflage[headerType] : null;
+
+  /// True when a TCP profile carries a header-camouflage
+  /// type the core cannot emit (build 2116, audit G-16):
+  /// before this build it was silently ignored and the
+  /// profile ran as plain TCP with no hint; now the
+  /// connect path journals it, like the other honesty
+  /// cases.
+  bool get hasUnappliedTcpHeader =>
+      network == 'tcp' &&
+      headerType.isNotEmpty &&
+      headerType != 'http' &&
+      !tcpHeaderCamouflage.containsKey(headerType);
+
   /// WireGuard.
   String secretKey;
   String peerPublicKey;
@@ -229,9 +569,48 @@ class Profile {
   String wgAllowedIPs;
   String wgDns;
 
+  /// The .conf's interface scripts (build 2116, audit
+  /// C2-19): PreUp/PostUp/PreDown/PostDown, stored and
+  /// re-exported verbatim. They are NEVER executed —
+  /// neither engine runs interface scripts (the WG Tunnel
+  /// backend is started with scripts disabled) — carrying
+  /// them is round-trip fidelity, not a feature.
+  String wgPreUp;
+  String wgPostUp;
+  String wgPreDown;
+  String wgPostDown;
+
+  /// .conf keys the app does not model (build 2116, audit
+  /// W-03): a JSON object {"i": {…}, "p": {…}} holding the
+  /// unrecognised [Interface] / first-[Peer] keys a .conf
+  /// carried — the AmneziaWG v3 device keys (timing
+  /// controls, content padding, header protection) above
+  /// all — stored verbatim and re-emitted by
+  /// [wgConfFromProfile], so the engine hand-off and the
+  /// export carry them instead of silently dropping them.
+  /// '' = none.
+  String wgExtraKeys;
+
   /// Hysteria2.
   String obfs;
   String obfsPassword;
+  /// Hysteria2 port-hopping range from the source link
+  /// or Clash entry (build 2095, fourth-pass audit 3.4).
+  /// Builds ≤2115 carried it so the drop was VISIBLE —
+  /// the Xray core does not apply port hopping; build
+  /// 2116 (audit B2-2) serves an mport profile through
+  /// the sing-box sidecar, which applies it for real
+  /// (see [hy2SidecarServed]).
+  String hyMport;
+
+  /// Hysteria2 gecko obfs packet-size band (build 2126,
+  /// D1): carried from the share link's gecko packet-size
+  /// params (3x-ui link format); 0 = unset. The sidecar
+  /// emits them into the gecko obfs block only while the
+  /// geckoPacketSizes setting is on — off, a gecko
+  /// profile's config is byte-identical to build 2125.
+  int geckoMinPacketSize;
+  int geckoMaxPacketSize;
   int upMbps;
   int downMbps;
 
@@ -244,6 +623,13 @@ class Profile {
   /// honours exactly these values (its QuicParamsConfig); any
   /// other stored value is dropped by the builder, never sent.
   String hyCongestion;
+
+  /// Build 2095 (V2Ray journey audit #27): the per-profile
+  /// mux override — '' inherits the global mux setting,
+  /// 'on' forces mux for this profile, 'off' forbids it.
+  /// Only the mux-eligible protocols (vless/vmess/trojan/
+  /// shadowsocks) honour it; the builder decides.
+  String muxOverride;
 
   /// ECH (Encrypted Client Hello) config list for this profile's
   /// TLS handshake (build 2033), as the core's tlsSettings
@@ -262,35 +648,309 @@ class Profile {
   /// S1, S2, H1, H2, H3, H4. They are PRESERVED on the profile —
   /// import keeps them, export writes them back — and since
   /// build 2040 (queue 2h) they are APPLIED by the AmneziaWG
-  /// engine (libwg-go.so), which runs a profile carrying them
-  /// obfuscated; a peer the obfuscated tunnel cannot reach
-  /// falls back to plain WireGuard through Xray. '' = the
-  /// parameter was not present.
+  /// engine (build 2104: WG Tunnel's amneziawg-go backend),
+  /// which runs a profile carrying them obfuscated; a peer
+  /// the obfuscated engine cannot start for falls back to
+  /// plain WireGuard through Xray. '' = the parameter was
+  /// not present.
   String awgJc;
   String awgJmin;
   String awgJmax;
   String awgS1;
   String awgS2;
+  // Build 2104 (verification iteration 1, finding 17):
+  // S3/S4 complete the AmneziaWG 2.0 padding set — the WG
+  // Tunnel v3 parser and engine carry them, and builds
+  // ≤2103 silently dropped them at import.
+  String awgS3;
+  String awgS4;
   String awgH1;
   String awgH2;
   String awgH3;
   String awgH4;
 
+  /// AmneziaWG 2.0 signature parameters (build 2098, Item
+  /// A): I1–I5 (special junk packets sent before the
+  /// handshake initiation) and J1–J3 (controlled junk),
+  /// stored verbatim as the .conf carried them — each is a
+  /// DSL string ("<r 2><b 0x…>"), not a number. Builds up
+  /// to 2097 DROPPED them at import: the parser ignored
+  /// the keys and no field existed, so a config whose
+  /// obfuscation is exactly these packets (the owner's
+  /// WARP template) ran its AWG attempt without its
+  /// signature packet. [wgConfFromProfile] writes them
+  /// back. Build 2104: I1–I5 survive the engine swap — the
+  /// WG Tunnel parser carries them in .conf form and its
+  /// amneziawg-go v3 device runs them; J1–J3 stay stored
+  /// and exported, but the v3 parameter set has no slot
+  /// for them, so the backend never receives them — a
+  /// named loss, recorded in BUILD-LOG-2.md. '' = not
+  /// present.
+  String awgI1;
+  String awgI2;
+  String awgI3;
+  String awgI4;
+  String awgI5;
+  String awgJ1;
+  String awgJ2;
+  String awgJ3;
+
   /// True when this profile carries any AmneziaWG parameter.
+  /// This is the storage/export truth — every parameter the
+  /// .conf carried, J1–J3 included (they round-trip through
+  /// import, the store and .conf export verbatim). It is NOT
+  /// the engine-routing truth since build 2106: see
+  /// [hasSupportedAmneziaParams].
   bool get hasAmneziaParams =>
       awgJc.isNotEmpty ||
       awgJmin.isNotEmpty ||
       awgJmax.isNotEmpty ||
       awgS1.isNotEmpty ||
       awgS2.isNotEmpty ||
+      awgS3.isNotEmpty ||
+      awgS4.isNotEmpty ||
       awgH1.isNotEmpty ||
       awgH2.isNotEmpty ||
       awgH3.isNotEmpty ||
-      awgH4.isNotEmpty;
+      awgH4.isNotEmpty ||
+      awgI1.isNotEmpty ||
+      awgI2.isNotEmpty ||
+      awgI3.isNotEmpty ||
+      awgI4.isNotEmpty ||
+      awgI5.isNotEmpty ||
+      awgJ1.isNotEmpty ||
+      awgJ2.isNotEmpty ||
+      awgJ3.isNotEmpty;
+
+  /// True when this profile carries J1–J3 — the AmneziaWG
+  /// parameters the WG Tunnel backend has NO slot for (build
+  /// 2104 named loss): its parser silently discards them, so
+  /// they never reach the device. They stay stored and
+  /// exported (other clients can use them), but nothing in
+  /// the app may present them as applied obfuscation (build
+  /// 2106, journey audit F-05).
+  bool get hasUnsupportedJParams =>
+      awgJ1.isNotEmpty || awgJ2.isNotEmpty || awgJ3.isNotEmpty;
+
+  /// True when this profile carries at least one AmneziaWG
+  /// parameter the WG Tunnel engine actually runs (Jc, Jmin,
+  /// Jmax, S1–S4, H1–H4, I1–I5 — everything except J1–J3).
+  /// THIS is the routing/labelling truth since build 2106
+  /// (journey audit F-05): a profile whose only Amnezia
+  /// parameters are J1–J3 takes the plain WireGuard path and
+  /// is labelled WireGuard, because the obfuscated engine
+  /// would apply exactly nothing for it.
+  bool get hasSupportedAmneziaParams =>
+      awgJc.isNotEmpty ||
+      awgJmin.isNotEmpty ||
+      awgJmax.isNotEmpty ||
+      awgS1.isNotEmpty ||
+      awgS2.isNotEmpty ||
+      awgS3.isNotEmpty ||
+      awgS4.isNotEmpty ||
+      awgH1.isNotEmpty ||
+      awgH2.isNotEmpty ||
+      awgH3.isNotEmpty ||
+      awgH4.isNotEmpty ||
+      awgI1.isNotEmpty ||
+      awgI2.isNotEmpty ||
+      awgI3.isNotEmpty ||
+      awgI4.isNotEmpty ||
+      awgI5.isNotEmpty;
+
+  /// True when this profile's AmneziaWG parameters rewrite
+  /// the WireGuard handshake ITSELF (build 2110,
+  /// wg-start diagnosis D1): a non-zero S1/S2 prepends random
+  /// bytes to an initiation/response datagram, and an Hx
+  /// outside its standard value replaces that message's type
+  /// field — the engine rules wg_probe.dart's header records.
+  /// A server that is not an AmneziaWG server (a vanilla
+  /// WireGuard endpoint — Cloudflare WARP above all) silently
+  /// drops such datagrams: the TUN comes up and no handshake
+  /// ever completes. Junk (Jc/Jmin/Jmax) and the I1–I5
+  /// signatures travel as SEPARATE datagrams a vanilla server
+  /// simply ignores, so they do NOT count as shaping. S3/S4
+  /// shape the cookie/keepalive messages, which only exist
+  /// after a handshake — they cannot block the initiation,
+  /// so they do not count either. Values are strings and may
+  /// be ranges ("5-10"): shaping means the value CAN produce
+  /// a non-zero / non-standard outcome; an unparseable
+  /// non-empty value counts as shaping (conservative — the
+  /// de-shaped retry it gates is harmless to a genuine
+  /// AmneziaWG profile only in that it runs after the shaped
+  /// attempt already failed to be answered).
+  bool get hasInitiationShaping {
+    bool sShapes(String v) {
+      final t = v.trim();
+      if (t.isEmpty) return false;
+      final single = int.tryParse(t);
+      if (single != null) return single > 0;
+      final parts = t.split('-');
+      if (parts.length == 2) {
+        final hi = int.tryParse(parts[1].trim());
+        if (hi != null) return hi > 0;
+      }
+      return true;
+    }
+
+    bool hShapes(String v, int standard) {
+      final t = v.trim();
+      if (t.isEmpty) return false;
+      final single = int.tryParse(t);
+      if (single != null) return single != standard;
+      final parts = t.split('-');
+      if (parts.length == 2) {
+        final lo = int.tryParse(parts[0].trim());
+        final hi = int.tryParse(parts[1].trim());
+        if (lo != null && hi != null) return !(lo == standard && hi == standard);
+      }
+      return true;
+    }
+
+    return sShapes(awgS1) ||
+        sShapes(awgS2) ||
+        hShapes(awgH1, 1) ||
+        hShapes(awgH2, 2) ||
+        hShapes(awgH3, 3) ||
+        hShapes(awgH4, 4);
+  }
+
+  /// A copy with the initiation shaping neutralized (build
+  /// 2110): S1–S4 zeroed, H1–H4 at their standard WireGuard
+  /// type values — the handshake is byte-for-byte vanilla
+  /// WireGuard. Junk (Jc/Jmin/Jmax) and the I1–I5 signatures
+  /// are KEPT: they ride separate datagrams and cannot block
+  /// a handshake. The stored profile is never rewritten —
+  /// this copy exists only for one connect attempt.
+  Profile copyWithoutInitiationShaping() {
+    final c = copy();
+    c.awgS1 = '0';
+    c.awgS2 = '0';
+    c.awgS3 = '0';
+    c.awgS4 = '0';
+    c.awgH1 = '1';
+    c.awgH2 = '2';
+    c.awgH3 = '3';
+    c.awgH4 = '4';
+    return c;
+  }
 
   /// TUIC.
   String congestionControl;
   String udpRelayMode;
+
+  /// TUIC extras (build 2116, audit G-21/S-01): carried
+  /// from the link into the sing-box outbound — the only
+  /// engine that serves TUIC. [tuicAllowInsecure] is the
+  /// link's own allow_insecure flag: the Xray core removed
+  /// allowInsecure outright (build 2048) and Ember never
+  /// emits it there, but sing-box honours the flag, and
+  /// dropping it silently broke links that depend on it.
+  bool zeroRttHandshake;
+  String tuicHeartbeat;
+  bool udpOverStream;
+  bool disableSni;
+  bool tuicAllowInsecure;
+
+  /// NaiveProxy extra link parameters (build 2116, audit
+  /// S-02) as JSON text: every query parameter the parser
+  /// does not consume (padding, insecure_concurrency,
+  /// quic, …), stored verbatim so an import no longer
+  /// drops them silently. The sing-box emitter applies
+  /// the subset sing-box supports; the rest is journaled
+  /// at connect ([hasUnappliedNaivePadding]).
+  String naiveExtraParams;
+
+  /// The decoded [naiveExtraParams] map ({} when absent
+  /// or malformed).
+  Map<String, String> get naiveExtras {
+    if (naiveExtraParams.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(naiveExtraParams);
+      if (decoded is Map) {
+        return {
+          for (final e in decoded.entries)
+            e.key.toString(): e.value.toString(),
+        };
+      }
+    } catch (_) {
+      // A corrupt store reads as no extras.
+    }
+    return const {};
+  }
+
+  /// True when the profile carries a NaiveProxy padding
+  /// parameter sing-box cannot apply (its naive outbound
+  /// has no padding option — verified against the
+  /// vendored 1.14.4 option set): journaled at connect
+  /// instead of dropped silently (build 2116, S-02).
+  bool get hasUnappliedNaivePadding =>
+      protocol == Protocol.naive && naiveExtras.containsKey('padding');
+
+  /// Sudoku options (build 2127, H2) as JSON text: the
+  /// protocol's tuning (aeadMethod, paddingMin/Max,
+  /// tableType, pureDownlink, customTable, httpMask…)
+  /// stored as one object, the naiveExtraParams shape.
+  /// The key itself rides [uuidOrPassword]. The emitter
+  /// (sudoku_config.dart) applies the subset it knows;
+  /// '' = the core's defaults for everything.
+  String sudokuOptions;
+
+  /// Build 2127 (H1): the DPI Lab zap candidate this
+  /// copy dials through ('' = none). RUNTIME ONLY — set
+  /// by profileWithCandidate on the exact copy the
+  /// config builders read, never persisted (absent from
+  /// toJson/fromJson, so Profile.copy drops it): the
+  /// stored profile never carries a desync proxy, the
+  /// Lab's remembered win re-derives it per connect.
+  String zapretStrategy;
+
+  /// The decoded [sudokuOptions] map ({} when absent
+  /// or malformed).
+  Map<String, dynamic> get sudokuOpts {
+    if (sudokuOptions.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(sudokuOptions);
+      if (decoded is Map) {
+        return {for (final e in decoded.entries) e.key.toString(): e.value};
+      }
+    } catch (_) {
+      // A corrupt store reads as no options.
+    }
+    return const {};
+  }
+
+  /// Snell (build 2075): the protocol version. sing-box
+  /// 1.14.4 accepts version 4 (its version-5 shape was
+  /// rejected by config check during development), so 4 is
+  /// the only value the editor offers; the psk rides
+  /// [uuidOrPassword] and the optional obfs rides
+  /// [obfs]/[obfsPassword] (type / host) like Hysteria2's.
+  int snellVersion;
+
+  /// Tailscale (build 2075): the tailnet auth key the
+  /// sing-box endpoint logs in with (tskey-auth-…). Stored
+  /// on the profile like a WireGuard secret key — profiles
+  /// are the app's credential store. '' = the endpoint
+  /// cannot log in and the connect says so plainly.
+  String tailscaleAuthKey;
+
+  /// The last raw TCP-connect probe result (build 2075,
+  /// feature item 14): milliseconds to open a TCP connection
+  /// to this profile's endpoint, -1 unknown. A reachability
+  /// signal only — it says nothing about the handshake or
+  /// the exit, and the UI labels it that way.
+  int tcpPingMs;
+
+  /// Build 2095 (V2Ray journey audit, batch 8): the last
+  /// speed test's rate (bytes/s, -1 = never measured). The
+  /// result used to live only in a SnackBar — the row now
+  /// shows it until a newer test replaces it.
+  int lastSpeedBps;
+
+  /// True when the last TCP probe ran and the endpoint did
+  /// not answer (tcpPingMs stayed -1).
+  bool tcpPingFailed;
 
   /// Anti-filter shaping (build 2026, Stage A of the MLM port):
   /// per-profile options that reshape this profile's TLS
@@ -319,6 +979,17 @@ class Profile {
   /// -1): the row then shows "Failed" instead of a blank ping slot.
   /// False when never tested or when the last test succeeded.
   bool delayFailed;
+
+  /// Which stage produced the current delay result (build 2101,
+  /// settings-dns-2099-diagnosis.md D4): '' = no result / cleared
+  /// to pending, 'core' = the real throwaway-core test ran (its
+  /// success or failure is in [delayMs]/[delayFailed]),
+  /// 'sidecar-busy' = the test could not run because a live
+  /// session owns the sidecar slot — a distinct outcome, NOT a
+  /// failure (delayFailed stays false). Before 2101 every stage's
+  /// failure collapsed into the same bare -1 and the funnel's
+  /// cheap stages could kill a profile without recording where.
+  String delayStage;
 
   /// Cumulative traffic this profile has carried, counted from the
   /// Xray core's own statistics (the "proxy" outbound counters, read
@@ -360,7 +1031,15 @@ class Profile {
   /// otherwise the server's name. The server name ([name]) stays
   /// the name the share link, the country grouping and the
   /// diagnostics use.
-  String get displayName => localName.isNotEmpty ? localName : name;
+  /// Build 2103 (diagnosis N2): a genuinely nameless profile
+  /// (name never arrived and none was assigned) falls back
+  /// to its address HERE, at render time only — the stored
+  /// [name] is never the address again (the pre-2103 import
+  /// fallback stored it, which poisoned share links and
+  /// dedupe; see healAddressDerivedNames).
+  String get displayName => localName.isNotEmpty
+      ? localName
+      : (name.isNotEmpty ? name : address);
 
   Profile({
     required this.id,
@@ -377,6 +1056,9 @@ class Profile {
     this.path = '',
     this.serviceName = '',
     this.mode = '',
+    this.xhttpExtra = '',
+    this.wsEarlyData = 0,
+    this.transportHeaders = '',
     this.security = '',
     this.sni = '',
     this.alpn = '',
@@ -404,23 +1086,55 @@ class Profile {
     this.keepAlive = 0,
     this.wgAllowedIPs = '',
     this.wgDns = '',
+    this.wgPreUp = '',
+    this.wgPostUp = '',
+    this.wgPreDown = '',
+    this.wgPostDown = '',
+    this.wgExtraKeys = '',
     this.obfs = '',
+    this.hyMport = '',
+    this.geckoMinPacketSize = 0,
+    this.geckoMaxPacketSize = 0,
     this.obfsPassword = '',
     this.upMbps = 0,
     this.downMbps = 0,
     this.hyCongestion = '',
+    this.muxOverride = '',
     this.echConfigList = '',
     this.awgJc = '',
     this.awgJmin = '',
     this.awgJmax = '',
     this.awgS1 = '',
     this.awgS2 = '',
+    this.awgS3 = '',
+    this.awgS4 = '',
     this.awgH1 = '',
     this.awgH2 = '',
     this.awgH3 = '',
     this.awgH4 = '',
+    this.awgI1 = '',
+    this.awgI2 = '',
+    this.awgI3 = '',
+    this.awgI4 = '',
+    this.awgI5 = '',
+    this.awgJ1 = '',
+    this.awgJ2 = '',
+    this.awgJ3 = '',
     this.congestionControl = '',
     this.udpRelayMode = '',
+    this.zeroRttHandshake = false,
+    this.tuicHeartbeat = '',
+    this.udpOverStream = false,
+    this.disableSni = false,
+    this.tuicAllowInsecure = false,
+    this.naiveExtraParams = '',
+    this.sudokuOptions = '',
+    this.zapretStrategy = '',
+    this.snellVersion = 4,
+    this.tailscaleAuthKey = '',
+    this.tcpPingMs = -1,
+    this.lastSpeedBps = -1,
+    this.tcpPingFailed = false,
     this.afUnfilter = false,
     this.afEch = false,
     this.afFragment = '',
@@ -429,6 +1143,7 @@ class Profile {
     this.subscriptionId = '',
     this.delayMs = -1,
     this.delayFailed = false,
+    this.delayStage = '',
     this.totalDownBytes = 0,
     this.totalUpBytes = 0,
     this.statsUpdatedMs = 0,
@@ -455,6 +1170,9 @@ class Profile {
     'path': path,
     'serviceName': serviceName,
     'mode': mode,
+    'xhttpExtra': xhttpExtra,
+    'wsEarlyData': wsEarlyData,
+    'transportHeaders': transportHeaders,
     'security': security,
     'sni': sni,
     'alpn': alpn,
@@ -482,23 +1200,54 @@ class Profile {
     'keepAlive': keepAlive,
     'wgAllowedIPs': wgAllowedIPs,
     'wgDns': wgDns,
+    'wgPreUp': wgPreUp,
+    'wgPostUp': wgPostUp,
+    'wgPreDown': wgPreDown,
+    'wgPostDown': wgPostDown,
+    'wgExtraKeys': wgExtraKeys,
     'obfs': obfs,
+    'hyMport': hyMport,
+    'geckoMinPacketSize': geckoMinPacketSize,
+    'geckoMaxPacketSize': geckoMaxPacketSize,
     'obfsPassword': obfsPassword,
     'upMbps': upMbps,
     'downMbps': downMbps,
     'hyCongestion': hyCongestion,
+    'muxOverride': muxOverride,
     'echConfigList': echConfigList,
     'awgJc': awgJc,
     'awgJmin': awgJmin,
     'awgJmax': awgJmax,
     'awgS1': awgS1,
     'awgS2': awgS2,
+    'awgS3': awgS3,
+    'awgS4': awgS4,
     'awgH1': awgH1,
     'awgH2': awgH2,
     'awgH3': awgH3,
     'awgH4': awgH4,
+    'awgI1': awgI1,
+    'awgI2': awgI2,
+    'awgI3': awgI3,
+    'awgI4': awgI4,
+    'awgI5': awgI5,
+    'awgJ1': awgJ1,
+    'awgJ2': awgJ2,
+    'awgJ3': awgJ3,
     'congestionControl': congestionControl,
     'udpRelayMode': udpRelayMode,
+    'zeroRttHandshake': zeroRttHandshake,
+    'tuicHeartbeat': tuicHeartbeat,
+    'udpOverStream': udpOverStream,
+    'disableSni': disableSni,
+    'tuicAllowInsecure': tuicAllowInsecure,
+    'naiveExtraParams': naiveExtraParams,
+    'sudokuOptions': sudokuOptions,
+    'snellVersion': snellVersion,
+    'tailscaleAuthKey': tailscaleAuthKey,
+    'tcpPingMs': tcpPingMs,
+    'lastSpeedBps': lastSpeedBps,
+    'tcpPingFailed': tcpPingFailed,
     'afUnfilter': afUnfilter,
     'afEch': afEch,
     'afFragment': afFragment,
@@ -507,6 +1256,7 @@ class Profile {
     'subscriptionId': subscriptionId,
     'delayMs': delayMs,
     'delayFailed': delayFailed,
+    'delayStage': delayStage,
     'totalDown': totalDownBytes,
     'totalUp': totalUpBytes,
     'statsUpdatedMs': statsUpdatedMs,
@@ -516,7 +1266,8 @@ class Profile {
     'localName': localName,
   };
 
-  factory Profile.fromJson(Map<String, dynamic> j) => Profile(
+  factory Profile.fromJson(Map<String, dynamic> j) =>
+      sanitizeImportedProfile(Profile(
     id: j['id'] as String,
     name: _storedStr(j, 'name', ''),
     protocol: Protocol.values.firstWhere(
@@ -534,6 +1285,11 @@ class Profile {
     path: _storedStr(j, 'path', ''),
     serviceName: _storedStr(j, 'serviceName', ''),
     mode: _storedStr(j, 'mode', ''),
+    // Build 2116 (audit G-02/G-03/G-17): tolerant reads —
+    // a profile stored by an older build has none of these.
+    xhttpExtra: _storedStr(j, 'xhttpExtra', ''),
+    wsEarlyData: _storedInt(j, 'wsEarlyData', 0),
+    transportHeaders: _storedStr(j, 'transportHeaders', ''),
     security: _storedStr(j, 'security', ''),
     sni: _storedStr(j, 'sni', ''),
     alpn: _storedStr(j, 'alpn', ''),
@@ -566,23 +1322,57 @@ class Profile {
     keepAlive: _storedInt(j, 'keepAlive', 0),
     wgAllowedIPs: _storedStr(j, 'wgAllowedIPs', ''),
     wgDns: _storedStr(j, 'wgDns', ''),
+    wgPreUp: _storedStr(j, 'wgPreUp', ''),
+    wgPostUp: _storedStr(j, 'wgPostUp', ''),
+    wgPreDown: _storedStr(j, 'wgPreDown', ''),
+    wgPostDown: _storedStr(j, 'wgPostDown', ''),
+    wgExtraKeys: _storedStr(j, 'wgExtraKeys', ''),
     obfs: _storedStr(j, 'obfs', ''),
+        hyMport: _storedStr(j, 'hyMport', ''),
+        geckoMinPacketSize: _storedInt(j, 'geckoMinPacketSize', 0),
+        geckoMaxPacketSize: _storedInt(j, 'geckoMaxPacketSize', 0),
     obfsPassword: _storedStr(j, 'obfsPassword', ''),
     upMbps: _storedInt(j, 'upMbps', 0),
     downMbps: _storedInt(j, 'downMbps', 0),
     hyCongestion: _storedStr(j, 'hyCongestion', ''),
+    muxOverride: _storedStr(j, 'muxOverride', ''),
     echConfigList: _storedStr(j, 'echConfigList', ''),
     awgJc: _storedStr(j, 'awgJc', ''),
     awgJmin: _storedStr(j, 'awgJmin', ''),
     awgJmax: _storedStr(j, 'awgJmax', ''),
     awgS1: _storedStr(j, 'awgS1', ''),
     awgS2: _storedStr(j, 'awgS2', ''),
+    awgS3: _storedStr(j, 'awgS3', ''),
+    awgS4: _storedStr(j, 'awgS4', ''),
     awgH1: _storedStr(j, 'awgH1', ''),
     awgH2: _storedStr(j, 'awgH2', ''),
     awgH3: _storedStr(j, 'awgH3', ''),
     awgH4: _storedStr(j, 'awgH4', ''),
+    awgI1: _storedStr(j, 'awgI1', ''),
+    awgI2: _storedStr(j, 'awgI2', ''),
+    awgI3: _storedStr(j, 'awgI3', ''),
+    awgI4: _storedStr(j, 'awgI4', ''),
+    awgI5: _storedStr(j, 'awgI5', ''),
+    awgJ1: _storedStr(j, 'awgJ1', ''),
+    awgJ2: _storedStr(j, 'awgJ2', ''),
+    awgJ3: _storedStr(j, 'awgJ3', ''),
     congestionControl: _storedStr(j, 'congestionControl', ''),
+    zeroRttHandshake: _storedBool(j, 'zeroRttHandshake', false),
+    tuicHeartbeat: _storedStr(j, 'tuicHeartbeat', ''),
+    udpOverStream: _storedBool(j, 'udpOverStream', false),
+    disableSni: _storedBool(j, 'disableSni', false),
+    tuicAllowInsecure: _storedBool(j, 'tuicAllowInsecure', false),
+    naiveExtraParams: _storedStr(j, 'naiveExtraParams', ''),
+    sudokuOptions: _storedStr(j, 'sudokuOptions', ''),
     udpRelayMode: _storedStr(j, 'udpRelayMode', ''),
+    // Build 2075 sidecar fields: `is`-check reads like every
+    // field added after 2043 — a wrong-typed stored value
+    // reads as the default, never throws.
+    snellVersion: _storedInt(j, 'snellVersion', 4),
+    tailscaleAuthKey: _storedStr(j, 'tailscaleAuthKey', ''),
+    tcpPingMs: _storedInt(j, 'tcpPingMs', -1),
+    lastSpeedBps: _storedInt(j, 'lastSpeedBps', -1),
+    tcpPingFailed: _storedBool(j, 'tcpPingFailed', false),
     afUnfilter: _storedBool(j, 'afUnfilter', false),
     afEch: _storedBool(j, 'afEch', false),
     afFragment: _storedStr(j, 'afFragment', ''),
@@ -591,6 +1381,7 @@ class Profile {
     subscriptionId: _storedStr(j, 'subscriptionId', ''),
     delayMs: _storedInt(j, 'delayMs', -1),
     delayFailed: _storedBool(j, 'delayFailed', false),
+    delayStage: _storedStr(j, 'delayStage', ''),
     totalDownBytes: _storedInt(j, 'totalDown', 0),
     totalUpBytes: _storedInt(j, 'totalUp', 0),
     statsUpdatedMs: _storedInt(j, 'statsUpdatedMs', 0),
@@ -601,8 +1392,15 @@ class Profile {
     // as unstarred instead of crashing the load. The same
     // `is`-check read guards the label (build 2045).
     starred: _storedBool(j, 'starred', false),
-    localName: _storedStr(j, 'localName', ''),
-  );
+    // Build 2096 (post-2095 audit M5): localName is the
+    // name actually displayed, and it bypassed the name
+    // sanitizer entirely (raw read here, raw writes in
+    // rename/editor) — a restored or renamed profile
+    // could carry control/bidi characters into every
+    // list. Sanitize at this read choke point; the write
+    // paths sanitize too.
+    localName: sanitizeProfileName(_storedStr(j, 'localName', '')),
+  ));
 }
 
 class Subscription {
@@ -634,6 +1432,19 @@ class Subscription {
   /// network error, a timeout, or a 5xx (build 2050, F-H13).
   String fallbackUrl;
 
+  /// The provider's own DNS resolver for this subscription's
+  /// server hostnames (build 2105, provider DNS): a DoH URL
+  /// (https://…) or a plain resolver address (an IP, or a host
+  /// the system resolver can find). '' = none. Only used when
+  /// XraySettings.providerDnsEnabled is on: at connect, the
+  /// selected profile's server hostname is resolved through
+  /// this resolver and the answer is pinned into the config's
+  /// hosts map (see provider_dns.dart). Set by the user in the
+  /// subscription editor — providers do not publish a DNS in
+  /// any format this build parses, so nothing fills it in
+  /// automatically.
+  String dns;
+
   /// Arbitrary extra request headers this panel requires,
   /// sent on every fetch and refresh (build 2051, F-H13
   /// remainder — the map 2050 left out: HWID and the
@@ -642,6 +1453,46 @@ class Subscription {
   /// `User-Agent` can never appear here: the app fixes its
   /// own UA (see [parseCustomHeaders] in sub_fetcher.dart).
   Map<String, String> customHeaders;
+
+  /// Build 2096 (post-2095 audit L29): identity keys of
+  /// profiles the user deleted individually from this
+  /// subscription. A refresh filters them out — build
+  /// 2095 resurrected a deliberately deleted profile on
+  /// every refresh because deletion left no trace the
+  /// merge could honour.
+  List<String> deletedProfileKeys;
+
+  /// Build 2129 (leg 6 / Xray recycle bin): tombstone keys
+  /// the user PERMANENTLY deleted from the recycle bin.
+  /// They block refresh resurrection exactly like
+  /// [deletedProfileKeys] (the refresh filter reads both)
+  /// but no longer appear in the bin — purging is the
+  /// point of no return the bin's Restore is not.
+  List<String> purgedProfileKeys;
+
+  /// Build 2116 (AB-12): the last auto-update ATTEMPT,
+  /// success or failure (lastUpdatedMs only moves on
+  /// success). A failed attempt used to leave no trace, so
+  /// the sweep retried every 30-minute tick forever and
+  /// said nothing.
+  int lastAttemptMs;
+
+  /// Build 2116 (AB-12): consecutive failed auto-update
+  /// attempts — drives the retry backoff
+  /// ([subAutoUpdateBackoffMs]) and the V2Ray page's
+  /// could-not-refresh notice. A success resets it.
+  int failedAttempts;
+
+  /// Build 2133 (V2Ray full tab): the last completed
+  /// per-subscription ping on the V2Ray tab — when it ran
+  /// (epoch ms, 0 = never), the fastest profile it found
+  /// ('' = none answered) and its delay (-1 = none). The
+  /// collapsed subscription card renders its "Best:" /
+  /// "Last ping:" summary from these; they are written
+  /// only by a completed (not cancelled) scoped ping.
+  int lastPingMs;
+  String bestPingName;
+  int bestPingMs;
 
   Subscription({
     required this.id,
@@ -652,12 +1503,20 @@ class Subscription {
     this.totalBytes = 0,
     this.expireEpochSec = 0,
     this.lastUpdatedMs = 0,
+    this.lastAttemptMs = 0,
+    this.failedAttempts = 0,
+    this.lastPingMs = 0,
+    this.bestPingName = '',
+    this.bestPingMs = -1,
     this.profileCount = 0,
     this.autoUpdate = true,
     this.certPin = '',
     this.hwid = '',
     this.fallbackUrl = '',
+    this.dns = '',
     this.customHeaders = const {},
+    this.deletedProfileKeys = const [],
+    this.purgedProfileKeys = const [],
   });
 
   int get usedBytes => uploadBytes + downloadBytes;
@@ -671,7 +1530,33 @@ class Subscription {
     if (expireEpochSec <= 0) return -1;
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final d = (expireEpochSec - now) / 86400;
-    return d < 0 ? 0 : d.ceil();
+    // Build 2096 (post-2095 audit L4): floor, not ceil —
+    // ceil reported 4 days for 3.2 remaining, so the
+    // <=3-day low warning (quotaLow) fired a day late.
+    return d < 0 ? 0 : d.floor();
+  }
+
+  /// Build 2095 (feature 10 — subscription health): alive /
+  /// tested / dead from the latest delay data of [profiles]
+  /// (this subscription's configs). Dead means: at least one
+  /// config was tested and every tested one failed.
+  ({int alive, int tested, bool dead}) healthOf(List<Profile> profiles) {
+    final alive = profiles.where((p) => p.delayMs >= 0).length;
+    final tested =
+        profiles.where((p) => p.delayMs >= 0 || p.delayFailed).length;
+    return (alive: alive, tested: tested, dead: tested > 0 && alive == 0);
+  }
+
+  /// Build 2095 (feature 3 — subscription quota bar): the
+  /// low-quota warning state. True when the panel reports a
+  /// total and at most a tenth of it remains, or the expiry
+  /// is within three days.
+  bool get quotaLow {
+    if (totalBytes > 0 && remainingBytes >= 0) {
+      if (remainingBytes / totalBytes <= 0.10) return true;
+    }
+    final days = remainingDays;
+    return days >= 0 && days <= 3;
   }
 
   Map<String, dynamic> toJson() => {
@@ -683,12 +1568,20 @@ class Subscription {
     'totalBytes': totalBytes,
     'expireEpochSec': expireEpochSec,
     'lastUpdatedMs': lastUpdatedMs,
+    'lastAttemptMs': lastAttemptMs,
+    'failedAttempts': failedAttempts,
+    'lastPingMs': lastPingMs,
+    'bestPingName': bestPingName,
+    'bestPingMs': bestPingMs,
     'profileCount': profileCount,
     'autoUpdate': autoUpdate,
     'certPin': certPin,
     'hwid': hwid,
     'fallbackUrl': fallbackUrl,
+    'dns': dns,
     'customHeaders': customHeaders,
+    'deletedProfileKeys': deletedProfileKeys,
+    'purgedProfileKeys': purgedProfileKeys,
   };
 
   factory Subscription.fromJson(Map<String, dynamic> j) => Subscription(
@@ -700,6 +1593,13 @@ class Subscription {
     totalBytes: _storedInt(j, 'totalBytes', 0),
     expireEpochSec: _storedInt(j, 'expireEpochSec', 0),
     lastUpdatedMs: _storedInt(j, 'lastUpdatedMs', 0),
+    lastAttemptMs: _storedInt(j, 'lastAttemptMs', 0),
+    failedAttempts: _storedInt(j, 'failedAttempts', 0),
+    // Build 2133: the per-subscription ping summary; a
+    // pre-2133 record has no key and loads as never pinged.
+    lastPingMs: _storedInt(j, 'lastPingMs', 0),
+    bestPingName: _storedStr(j, 'bestPingName', ''),
+    bestPingMs: _storedInt(j, 'bestPingMs', -1),
     profileCount: _storedInt(j, 'profileCount', 0),
     autoUpdate: _storedBool(j, 'autoUpdate', true),
     // Build 2050: `is`-check reads, like the rest of the store —
@@ -707,11 +1607,28 @@ class Subscription {
     certPin: _storedStr(j, 'certPin', ''),
     hwid: _storedStr(j, 'hwid', ''),
     fallbackUrl: _storedStr(j, 'fallbackUrl', ''),
+    dns: _storedStr(j, 'dns', ''),
     // Build 2051: the same tolerance for the headers map — a
     // wrong-typed or partly-bad stored value yields the good
     // string entries only, never a throw; a 2050-era record
     // (no key) loads with no headers.
     customHeaders: _stringMap(j['customHeaders']),
+    // Build 2096 (audit L29): the deletion tombstones,
+    // read with the same tolerance as the rest of the
+    // store.
+    deletedProfileKeys: j['deletedProfileKeys'] is List
+        ? (j['deletedProfileKeys'] as List)
+              .whereType<String>()
+              .toList()
+        : const [],
+    // Build 2129: the purged set, read with the same
+    // tolerance; a pre-2129 record has no key and loads
+    // with none purged.
+    purgedProfileKeys: j['purgedProfileKeys'] is List
+        ? (j['purgedProfileKeys'] as List)
+              .whereType<String>()
+              .toList()
+        : const [],
   );
 }
 
@@ -727,14 +1644,29 @@ Map<String, String> _stringMap(Object? v) {
   return out;
 }
 
+/// Build 2116 (AB-12): how long a subscription's automatic
+/// refresh waits after [failedAttempts] consecutive
+/// failures — 30 minutes doubling per failure, capped at
+/// 24 hours. Manual refresh is never gated by this.
+int subAutoUpdateBackoffMs(int failedAttempts) {
+  if (failedAttempts <= 0) return 0;
+  var ms = 30 * 60 * 1000;
+  const cap = 24 * 3600 * 1000;
+  for (var i = 1; i < failedAttempts && ms < cap; i++) {
+    ms *= 2;
+  }
+  return ms > cap ? cap : ms;
+}
+
 /// The user's routing preset for the Xray tunnel.
-enum RoutingPreset { global, bypassLan, bypassIran, directAll }
+enum RoutingPreset { global, bypassLan, bypassIran, bypassChina, directAll }
 
 extension RoutingPresetLabel on RoutingPreset {
   String get name => switch (this) {
     RoutingPreset.global => 'global',
     RoutingPreset.bypassLan => 'bypass-lan',
     RoutingPreset.bypassIran => 'bypass-iran',
+    RoutingPreset.bypassChina => 'bypass-china',
     RoutingPreset.directAll => 'direct-all',
   };
 }
@@ -859,6 +1791,63 @@ int clearParserDefaultFingerprints(List<Profile> profiles) {
   return cleared;
 }
 
+/// Build 2103 (diagnosis N2): the one-time heal for names
+/// the pre-2103 import fallback manufactured. Until 2102,
+/// a remark-less import stored the server ADDRESS as the
+/// profile's name (_fallbackName's address branch, the
+/// Clash route's substitution, the editor's empty-name
+/// save) — a stored value that then poisoned share links,
+/// dedupe reports and renames, and that no refresh could
+/// heal for a profile whose provider still serves no
+/// remark. The scope is exactly the population those
+/// writers could have produced: a stored name EXACTLY
+/// equal to the profile's own address, with no user label
+/// ([Profile.localName] empty — since build 2045 a user's
+/// rename lives there, never in [Profile.name], so a
+/// deliberate rename cannot be in this population). Each
+/// healed profile takes the positional form the import
+/// routes now assign (protocol label + position), the
+/// position being its index in the store list. The honest edge,
+/// stated plainly: a provider remark that is itself
+/// exactly the bare address is indistinguishable from the
+/// manufactured value and is renamed too — the address
+/// still shows as the row's subtitle, and the next
+/// subscription refresh restores provider remarks
+/// verbatim. Returns how many profiles were healed.
+int healAddressDerivedNames(List<Profile> profiles) {
+  var healed = 0;
+  for (var i = 0; i < profiles.length; i++) {
+    final p = profiles[i];
+    if (p.localName.isEmpty &&
+        p.address.isNotEmpty &&
+        p.name == p.address) {
+      p.name = '${p.protocol.label} ${i + 1}';
+      healed++;
+    }
+  }
+  return healed;
+}
+
+/// The one-line warning for an Xray-hosted session
+/// (V2Ray / standalone WARP) whose TUN does not capture
+/// IPv6, or null when it does (build 2123, audit C-01 —
+/// the wgUncoveredFamilyNote pattern applied to the main
+/// path). With "IPv6 route" off — the owner's ordered
+/// v2rayNG default, kept — the TUN carries no IPv6
+/// address or route, so on an IPv6-capable network apps'
+/// v6 traffic stays on the physical link with the user's
+/// real address while the session shows Connected. The
+/// default does NOT change (2103's blackhole history is
+/// why it is off); what changes is that the fact is
+/// journaled at every adoption instead of staying silent.
+String? ipv6UncoveredSessionNote(XraySettings settings) {
+  if (settings.ipv6Route) return null;
+  return 'IPv6 stays outside this tunnel — the "IPv6 route" '
+      'setting is off (the v2rayNG default), so on an '
+      'IPv6-capable network, IPv6 traffic keeps your current '
+      'IP address. Turn the setting on to capture it.';
+}
+
 class XraySettings {
   XraySettings();
 
@@ -866,11 +1855,24 @@ class XraySettings {
   String localDns = '1.1.1.1';
 
   /// The resolver proxied traffic uses, reached through the tunnel.
-  /// Default aligned with v2rayNG's generated configs (2005): its
-  /// remote DNS is dns.google's DoH. Before 2005 the default was
-  /// 1.1.1.1's DoH; a stored old default is migrated once (see
-  /// [XraySettings.fromJson]).
-  String remoteDns = 'https://dns.google/dns-query';
+  /// 2005–2100 the default was dns.google's DoH; build 2101 adopted
+  /// v2rayNG's value (Cloudflare's DoH) on the owner's order
+  /// (2026-11-18). Build 2111 moved the default to Cloudflare's
+  /// plain resolver, 1.1.1.1 (the 2110 export had proved the DoH
+  /// POST through the tunnel dead on the owner's path). Build
+  /// 2113 REVERTS the 2111 move on the owner's order (2026-11-19,
+  /// «dns همون باشه» — the DNS is v2rayNG's own): the full-config
+  /// diff against upstream v2rayNG @ ef06bac
+  /// (v2rayng-config-diff-2112.md) showed the defect was never
+  /// the resolver VALUE but the CARRIAGE — Ember hijacked all
+  /// app DNS into the core module whose dispatched upstreams die
+  /// on his server, while v2rayNG's default shape carries app
+  /// DNS as ordinary tunnel traffic and uses this DoH string as
+  /// the module's unscoped upstream. The default is v2rayNG's
+  /// DNS_PROXY again, and the builder emits the stored list
+  /// as-is (no appended fallback). A stored 2111-era default is
+  /// migrated once (see [XraySettings.fromJson]).
+  String remoteDns = 'https://cloudflare-dns.com/dns-query';
 
   /// The remote resolver's transport (build 2032): 'doh' (the
   /// [remoteDns] URL as-is) or 'doq' — DNS-over-QUIC to the same
@@ -906,11 +1908,129 @@ class XraySettings {
   /// Test All's real-test parallelism (build 2032, the v2go
   /// fold-in's modest version): how many throwaway cores test at
   /// once in the funnel's real stage. Clamped 1..8 where used.
-  int testAllConcurrency = 4;
+  /// Build 2101: the default rises 4 → 8 — the stage-3 duration
+  /// diagnosis (settings-dns-2099-diagnosis.md, S5) found the
+  /// 4-wide stage the dominant cost of a full-list test; the
+  /// cores are short-lived, so the wider pool is safe.
+  int testAllConcurrency = 8;
+
+  /// The delay-test timeout (build 2109, feature-watch
+  /// 2026-11-12, FlClash 0.9.2): the per-request timeout, in
+  /// seconds, of the real proxied-request delay test — the
+  /// single-profile test, the Test All bulk pass, the DPI Lab
+  /// discovery probes and the sandbox config test all wait this
+  /// long for one request to answer. Default 8: the fixed 8 s
+  /// the request path used in every build ≤2108
+  /// (XrayTester.timeRequest's default), so a store that never
+  /// set it behaves exactly as before. Choices 3/5/8/10/15/20
+  /// in Settings → V2Ray. Clamped 3..20 wherever it is read, so
+  /// a corrupt stored value can never break a test. The cheap
+  /// funnel pre-checks (3 s TCP/TLS, scan_probes) and the bare
+  /// TCP ping (5 s, tcp_ping) are separate measurements with
+  /// their own budgets and do NOT follow this setting — see
+  /// build2109-progress.md (N1/N3).
+  int delayTestTimeoutSec = 8;
+
+  /// Clamps a delay-test timeout to the offered range (see
+  /// [delayTestTimeoutSec]).
+  static int clampDelayTestTimeoutSec(int v) =>
+      v < 3 ? 3 : (v > 20 ? 20 : v);
+
+  /// The clamped timeout in milliseconds — what the delay-test
+  /// call sites pass to the native side.
+  int get delayTestTimeoutMs =>
+      clampDelayTestTimeoutSec(delayTestTimeoutSec) * 1000;
 
   /// Set once the 2005 remote-DNS default migration has run, so a
   /// user who later re-enters the old value on purpose keeps it.
   bool remoteDnsMigrated = false;
+
+  /// Set once the build-2101 defaults migration has run: a stored
+  /// remoteDns still equal to the pre-2101 default (Google DoH)
+  /// moves to v2rayNG's Cloudflare DoH, and a stored
+  /// testAllConcurrency still equal to the pre-2101 default (4)
+  /// moves to 8. Same one-time doctrine as [remoteDnsMigrated] —
+  /// a value re-entered on purpose afterwards is kept.
+  bool defaultsMigrated2101 = false;
+
+  /// Set once the build-2111 defaults migration has run: a
+  /// stored remoteDns still equal to either shipped DoH
+  /// default — build 2101's Cloudflare DoH, or the Google-IP
+  /// DoH (https://8.8.8.8/dns-query) the owner set by hand
+  /// while fighting the dead-DoH defect — moves to the new
+  /// plain-IP default (1.1.1.1). Same one-time doctrine as
+  /// [defaultsMigrated2101]; any other value is a deliberate
+  /// choice and is kept. The in-memory default is TRUE, the
+  /// build-2103 doctrine: a fresh install has nothing to
+  /// migrate, and [XraySettings.fromJson] reads the stored
+  /// value with a FALSE fallback so a pre-2111 store still
+  /// migrates exactly once.
+  bool defaultsMigrated2111 = true;
+
+  /// Set once the build-2113 defaults migration has run: the
+  /// 2111 plain-IP default (1.1.1.1) and the resolver values the
+  /// owner cycled through by hand while fighting the dead-DNS
+  /// defect on 2026-11-18/19 (the Google and Google-IP DoH URLs
+  /// and the AdGuard addresses, all documented in his own
+  /// Diagnostics exports of those nights) move back to
+  /// v2rayNG's default, Cloudflare's DoH — build 2113 adopts
+  /// v2rayNG's generated DNS section verbatim on his order
+  /// («dns همون باشه»), and none of those values was ever a
+  /// working, deliberate choice. Same one-time doctrine and
+  /// in-memory-true / stored-false-fallback shape as
+  /// [defaultsMigrated2111]; any other value is kept.
+  bool defaultsMigrated2113 = true;
+
+  /// Set once the build-2103 defaults migration has run: a
+  /// stored ipv6Route / sniffQuic still true was the shipped
+  /// default in every build ≤2102 (both fields are written
+  /// on every save, so a stored true cannot be told apart
+  /// from a deliberate choice) — both move to the new
+  /// v2rayNG-parity defaults (OFF) exactly once. A value the
+  /// user sets afterwards is kept, like every migration in
+  /// this class.
+  ///
+  /// The in-memory default is TRUE (build 2103, verification
+  /// iteration 1, H1): a settings object that never came
+  /// from a stored document — a fresh install — has nothing
+  /// to migrate, and starting at false would write false on
+  /// the first session's saves, making the store look
+  /// pre-2103 and re-firing the migration over a value the
+  /// user set in that first session. [XraySettings.fromJson]
+  /// reads the stored value with a FALSE fallback, so a
+  /// store written before this key existed still migrates
+  /// exactly once.
+  bool defaultsMigrated2103 = true;
+
+  /// Set once the build-2114 defaults reset has run (owner
+  /// order 2026-11-19 — every Ember-added feature defaults
+  /// OFF, all defaults = v2rayNG's): adaptiveFailover,
+  /// autoReconnect, stallWatchdog and smartDialRacing shipped
+  /// default-ON and are written on every save, so a stored
+  /// true cannot be told apart from the shipped default —
+  /// all four move to OFF exactly once. (remoteDns, the
+  /// reset's fifth XraySettings key, already landed in build
+  /// 2113 via [defaultsMigrated2113].) Same in-memory-true /
+  /// stored-false-fallback doctrine as [defaultsMigrated2103];
+  /// a value the user sets afterwards is kept.
+  bool defaultsReset2114 = true;
+
+  /// Transient (never serialized): fromJson sets this when
+  /// the 2103 migration actually fired during this load, so
+  /// XrayController.load persists the migrated store at
+  /// once — the same immediate-persist doctrine as the
+  /// fingerprint migration (build 2103, verification
+  /// iteration 1, H1).
+  bool defaultsJustMigrated2103 = false;
+
+  /// Set once the build-2103 address-name heal has run over
+  /// the stored profiles (healAddressDerivedNames): profiles
+  /// whose stored name is exactly their server address —
+  /// the value the pre-2103 import fallback manufactured —
+  /// are renamed to the positional form. Runs once, like
+  /// [fingerprintDefaultMigrated]; the controller performs
+  /// it at store load and persists at once.
+  bool addressNameHealed2103 = false;
 
   /// Set once the 2024 domain-strategy default migration has run
   /// (the old default 'IPIfNonMatch' becomes v2rayNG's 'AsIs'), so
@@ -953,6 +2073,172 @@ class XraySettings {
   bool get lanShareAuthReady =>
       lanShareAuth && lanShareUser.isNotEmpty && lanSharePass.isNotEmpty;
   bool sniffing = true;
+
+  /// Build 2095 (V2Ray journey audit #22): which protocols
+  /// the inbound sniffing overrides destinations for. The
+  /// builder hardcoded http+tls+quic; each can now be
+  /// turned off individually. All default ON, so a default
+  /// config is byte-identical to earlier builds.
+  /// Build 2103 (diagnosis D3/E3): sniffQuic's default is
+  /// now OFF — v2rayNG's template sniffs http+tls only, and
+  /// the QUIC override was an Ember extra riding on every
+  /// UDP/443 handshake. The toggle stays; the one-time
+  /// defaultsMigrated2103 migration below moves a stored
+  /// true (indistinguishable from the shipped default) to
+  /// OFF once, and a deliberate re-enable is kept.
+  bool sniffHttp = true;
+  bool sniffTls = true;
+  bool sniffQuic = false;
+
+  /// Block QUIC (build 2108, feature-watch 2026-11-18,
+  /// DPIMech 0.3.0): when on, the tunnel config's routing
+  /// rules send UDP port 443 to the blackhole outbound, so
+  /// browsers and YouTube fall back to TCP — on filtered
+  /// networks where QUIC is throttled or blocked outright,
+  /// the TCP fallback is what carries traffic. The rule is
+  /// placed after the DNS-module rule (so the core's own DNS
+  /// queries, including DNS-over-QUIC, still reach the proxy)
+  /// and before every preset/custom rule (so no preset can
+  /// route QUIC around the block). Applies at the next
+  /// connect; a running tunnel keeps its start rules. Covers
+  /// the V2Ray/Xray engine path ONLY — sidecar-served profiles
+  /// included, since their traffic still enters via the Xray
+  /// inbounds; Mozilla, WireGuard, WARP, Psiphon, Lantern and
+  /// OpenVPN sessions do not go through the Xray routing table.
+  /// Default OFF — off, the generated config is byte-identical to 2107's.
+  bool blockQuic = false;
+
+  /// ShadowTLS fronting for Shadowsocks (build 2126,
+  /// feature pick 3): when on, a Shadowsocks profile whose
+  /// stored plugin is `shadow-tls` (see [Profile.shadowTlsPlugin])
+  /// is served by the sing-box sidecar instead of the Xray
+  /// core, with the front really applied — the sidecar emits
+  /// the shadowsocks outbound detoured through a shadowtls
+  /// outbound (grammar validated against the vendored
+  /// sing-box 1.14.4: `sing-box check` on the emitted shape,
+  /// classic and 2022 ciphers). ShadowTLS carries TCP only,
+  /// so a fronted session cannot relay UDP — the connect
+  /// path journals that. Default OFF — off, every config and
+  /// behaviour is byte-identical to 2125's: the profile
+  /// stays on the Xray core and its plugin stays unapplied.
+  bool shadowTlsFronting = false;
+
+  /// Hysteria2 gecko packet sizes (build 2126, D1): when
+  /// on, a gecko-obfs profile's stored packet-size band
+  /// ([Profile.geckoMinPacketSize] / [Profile.geckoMaxPacketSize],
+  /// from its share link) is emitted into the sing-box
+  /// sidecar's obfs block (grammar from sing-box 1.14.4's
+  /// Hysteria2ObfsGecko, validated with `sing-box check`).
+  /// Default OFF — off, the emitted obfs block is
+  /// byte-identical to 2125's (gecko itself already
+  /// routes to the sidecar since build 2116; this gates
+  /// only the new size fields, so no working gecko
+  /// profile changes behaviour).
+  bool geckoPacketSizes = false;
+
+  /// Hysteria2 noise decoy (build 2126, D6 — the owner's
+  /// pick #13 Hy2 leg): when on, a Hysteria2 profile's
+  /// stream gains a finalmask `noise` entry ahead of its
+  /// salamander mask — the vendored core emits same-socket
+  /// random packets before the first real packet, so a
+  /// filter's first read is decoy bytes (grammar from
+  /// Xray-core's transport_finalmask.go NoiseMask,
+  /// corroborated in the bundled fork's strings).
+  /// Default OFF — off, no finalmask entry is added and
+  /// the config is byte-identical to 2125's.
+  bool hy2NoiseDecoy = false;
+
+  /// Fragment via FinalMask (build 2126, D2): when on,
+  /// the global fragment toggle's shaping is emitted as
+  /// a finalmask `fragment` entry on the proxy outbound
+  /// instead of chaining through the legacy freedom
+  /// "frag" outbound (the fork carries the fragment mask
+  /// in streamSettings.finalmask.tcp — verified in its
+  /// strings and in Xray-core's transport_finalmask.go).
+  /// The freedom noises (per-profile TCP noise) still
+  /// chain through the frag outbound when a profile asks
+  /// for them. Default OFF — off, the fragment chain is
+  /// byte-identical to 2125's.
+  bool fragmentViaFinalmask = false;
+
+  /// Sidecar TLS fragmentation (build 2126, D8): when
+  /// on, the sing-box sidecar's config gains a catch-all
+  /// route-options rule with `tls_fragment` — sing-box
+  /// 1.14.4's SNI-relative ClientHello fragmentation —
+  /// so sidecar-served protocols (TUIC / AnyTLS / Snell /
+  /// Naive / diverted Hy2 and ShadowTLS) get ClientHello
+  /// shaping on the handshakes the core terminates,
+  /// which today receive none (grammar from 1.14.4's
+  /// RawRouteOptionsActionOptions, validated with
+  /// `sing-box check`). Default OFF — off, the sidecar
+  /// config is byte-identical to 2125's.
+  bool sidecarTlsFragment = false;
+
+  /// Stop the VPN on device sleep (build 2136, item 1):
+  /// when on, a screen-off broadcast reaching the app
+  /// process disconnects the active session instead of
+  /// holding the tunnel (and its wake paths) through the
+  /// night. Default OFF — off, sleep behaviour is
+  /// byte-identical to 2135's. Honest limit, stated on the
+  /// settings row: the broadcast only reaches a living app
+  /// process; a process Android has already reaped holds
+  /// no Dart-side session state to stop.
+  bool stopVpnOnSleep = false;
+
+  /// Randomized fragment geometry (build 2136, item 8):
+  /// when on, the global fragment chain emits its lengths
+  /// and delays as ranges centred on the stored fixed
+  /// values (the core's Int32Range grammar) instead of the
+  /// fixed cuts, so a filter cannot fingerprint one exact
+  /// geometry. Default OFF — off, the emitted fragment
+  /// block is byte-identical to 2135's.
+  bool fragmentRandomGeometry = false;
+
+  /// Auto-fastest fallback group (build 2136, item 14):
+  /// when on, a manual connect walks the profile's
+  /// fallback group ordered by the best stored delay
+  /// result (fastest first) instead of stored order; the
+  /// existing proof + failover walk does the rest.
+  /// Default OFF — off, group order is byte-identical to
+  /// 2135's.
+  bool autoFastestGroup = false;
+
+  /// (Build 2136, item 15 — WireGuard peer fallback
+  /// addresses — was scoped here and then PARKED with
+  /// evidence in build2136-progress.md: the WG walk's
+  /// plain leg re-resolves the selected profile by id
+  /// from the store, so pinned-address copies are
+  /// invisible to it; no field is stored for a feature
+  /// that does not exist.)
+
+  /// Per-route SNI spoofing (build 2127, H3): when on,
+  /// the sing-box sidecar's route gains one route-options
+  /// rule per [sniSpoofRules] entry — a domain (and its
+  /// subdomains) whose TLS handshakes are preceded by a
+  /// fake ClientHello carrying the rule's decoy SNI
+  /// (sing-box 1.14.4's `tls_spoof` route action; the
+  /// grammar is the vendored binary's own option struct).
+  /// Default OFF — off, or with an empty rule list, the
+  /// sidecar config is byte-identical to 2126's.
+  bool sniSpoofEnabled = false;
+
+  /// The SNI spoofing rules (build 2127, H3), edited on
+  /// the SNI spoofing page; see sni_spoof.dart.
+  List<SniSpoofRule> sniSpoofRules = [];
+
+  /// Sudoku engine (build 2127, H2): when on, Sudoku
+  /// profiles are served by the Sudoku sidecar (the
+  /// Hiddify-fork sing-box binary, libsudokubox.so);
+  /// off, a Sudoku profile refuses at connect in plain
+  /// words. Default OFF — off, every other profile's
+  /// behaviour is byte-identical to 2126's.
+  bool sudokuEnabled = false;
+
+  /// Build 2095 (V2Ray journey audit #28): the core log
+  /// level the builder writes ('warning' | 'info' |
+  /// 'debug'); it hardcoded 'warning', so the logs page
+  /// could never show more than warnings.
+  String logLevel = 'warning';
   bool fakeDns = false;
   bool muxEnabled = false;
   int muxConcurrency = 8;
@@ -965,10 +2251,12 @@ class XraySettings {
   /// engine moves to the next member of the config's fallback
   /// group (its subscription; hand-added configs form one group)
   /// in order, skipping members that failed recently, and says
-  /// so. Default ON since build 2035: a stored value (on or off)
-  /// is always respected, so only a user who never touched the
-  /// setting gets the new default.
-  bool adaptiveFailover = true;
+  /// so. Default ON since build 2035; build 2114 (defaults
+  /// reset, owner order 2026-11-19 — every Ember extra defaults
+  /// OFF, v2rayNG parity) makes it default OFF, and the
+  /// defaultsReset2114 migration below moves a stored true to
+  /// OFF once. A value set afterwards is kept.
+  bool adaptiveFailover = false;
 
   /// The chain underlay (build 2029A): 'none', 'psiphon' or
   /// 'warp' (build 2030); 'dnstt' added in build 2072. When
@@ -988,6 +2276,67 @@ class XraySettings {
   String dnsttResolver = '';
   String dnsttDomain = '';
   String dnsttPubkey = '';
+
+  /// The OLCRTC underlay's fields (build 2134): the SFU
+  /// provider ('jitsi' | 'telemost' | 'wbstream'), the
+  /// transport ('datachannel' | 'vp8channel' |
+  /// 'seichannel' | 'videochannel'), the room ID/URL both
+  /// peers join, the shared key (64 hex digits), an
+  /// optional provider account token, and the resolver
+  /// the olcrtc process itself uses to reach the SFU
+  /// (an upstream-required field of ITS YAML — not
+  /// Ember's DNS settings). The per-transport tuning
+  /// values stay strings like the AmneziaWG parameters:
+  /// '' = upstream default, omitted from the YAML.
+  /// See olcrtc_args.dart.
+  String olcrtcProvider = 'jitsi';
+  String olcrtcTransport = 'datachannel';
+  String olcrtcRoom = '';
+  String olcrtcKey = '';
+  String olcrtcToken = '';
+  String olcrtcDns = '8.8.8.8:53';
+  String olcrtcVp8Fps = '';
+  String olcrtcVp8Batch = '';
+  String olcrtcSeiFps = '';
+  String olcrtcSeiBatch = '';
+  String olcrtcSeiFrag = '';
+  String olcrtcSeiAckMs = '';
+  String olcrtcVideoWidth = '';
+  String olcrtcVideoHeight = '';
+  String olcrtcVideoFps = '';
+  String olcrtcVideoCodec = '';
+  String olcrtcVideoQrSize = '';
+  String olcrtcVideoQrRecovery = '';
+  String olcrtcVideoTileModule = '';
+  String olcrtcVideoTileRs = '';
+
+  /// The RegionHop feature's fields (build 2139, leg 1 —
+  /// see regionhop_client.dart and regionhop_page.dart):
+  /// the owner's own regionhop panel (his server's Psiphon
+  /// exits, reached through authenticated GOST relays on
+  /// the same box). DEFAULT OFF: with [regionHopEnabled]
+  /// false the app never contacts the panel, creates no
+  /// profiles and generates byte-identical configs — the
+  /// fields are inert storage. The panel password and the
+  /// relay credentials are secrets of the same class as
+  /// [olcrtcKey]: they live only in this settings store,
+  /// are never journaled and never enter a diagnostics
+  /// export; the panel session cookie is memory-only and
+  /// is not stored here at all.
+  bool regionHopEnabled = false;
+  String regionHopPanelUrl = '';
+  String regionHopPanelPassword = '';
+  String regionHopRelays = '';
+
+  /// Build 2134 (leg 2): automatic per-device HWID on
+  /// subscription fetches (see hwid.dart). DEFAULT OFF —
+  /// with it off, fetches send exactly what build 2133
+  /// sent (a subscription's manual hwid and custom headers
+  /// only). [deviceHwid] is a random UUID generated once
+  /// when the switch is first enabled and kept stable
+  /// afterwards; '' until then.
+  bool subHwidEnabled = false;
+  String deviceHwid = '';
 
   /// WireGuard over WebSocket (build 2072): when on, a
   /// WireGuard session carried by the V2Ray engine runs its
@@ -1038,6 +2387,50 @@ class XraySettings {
   /// for the same domain.
   Map<String, String> customDnsHosts = {};
 
+  /// Traffic history (build 2105): when on, the stats poll's
+  /// per-profile deltas are also recorded into hourly history
+  /// buckets (traffic_history.dart) behind the Traffic history
+  /// chart. Default OFF — off, nothing is recorded and the
+  /// accounting behaves exactly as before. The totals the list
+  /// shows are NOT gated by this: they were always kept.
+  bool trafficHistoryEnabled = false;
+
+  /// Smart groups (build 2105): when on, the profile list also
+  /// gathers profiles into the rule-made groups of
+  /// [smartGroupRules] (smart_groups.dart). Default OFF — off,
+  /// the list is grouped by subscription exactly as before.
+  bool smartGroupsEnabled = false;
+  List<SmartGroupRule> smartGroupRules = [];
+
+  /// Provider DNS (build 2105): when on, a connect resolves the
+  /// selected profile's server hostname through its
+  /// subscription's own DNS (Subscription.dns) and pins the
+  /// answer into the config's hosts map, instead of leaving
+  /// the name to the tunnel DNS chain alone. Default OFF —
+  /// off, connects build exactly the 2103 shape. A failed
+  /// provider lookup never blocks a connect: the config is
+  /// built without the pin, as today.
+  bool providerDnsEnabled = false;
+
+  /// DPI Strategy Lab (build 2107): when on, the Lab wizard
+  /// (dpi_lab.dart) can test which TLS evasion strategy
+  /// carries traffic on the current network, a connect on a
+  /// network with a remembered Lab win dials that strategy
+  /// first (only when the per-profile shape cache has no win
+  /// of its own there), and a failed connect offers the Lab.
+  /// Default OFF — off, no connect path consults the Lab's
+  /// memory and connects build and dial exactly the 2106
+  /// shapes.
+  bool dpiLabEnabled = false;
+
+  /// The Senpai scanner (build 2129, Leg 3): a discovery
+  /// tool inside the DPI Lab — the vendored SenPaiScanner
+  /// binary (see senpai.dart / SenpaiCore.kt). Its own
+  /// default-OFF toggle, on top of the Lab's: both must be
+  /// on before the scanner page offers a Start button, and
+  /// nothing on any connect path ever consults it.
+  bool senpaiEnabled = false;
+
   /// Config mixins (build 2043): the user's own JSON object,
   /// merged into the tunnel config at the end of every build
   /// (see config_mixins.dart). Empty means no mixins — exactly
@@ -1063,7 +2456,11 @@ class XraySettings {
   /// switch as a separate setting ([killSwitch]): when it is on,
   /// the dead session's TUN is held as a blackhole while the
   /// retry waits, so this line holds only while the switch is off.
-  bool autoReconnect = true;
+  /// Build 2114 (defaults reset): default OFF — v2rayNG does not
+  /// reconnect a dropped tunnel by itself; the
+  /// defaultsReset2114 migration moves a stored true to OFF
+  /// once. A value set afterwards is kept.
+  bool autoReconnect = false;
 
   /// Kill switch (build 2063, feature queue #3 — closes audit
   /// F-M8 as a feature): when on, an unexpected drop or a
@@ -1079,6 +2476,93 @@ class XraySettings {
   /// Default OFF: a user who never touches it gets exactly
   /// the behaviour of every earlier build.
   bool killSwitch = false;
+
+  /// Build 2095 (feature 2): the stall watchdog's master
+  /// switch. The watchdog itself predates this build (2025);
+  /// 2095 gives it a user control. Default on until build 2114
+  /// (defaults reset): default OFF — no stall watchdog exists
+  /// in v2rayNG; the defaultsReset2114 migration moves a
+  /// stored true to OFF once. A value set afterwards is kept.
+  bool stallWatchdog = false;
+
+  /// DNS cache off (build 2075, feature item 23 — the one
+  /// part of the DNS control pack the vendored core honestly
+  /// supports): when on, the tunnel config's DNS section
+  /// carries `disableCache: true`, so the core re-resolves
+  /// instead of serving its in-memory cache. Optimistic
+  /// caching and per-resolver timeouts have no field in the
+  /// core's DNS schema (checked against the bundled fork)
+  /// and are not offered. Default OFF — byte-identical
+  /// configs for everyone who never touches it.
+  bool dnsCacheDisabled = false;
+
+  /// Dedicated browser proxy port (build 2075, feature item
+  /// 17): when on, the tunnel config adds a fixed HTTP
+  /// inbound on [browserPort] (loopback only) that exists
+  /// purely so a desktop-style browser can be pointed at a
+  /// stable address while connected. It is the same tunnel —
+  /// no separate routing — and the browser must be configured
+  /// by hand; the Settings caption says so. Default OFF.
+  bool browserPortEnabled = false;
+  int browserPort = 10810;
+
+  /// Local proxy authentication (build 2075, feature item
+  /// 24): when on AND both credentials are entered, the
+  /// tunnel's loopback SOCKS + HTTP inbounds require this
+  /// username/password (SOCKS5 user/pass auth, HTTP Basic).
+  /// The LAN-sharing login (build 2062) stays separate and
+  /// wins on the shared inbounds while sharing is on. Auth
+  /// on with empty credentials is noauth, never a
+  /// half-configured login — the same rule as the LAN login.
+  bool localProxyAuth = false;
+  String localProxyUser = '';
+  String localProxyPass = '';
+
+  /// True only when local auth is on AND both credentials
+  /// are entered — the only state in which the builder emits
+  /// password auth on the loopback inbounds.
+  bool get localProxyAuthReady =>
+      localProxyAuth && localProxyUser.isNotEmpty && localProxyPass.isNotEmpty;
+
+  /// Country exclusion list (build 2075, feature item 16):
+  /// ISO country codes (upper-case) that automatic selection
+  /// — keep-fastest pruning and the fallback walk's
+  /// auto-picks — must skip. A manual tap on an excluded
+  /// config still connects it; the list governs automatic
+  /// choices only, and the Settings copy says so.
+  List<String> excludedCountries = [];
+
+  /// Smart dial racing (build 2075, feature item 5): when
+  /// on, a connect whose first candidate does not answer a
+  /// quick TCP probe races the fallback group's next members
+  /// in parallel and dials the first that answers, instead
+  /// of walking them one slow timeout at a time; every probe
+  /// outcome is learned into the per-network winner memory
+  /// and the config's TCP ping. Default ON until build 2114
+  /// (defaults reset): default OFF — an Ember extra with no
+  /// v2rayNG counterpart; the defaultsReset2114 migration
+  /// moves a stored true to OFF once. A value set afterwards
+  /// is kept.
+  bool smartDialRacing = false;
+
+  /// Multi-peer WireGuard (build 2075, feature item 27):
+  /// when on, connecting a WireGuard profile whose .conf
+  /// group (see wgGroupKey) holds sibling peers emits ALL
+  /// the group's peers into the Xray WireGuard outbound
+  /// instead of just this profile's peer, so the core can
+  /// use any of them. Default OFF — one peer per profile,
+  /// every earlier build's behaviour.
+  bool wgUseAllPeers = false;
+
+  /// Routing by network type (build 2075, feature item 26):
+  /// when on, the active routing preset follows the network
+  /// — [routingPresetWifi] on Wi-Fi, [routingPresetMobile]
+  /// on mobile data — applied on the connectivity change
+  /// events the platform already pushes, and at connect.
+  /// Default OFF: one preset everywhere, as before.
+  bool routingByNetwork = false;
+  RoutingPreset routingPresetWifi = RoutingPreset.global;
+  RoutingPreset routingPresetMobile = RoutingPreset.global;
 
   /// Per-network winner memory (build 2065, item 4): network key
   /// (see NetworkIdentity.key) → the profile id that last
@@ -1128,7 +2612,26 @@ class XraySettings {
   String fragmentPackets = 'tlshello';
   int fragmentLength = 100;
   int fragmentInterval = 10;
-  bool ipv6Route = true;
+
+  /// Whether the Xray-side TUN captures IPv6 (the ::/0
+  /// route + the ULA address in XrayVpnService). Build
+  /// 2103 (diagnosis D1/E1): the default is now OFF —
+  /// v2rayNG's PREF_IPV6_ENABLED defaults off too, and
+  /// with it off its TUN carries no IPv6 address or route
+  /// at all (CoreVpnService.configureNetworkSettings).
+  /// Ember's shipped default ON was masked until 2101 by
+  /// the DNS UseIPv4 pin; with the pin gone, AAAA answers
+  /// sent apps into a tun2socks IPv6 path nothing proves
+  /// can carry them — the "only Telegram + YouTube work"
+  /// blackhole. The toggle stays for those who want it;
+  /// defaultsMigrated2103 moves a stored true (the old
+  /// shipped default, indistinguishable from a deliberate
+  /// choice) to OFF once. NOTE: this flag no longer feeds
+  /// the AWG service — since 2103 that gate is the
+  /// profile's own IPv6 footprint (profileHasIpv6), so a
+  /// v6-only WireGuard profile keeps its ::/0 route under
+  /// the new default (the 2102 C3 coupling, decoupled).
+  bool ipv6Route = false;
 
   /// The routing domain strategy. Default 'AsIs' since 2024 —
   /// v2rayNG's template value; the pre-2024 default IPIfNonMatch
@@ -1151,7 +2654,29 @@ class XraySettings {
   /// does not clear the cooldowns; expired entries are pruned on
   /// load (see XrayController._hydrateCooldowns).
   Map<String, int> fallbackFailedAtMs = {};
-  bool subUpdateOnLaunch = true;
+
+  /// Build 2126 (audit A26-26): DEFAULT OFF — up to 2125
+  /// this shipped ON with no v2rayNG-parity grounding,
+  /// the one remaining unexplained ON default against
+  /// the owner's defaults law. Stored ON values are
+  /// forced OFF once by the defaultsReset2126 migration
+  /// in fromJson (a stored ON was the shipped default,
+  /// not a discernible choice); a value set afterwards
+  /// is kept.
+  bool subUpdateOnLaunch = false;
+
+  /// The one-time A26-26 migration stamp (the
+  /// defaultsReset2125 pattern).
+  bool defaultsReset2126 = false;
+
+  /// Build 2133 (V2Ray full tab): the loose ("Manual
+  /// configs") group's last completed per-group ping
+  /// summary — the mirror of Subscription's lastPingMs /
+  /// bestPingName / bestPingMs for the one group that is
+  /// not a subscription. 0 / '' / -1 = never pinged.
+  int looseLastPingMs = 0;
+  String looseBestPingName = '';
+  int looseBestPingMs = -1;
 
   Map<String, dynamic> toJson() => {
     'enableUdp': enableUdp,
@@ -1160,7 +2685,14 @@ class XraySettings {
     'remoteDnsProto': remoteDnsProto,
     'tunnelMtu': tunnelMtu,
     'testAllConcurrency': testAllConcurrency,
+    'delayTestTimeoutSec': delayTestTimeoutSec,
     'remoteDnsMigrated': remoteDnsMigrated,
+    'defaultsMigrated2101': defaultsMigrated2101,
+    'defaultsMigrated2111': defaultsMigrated2111,
+    'defaultsMigrated2113': defaultsMigrated2113,
+    'defaultsMigrated2103': defaultsMigrated2103,
+    'defaultsReset2114': defaultsReset2114,
+    'addressNameHealed2103': addressNameHealed2103,
     'domainStrategyMigrated': domainStrategyMigrated,
     'fingerprintDefaultMigrated': fingerprintDefaultMigrated,
     'socksPort': socksPort,
@@ -1176,6 +2708,22 @@ class XraySettings {
     'lanShareUser': lanShareUser,
     'lanSharePass': lanSharePass,
     'sniffing': sniffing,
+    'sniffHttp': sniffHttp,
+    'sniffTls': sniffTls,
+    'sniffQuic': sniffQuic,
+    'blockQuic': blockQuic,
+    'shadowTlsFronting': shadowTlsFronting,
+    'geckoPacketSizes': geckoPacketSizes,
+    'hy2NoiseDecoy': hy2NoiseDecoy,
+    'fragmentViaFinalmask': fragmentViaFinalmask,
+    'sidecarTlsFragment': sidecarTlsFragment,
+    'stopVpnOnSleep': stopVpnOnSleep,
+    'fragmentRandomGeometry': fragmentRandomGeometry,
+    'autoFastestGroup': autoFastestGroup,
+    'sniSpoofEnabled': sniSpoofEnabled,
+    'sniSpoofRules': [for (final r in sniSpoofRules) r.toJson()],
+    'sudokuEnabled': sudokuEnabled,
+    'logLevel': logLevel,
     'fakeDns': fakeDns,
     'muxEnabled': muxEnabled,
     'muxConcurrency': muxConcurrency,
@@ -1186,6 +2734,32 @@ class XraySettings {
     'dnsttResolver': dnsttResolver,
     'dnsttDomain': dnsttDomain,
     'dnsttPubkey': dnsttPubkey,
+    'olcrtcProvider': olcrtcProvider,
+    'olcrtcTransport': olcrtcTransport,
+    'olcrtcRoom': olcrtcRoom,
+    'olcrtcKey': olcrtcKey,
+    'olcrtcToken': olcrtcToken,
+    'olcrtcDns': olcrtcDns,
+    'olcrtcVp8Fps': olcrtcVp8Fps,
+    'olcrtcVp8Batch': olcrtcVp8Batch,
+    'olcrtcSeiFps': olcrtcSeiFps,
+    'olcrtcSeiBatch': olcrtcSeiBatch,
+    'olcrtcSeiFrag': olcrtcSeiFrag,
+    'olcrtcSeiAckMs': olcrtcSeiAckMs,
+    'olcrtcVideoWidth': olcrtcVideoWidth,
+    'olcrtcVideoHeight': olcrtcVideoHeight,
+    'olcrtcVideoFps': olcrtcVideoFps,
+    'olcrtcVideoCodec': olcrtcVideoCodec,
+    'olcrtcVideoQrSize': olcrtcVideoQrSize,
+    'olcrtcVideoQrRecovery': olcrtcVideoQrRecovery,
+    'olcrtcVideoTileModule': olcrtcVideoTileModule,
+    'olcrtcVideoTileRs': olcrtcVideoTileRs,
+    'regionHopEnabled': regionHopEnabled,
+    'regionHopPanelUrl': regionHopPanelUrl,
+    'regionHopPanelPassword': regionHopPanelPassword,
+    'regionHopRelays': regionHopRelays,
+    'subHwidEnabled': subHwidEnabled,
+    'deviceHwid': deviceHwid,
     'wgWstunnel': wgWstunnel,
     'wgWstunnelUrl': wgWstunnelUrl,
     'adBlockDoh': adBlockDoh,
@@ -1193,9 +2767,28 @@ class XraySettings {
     'fallbackDns': fallbackDns,
     'dnsGroup': dnsGroup,
     'customDnsHosts': customDnsHosts,
+    'trafficHistoryEnabled': trafficHistoryEnabled,
+    'smartGroupsEnabled': smartGroupsEnabled,
+    'smartGroupRules': [for (final r in smartGroupRules) r.toJson()],
+    'providerDnsEnabled': providerDnsEnabled,
+    'dpiLabEnabled': dpiLabEnabled,
+    'senpaiEnabled': senpaiEnabled,
     'configMixins': configMixins,
     'autoReconnect': autoReconnect,
     'killSwitch': killSwitch,
+    'stallWatchdog': stallWatchdog,
+    'dnsCacheDisabled': dnsCacheDisabled,
+    'browserPortEnabled': browserPortEnabled,
+    'browserPort': browserPort,
+    'localProxyAuth': localProxyAuth,
+    'localProxyUser': localProxyUser,
+    'localProxyPass': localProxyPass,
+    'excludedCountries': excludedCountries,
+    'smartDialRacing': smartDialRacing,
+    'wgUseAllPeers': wgUseAllPeers,
+    'routingByNetwork': routingByNetwork,
+    'routingPresetWifi': routingPresetWifi.name,
+    'routingPresetMobile': routingPresetMobile.name,
     'reconnectDelaySeconds': reconnectDelaySeconds,
     'reconnectMaxAttempts': reconnectMaxAttempts,
     'fragmentPackets': fragmentPackets,
@@ -1211,6 +2804,10 @@ class XraySettings {
     'subAutoUpdateHours': subAutoUpdateHours,
     'fallbackFailedAtMs': fallbackFailedAtMs,
     'subUpdateOnLaunch': subUpdateOnLaunch,
+    'looseLastPingMs': looseLastPingMs,
+    'looseBestPingName': looseBestPingName,
+    'looseBestPingMs': looseBestPingMs,
+    'defaultsReset2126': defaultsReset2126,
   };
 
   factory XraySettings.fromJson(Map<String, dynamic> j) {
@@ -1225,6 +2822,13 @@ class XraySettings {
       'testAllConcurrency',
       s.testAllConcurrency,
     );
+    // Build 2109: plain stored read, clamped — a pre-2109
+    // store carries no such key and keeps the 8 s the request
+    // path always used; a corrupt value clamps to 3..20 and
+    // can never break a test.
+    s.delayTestTimeoutSec = clampDelayTestTimeoutSec(
+      _storedInt(j, 'delayTestTimeoutSec', s.delayTestTimeoutSec),
+    );
     s.remoteDnsMigrated = _storedBool(j, 'remoteDnsMigrated', false);
     if (!s.remoteDnsMigrated) {
       // One-time 2005 migration: a stored value equal to the pre-2005
@@ -1235,6 +2839,67 @@ class XraySettings {
         s.remoteDns = 'https://dns.google/dns-query';
       }
       s.remoteDnsMigrated = true;
+    }
+    s.defaultsMigrated2101 = _storedBool(j, 'defaultsMigrated2101', false);
+    if (!s.defaultsMigrated2101) {
+      // One-time build-2101 migration (owner order 2026-11-18:
+      // DNS defaults become v2rayNG's own): a stored value equal
+      // to the pre-2101 default was the shipped default, not a
+      // deliberate choice, so it moves to the new default. The
+      // 2005 migration above runs first, so a pre-2005 store
+      // chains 1.1.1.1 DoH → Google DoH → Cloudflare DoH in one
+      // load. A stored testAllConcurrency of exactly the old
+      // default (4) moves to the new default (8) the same way.
+      if (s.remoteDns.trim() == 'https://dns.google/dns-query') {
+        s.remoteDns = 'https://cloudflare-dns.com/dns-query';
+      }
+      if (s.testAllConcurrency == 4) {
+        s.testAllConcurrency = 8;
+      }
+      s.defaultsMigrated2101 = true;
+    }
+    s.defaultsMigrated2111 = _storedBool(j, 'defaultsMigrated2111', false);
+    if (!s.defaultsMigrated2111) {
+      // One-time build-2111 migration: a stored value equal to
+      // either shipped DoH default was never a working choice
+      // on the owner's path — the 2110 export proved the DoH
+      // transport through the tunnel dead (100% timeouts,
+      // both providers) — so it moves to the new plain-IP
+      // default, whose queries ride UDP. Runs after the 2101
+      // migration above, so a pre-2101 store chains Google
+      // DoH → Cloudflare DoH → 1.1.1.1 in one load. Any other
+      // stored value (a custom resolver, a list, the new
+      // default itself) is untouched.
+      final storedRemote = s.remoteDns.trim();
+      if (storedRemote == 'https://cloudflare-dns.com/dns-query' ||
+          storedRemote == 'https://8.8.8.8/dns-query') {
+        s.remoteDns = '1.1.1.1';
+      }
+      s.defaultsMigrated2111 = true;
+    }
+    s.defaultsMigrated2113 = _storedBool(j, 'defaultsMigrated2113', false);
+    if (!s.defaultsMigrated2113) {
+      // One-time build-2113 migration (owner order 2026-11-19:
+      // the DNS configuration is v2rayNG's own, verbatim —
+      // v2rayng-config-diff-2112.md): the 2111 plain-IP default
+      // and every resolver value the owner cycled through while
+      // fighting the dead-DNS defect (his Diagnostics exports
+      // of 2026-11-18 23:02 and 2026-11-19 03:18 show the Google
+      // DoH, the Google-IP DoH and the AdGuard TCP address tried
+      // in desperation, none of them ever working) move back to
+      // v2rayNG's default. Runs after the 2111 migration above,
+      // so a pre-2111 store chains Cloudflare DoH → 1.1.1.1 →
+      // Cloudflare DoH in one load and lands on the same value.
+      // Any other stored value is a deliberate choice and kept.
+      final storedRemote = s.remoteDns.trim();
+      if (storedRemote == '1.1.1.1' ||
+          storedRemote == 'https://dns.google/dns-query' ||
+          storedRemote == 'https://8.8.8.8/dns-query' ||
+          storedRemote == '94.140.14.14' ||
+          storedRemote == 'tcp://94.140.14.14') {
+        s.remoteDns = 'https://cloudflare-dns.com/dns-query';
+      }
+      s.defaultsMigrated2113 = true;
     }
     s.socksPort = _storedInt(j, 'socksPort', s.socksPort);
     s.httpPort = _storedInt(j, 'httpPort', s.httpPort);
@@ -1255,6 +2920,67 @@ class XraySettings {
       s.httpPort = 10809;
     }
     s.sniffing = _storedBool(j, 'sniffing', s.sniffing);
+    s.sniffHttp = _storedBool(j, 'sniffHttp', s.sniffHttp);
+    s.sniffTls = _storedBool(j, 'sniffTls', s.sniffTls);
+    s.sniffQuic = _storedBool(j, 'sniffQuic', s.sniffQuic);
+    // Build 2108: plain stored read, default OFF — a
+    // pre-2108 store carries no such key and keeps QUIC
+    // unblocked, exactly as before.
+    s.blockQuic = _storedBool(j, 'blockQuic', s.blockQuic);
+    // Build 2126: plain stored read, default OFF — a
+    // pre-2126 store carries no such key and keeps every
+    // Shadowsocks profile on the Xray core, exactly as before.
+    s.shadowTlsFronting = _storedBool(
+      j,
+      'shadowTlsFronting',
+      s.shadowTlsFronting,
+    );
+    // Build 2126 (D1/D2/D6/D8): plain stored reads,
+    // default OFF — pre-2126 stores carry none of these
+    // keys and keep 2125 behaviour exactly.
+    s.geckoPacketSizes = _storedBool(
+      j,
+      'geckoPacketSizes',
+      s.geckoPacketSizes,
+    );
+    s.hy2NoiseDecoy = _storedBool(j, 'hy2NoiseDecoy', s.hy2NoiseDecoy);
+    s.fragmentViaFinalmask = _storedBool(
+      j,
+      'fragmentViaFinalmask',
+      s.fragmentViaFinalmask,
+    );
+    s.sidecarTlsFragment = _storedBool(
+      j,
+      'sidecarTlsFragment',
+      s.sidecarTlsFragment,
+    );
+    // Build 2136: plain stored reads, default OFF — a
+    // pre-2136 store carries none of these keys and keeps
+    // 2135 behaviour exactly.
+    s.stopVpnOnSleep = _storedBool(j, 'stopVpnOnSleep', s.stopVpnOnSleep);
+    s.fragmentRandomGeometry = _storedBool(
+      j,
+      'fragmentRandomGeometry',
+      s.fragmentRandomGeometry,
+    );
+    s.autoFastestGroup = _storedBool(
+      j,
+      'autoFastestGroup',
+      s.autoFastestGroup,
+    );
+    // Build 2127 (H3): plain stored reads, default OFF —
+    // a pre-2127 store carries neither key and keeps
+    // 2126 behaviour exactly.
+    s.sniSpoofEnabled = _storedBool(j, 'sniSpoofEnabled', s.sniSpoofEnabled);
+    final rawSpoofRules = j['sniSpoofRules'];
+    if (rawSpoofRules is List) {
+      s.sniSpoofRules = [
+        for (final raw in rawSpoofRules) ?SniSpoofRule.fromJson(raw),
+      ];
+    }
+    // Build 2127 (H2): plain stored read, default OFF.
+    s.sudokuEnabled = _storedBool(j, 'sudokuEnabled', s.sudokuEnabled);
+    s.logLevel = _storedStr(j, 'logLevel', s.logLevel);
     s.fakeDns = _storedBool(j, 'fakeDns', s.fakeDns);
     s.muxEnabled = _storedBool(j, 'muxEnabled', s.muxEnabled);
     s.muxConcurrency = _storedInt(j, 'muxConcurrency', s.muxConcurrency);
@@ -1268,6 +2994,7 @@ class XraySettings {
       'psiphon' => 'psiphon',
       'warp' => 'warp',
       'dnstt' => 'dnstt',
+      'olcrtc' => 'olcrtc',
       _ => 'none',
     };
     // DNSTT + WireGuard-over-WebSocket fields (build 2072),
@@ -1281,6 +3008,65 @@ class XraySettings {
     s.dnsttResolver = _storedStr(j, 'dnsttResolver', s.dnsttResolver);
     s.dnsttDomain = _storedStr(j, 'dnsttDomain', s.dnsttDomain);
     s.dnsttPubkey = _storedStr(j, 'dnsttPubkey', s.dnsttPubkey);
+    // OLCRTC underlay fields (build 2134), read
+    // field-defensively like the DNSTT block above; the
+    // provider/transport whitelists keep a corrupt store
+    // from spawning a config upstream would refuse.
+    s.olcrtcProvider = switch (j['olcrtcProvider']) {
+      'telemost' => 'telemost',
+      'wbstream' => 'wbstream',
+      _ => 'jitsi',
+    };
+    s.olcrtcTransport = switch (j['olcrtcTransport']) {
+      'vp8channel' => 'vp8channel',
+      'seichannel' => 'seichannel',
+      'videochannel' => 'videochannel',
+      _ => 'datachannel',
+    };
+    s.olcrtcRoom = _storedStr(j, 'olcrtcRoom', s.olcrtcRoom);
+    s.olcrtcKey = _storedStr(j, 'olcrtcKey', s.olcrtcKey);
+    s.olcrtcToken = _storedStr(j, 'olcrtcToken', s.olcrtcToken);
+    s.olcrtcDns = _storedStr(j, 'olcrtcDns', s.olcrtcDns);
+    s.olcrtcVp8Fps = _storedStr(j, 'olcrtcVp8Fps', s.olcrtcVp8Fps);
+    s.olcrtcVp8Batch = _storedStr(j, 'olcrtcVp8Batch', s.olcrtcVp8Batch);
+    s.olcrtcSeiFps = _storedStr(j, 'olcrtcSeiFps', s.olcrtcSeiFps);
+    s.olcrtcSeiBatch = _storedStr(j, 'olcrtcSeiBatch', s.olcrtcSeiBatch);
+    s.olcrtcSeiFrag = _storedStr(j, 'olcrtcSeiFrag', s.olcrtcSeiFrag);
+    s.olcrtcSeiAckMs = _storedStr(j, 'olcrtcSeiAckMs', s.olcrtcSeiAckMs);
+    s.olcrtcVideoWidth = _storedStr(j, 'olcrtcVideoWidth', s.olcrtcVideoWidth);
+    s.olcrtcVideoHeight = _storedStr(
+      j,
+      'olcrtcVideoHeight',
+      s.olcrtcVideoHeight,
+    );
+    s.olcrtcVideoFps = _storedStr(j, 'olcrtcVideoFps', s.olcrtcVideoFps);
+    s.olcrtcVideoCodec = _storedStr(j, 'olcrtcVideoCodec', s.olcrtcVideoCodec);
+    s.olcrtcVideoQrSize = _storedStr(
+      j,
+      'olcrtcVideoQrSize',
+      s.olcrtcVideoQrSize,
+    );
+    s.olcrtcVideoQrRecovery = _storedStr(
+      j,
+      'olcrtcVideoQrRecovery',
+      s.olcrtcVideoQrRecovery,
+    );
+    s.olcrtcVideoTileModule = _storedStr(
+      j,
+      'olcrtcVideoTileModule',
+      s.olcrtcVideoTileModule,
+    );
+    s.olcrtcVideoTileRs = _storedStr(j, 'olcrtcVideoTileRs', s.olcrtcVideoTileRs);
+    s.regionHopEnabled = _storedBool(j, 'regionHopEnabled', s.regionHopEnabled);
+    s.regionHopPanelUrl = _storedStr(j, 'regionHopPanelUrl', s.regionHopPanelUrl);
+    s.regionHopPanelPassword = _storedStr(
+      j,
+      'regionHopPanelPassword',
+      s.regionHopPanelPassword,
+    );
+    s.regionHopRelays = _storedStr(j, 'regionHopRelays', s.regionHopRelays);
+    s.subHwidEnabled = _storedBool(j, 'subHwidEnabled', s.subHwidEnabled);
+    s.deviceHwid = _storedStr(j, 'deviceHwid', s.deviceHwid);
     s.wgWstunnel = _storedBool(j, 'wgWstunnel', s.wgWstunnel);
     s.wgWstunnelUrl = _storedStr(j, 'wgWstunnelUrl', s.wgWstunnelUrl);
     s.adBlockDoh = _storedBool(j, 'adBlockDoh', s.adBlockDoh);
@@ -1289,6 +3075,31 @@ class XraySettings {
     s.dnsGroup = _storedBool(j, 'dnsGroup', s.dnsGroup);
     s.autoReconnect = _storedBool(j, 'autoReconnect', s.autoReconnect);
     s.killSwitch = _storedBool(j, 'killSwitch', s.killSwitch);
+    s.stallWatchdog = _storedBool(j, 'stallWatchdog', s.stallWatchdog);
+    // Build 2075 settings block: field-defensive reads like
+    // the 2072 block above — one bad field never discards
+    // the whole store.
+    s.dnsCacheDisabled =
+        _storedBool(j, 'dnsCacheDisabled', s.dnsCacheDisabled);
+    s.browserPortEnabled =
+        _storedBool(j, 'browserPortEnabled', s.browserPortEnabled);
+    s.browserPort = _storedInt(j, 'browserPort', s.browserPort);
+    if (s.browserPort < 1024 || s.browserPort > 65535) s.browserPort = 10810;
+    s.localProxyAuth = _storedBool(j, 'localProxyAuth', s.localProxyAuth);
+    s.localProxyUser = _storedStr(j, 'localProxyUser', s.localProxyUser);
+    s.localProxyPass = _storedStr(j, 'localProxyPass', s.localProxyPass);
+    s.smartDialRacing = _storedBool(j, 'smartDialRacing', s.smartDialRacing);
+    s.wgUseAllPeers = _storedBool(j, 'wgUseAllPeers', s.wgUseAllPeers);
+    s.routingByNetwork =
+        _storedBool(j, 'routingByNetwork', s.routingByNetwork);
+    s.routingPresetWifi = RoutingPreset.values.firstWhere(
+      (p) => p.name == _storedStr(j, 'routingPresetWifi', ''),
+      orElse: () => RoutingPreset.global,
+    );
+    s.routingPresetMobile = RoutingPreset.values.firstWhere(
+      (p) => p.name == _storedStr(j, 'routingPresetMobile', ''),
+      orElse: () => RoutingPreset.global,
+    );
     s.lastProfileByNetwork = _stringMap(j['lastProfileByNetwork']);
     s.rotateTlsFingerprint =
         _storedBool(j, 'rotateTlsFingerprint', s.rotateTlsFingerprint);
@@ -1326,6 +3137,24 @@ class XraySettings {
       });
       s.customDnsHosts = validDnsHosts(hosts);
     }
+    // Build 2105 feature toggles: plain stored reads, all
+    // default OFF, so a pre-2105 store (which carries none of
+    // these keys) keeps every feature off.
+    s.trafficHistoryEnabled =
+        _storedBool(j, 'trafficHistoryEnabled', s.trafficHistoryEnabled);
+    s.smartGroupsEnabled =
+        _storedBool(j, 'smartGroupsEnabled', s.smartGroupsEnabled);
+    s.providerDnsEnabled =
+        _storedBool(j, 'providerDnsEnabled', s.providerDnsEnabled);
+    s.dpiLabEnabled = _storedBool(j, 'dpiLabEnabled', s.dpiLabEnabled);
+    s.senpaiEnabled = _storedBool(j, 'senpaiEnabled', s.senpaiEnabled);
+    final rawRules = j['smartGroupRules'];
+    if (rawRules is List) {
+      s.smartGroupRules = [
+        for (final raw in rawRules)
+          if (SmartGroupRule.fromJson(raw) case final rule?) rule,
+      ];
+    }
     s.fragmentPackets = _storedStr(j, 'fragmentPackets', s.fragmentPackets);
     s.fragmentLength = _storedInt(j, 'fragmentLength', s.fragmentLength);
     s.fragmentInterval = _storedInt(j, 'fragmentInterval', s.fragmentInterval);
@@ -1341,6 +3170,52 @@ class XraySettings {
       }
       s.domainStrategyMigrated = true;
     }
+    s.defaultsMigrated2103 = _storedBool(j, 'defaultsMigrated2103', false);
+    if (!s.defaultsMigrated2103) {
+      // One-time build-2103 migration (diagnosis D1/D3,
+      // owner order 2026-11-18 — V2Ray defaults behave as
+      // v2rayNG's, Ember extras OFF): ipv6Route and
+      // sniffQuic shipped default-ON in every build ≤2102
+      // and are written on every save, so a stored true is
+      // the shipped default, not a discernible choice; both
+      // move to OFF once. Placed here, after both fields
+      // have been read above. The toggles stay in Settings;
+      // a value set afterwards is kept. The AWG service no
+      // longer reads ipv6Route (2103 decoupling), so this
+      // cannot take a v6-only WireGuard profile's ::/0
+      // route away.
+      s.ipv6Route = false;
+      s.sniffQuic = false;
+      s.defaultsMigrated2103 = true;
+      s.defaultsJustMigrated2103 = true;
+    }
+    s.defaultsReset2114 = _storedBool(j, 'defaultsReset2114', false);
+    if (!s.defaultsReset2114) {
+      // One-time build-2114 defaults reset (defaults audit
+      // 2026-11-19; owner order — every Ember extra defaults
+      // OFF, v2rayNG parity): adaptiveFailover (ON since
+      // 2035), autoReconnect (ON since 2042), stallWatchdog
+      // (ON since 2025, toggle 2095) and smartDialRacing (ON
+      // since 2075) shipped default-ON and are written on
+      // every save, so a stored true is the shipped default,
+      // not a discernible choice; all four move to OFF once,
+      // here, after all four fields have been read above. The
+      // toggles stay in Settings; a value set afterwards is
+      // kept. (The reset's other keys live elsewhere:
+      // remoteDns landed in build 2113, the AppSettings pair
+      // and the WarpProfile fragment carry their own flags.)
+      s.adaptiveFailover = false;
+      s.autoReconnect = false;
+      s.stallWatchdog = false;
+      s.smartDialRacing = false;
+      s.defaultsReset2114 = true;
+    }
+    // Build 2103: the address-name heal's flag is only READ
+    // here — the heal itself rewrites stored PROFILES,
+    // which fromJson never sees; XrayController.load
+    // performs it (healAddressDerivedNames) and persists
+    // at once, like the fingerprint migration below.
+    s.addressNameHealed2103 = _storedBool(j, 'addressNameHealed2103', false);
     // Build 2070: the fingerprint migration's flag is only READ
     // here — the migration itself rewrites stored PROFILES,
     // which fromJson never sees; XrayController.load performs it
@@ -1362,6 +3237,10 @@ class XraySettings {
     }
 
     s.customDirectDomains = strings('customDirectDomains', []);
+    s.excludedCountries = strings(
+      'excludedCountries',
+      [],
+    ).map((c) => c.toUpperCase()).where((c) => c.length == 2).toList();
     s.customDirectIps = strings('customDirectIps', []);
     s.customBlockDomains = strings('customBlockDomains', []);
     s.customProxyDomains = strings('customProxyDomains', []);
@@ -1382,6 +3261,26 @@ class XraySettings {
       'subUpdateOnLaunch',
       s.subUpdateOnLaunch,
     );
+    // Build 2126 (audit A26-26) defaults reset, the
+    // 2125 pattern: subUpdateOnLaunch shipped default-ON
+    // and is written on every save, so a stored ON is the
+    // shipped default, not a discernible choice — it
+    // moves to OFF exactly once. A value set afterwards
+    // is kept.
+    s.defaultsReset2126 = j['defaultsReset2126'] == true;
+    if (!s.defaultsReset2126) {
+      s.subUpdateOnLaunch = false;
+      s.defaultsReset2126 = true;
+    }
+    // Build 2133: the loose group's ping summary; a
+    // pre-2133 record has no keys and loads as never pinged.
+    s.looseLastPingMs = _storedInt(j, 'looseLastPingMs', s.looseLastPingMs);
+    s.looseBestPingName = _storedStr(
+      j,
+      'looseBestPingName',
+      s.looseBestPingName,
+    );
+    s.looseBestPingMs = _storedInt(j, 'looseBestPingMs', s.looseBestPingMs);
     return s;
   }
 }
@@ -1389,8 +3288,10 @@ class XraySettings {
 /// The EmberWarp core's profile (build 2030): one WARP
 /// connection profile, shaped after patterniha/Aether's
 /// profile model (the RE dossier's field map), v1 subset.
-/// Protocols are masque | wg | gool — gool-classic and mim are
-/// deliberately not offered. The core is a subprocess; this
+/// Protocols are masque | wg | gool | mim — gool-classic is
+/// deliberately not offered (mim joined in build 2129: the
+/// Aether binary's own --protocol takes it, verified against
+/// the shipped libaether.so's strings). The core is a subprocess; this
 /// model only decides its command line (see warp_args.dart)
 /// and, in chain mode, the exit-node's finalMask/dialMode.
 ///
@@ -1400,7 +3301,7 @@ class XraySettings {
 class WarpProfile {
   WarpProfile();
 
-  /// masque | wg | gool.
+  /// masque | wg | gool | mim.
   String protocol = 'masque';
 
   /// The MASQUE transport: h2 (HTTP/2 over TCP) or h3 (QUIC).
@@ -1414,11 +3315,23 @@ class WarpProfile {
   /// Preferred endpoint family: v4 | v6 | dual.
   String ipVersion = 'v4';
 
-  /// The MASQUE SNI (masque/gool).
+  /// The MASQUE SNI (masque/gool/mim).
   String masqueSni = 'www.cloudflare.com';
 
-  /// H2 first-flight fragmentation (masque over H2).
-  bool fragment = true;
+  /// H2 first-flight fragmentation (masque over H2). Default
+  /// ON until build 2114 (defaults reset): default OFF under
+  /// the owner's blanket rule for EmberWarp extras; the
+  /// defaultsReset2114 migration in fromJson below moves a
+  /// stored true to OFF once. A value set afterwards is kept.
+  bool fragment = false;
+
+  /// Set once the build-2114 defaults reset has run on this
+  /// profile: a stored fragment=true was the shipped default
+  /// in every build ≤2113 (the profile is persisted whole on
+  /// every save), so it moves to OFF exactly once. Same
+  /// in-memory-true / stored-false-fallback doctrine as
+  /// XraySettings' migration flags.
+  bool defaultsReset2114 = true;
 
   /// In-tunnel DNS override ('' = the core default).
   String dns = '';
@@ -1463,6 +3376,30 @@ class WarpProfile {
   static String _pick(String v, List<String> allowed, String fallback) =>
       allowed.contains(v) ? v : fallback;
 
+  /// Copies every field from [other] (build 2095, whole-app
+  /// journey audit #21): the settings page edits a copy and
+  /// commits through this on Save, so an abandoned edit no
+  /// longer leaks into the live profile.
+  void absorb(WarpProfile other) {
+    protocol = other.protocol;
+    transport = other.transport;
+    scan = other.scan;
+    ipVersion = other.ipVersion;
+    masqueSni = other.masqueSni;
+    fragment = other.fragment;
+    defaultsReset2114 = other.defaultsReset2114;
+    dns = other.dns;
+    exitLoc = other.exitLoc;
+    peer = other.peer;
+    obfuscation = other.obfuscation;
+    ech = other.ech;
+    echDns = other.echDns;
+    finalMask = other.finalMask;
+    dialMode = other.dialMode;
+  }
+
+  WarpProfile copy() => WarpProfile.fromJson(toJson());
+
   Map<String, dynamic> toJson() => {
     'protocol': protocol,
     'transport': transport,
@@ -1470,6 +3407,7 @@ class WarpProfile {
     'ipVersion': ipVersion,
     'masqueSni': masqueSni,
     'fragment': fragment,
+    'defaultsReset2114': defaultsReset2114,
     'dns': dns,
     'exitLoc': exitLoc,
     'peer': peer,
@@ -1486,6 +3424,7 @@ class WarpProfile {
       'masque',
       'wg',
       'gool',
+      'mim',
     ], 'masque');
     w.transport = _pick(_str(j, 'transport', w.transport), const [
       'h2',
@@ -1503,6 +3442,13 @@ class WarpProfile {
     ], 'v4');
     w.masqueSni = _str(j, 'masqueSni', w.masqueSni);
     w.fragment = _bool(j, 'fragment', w.fragment);
+    w.defaultsReset2114 = _bool(j, 'defaultsReset2114', false);
+    if (!w.defaultsReset2114) {
+      // Build 2114 defaults reset: the shipped default was
+      // true, so a stored true is not a discernible choice.
+      w.fragment = false;
+      w.defaultsReset2114 = true;
+    }
     w.dns = _str(j, 'dns', w.dns);
     w.exitLoc = _str(j, 'exitLoc', w.exitLoc);
     w.peer = _str(j, 'peer', w.peer);

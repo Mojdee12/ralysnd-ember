@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../core/android_core.dart';
 import 'ember/ember_theme.dart';
 
 /// The result of a browser sign-in page: the authorization
@@ -76,10 +79,16 @@ class _BrowserSignInPageState extends State<BrowserSignInPage> {
           onHttpError: (error) {
             // HttpResponseError carries no main-frame flag,
             // and sub-resources can 404 on a working page —
-            // only an HTTP error while the page itself is
-            // still loading counts as a failed load.
+            // an HTTP error while the page itself is still
+            // loading counts as a failed load.
+            // Build 2092 (item 46): so does a ≥400 on the
+            // INITIAL url at any time — a page that finished
+            // with a 403 used to leave a blank WebView up
+            // forever because _loading was already false.
             final status = error.response?.statusCode ?? 0;
-            if (status >= 400 && _loading && mounted) {
+            final isInitial =
+                error.request?.uri.toString() == widget.authUrl;
+            if (status >= 400 && (_loading || isInitial) && mounted) {
               setState(() {
                 _loading = false;
                 _loadFailed = true;
@@ -92,7 +101,22 @@ class _BrowserSignInPageState extends State<BrowserSignInPage> {
               _intercept(url);
               return NavigationDecision.prevent;
             }
-            return NavigationDecision.navigate;
+            // Build 2095 (third-pass audit 5-5): the
+            // delegate used to allow EVERY navigation — a
+            // page FxA linked or redirected to (an ad, a
+            // lookalike) loaded inside the sign-in WebView
+            // with the session's cookies. Only Mozilla's
+            // own accounts origin loads in here; anything
+            // else is handed to the system browser (or
+            // dropped, for non-web schemes).
+            if (url.startsWith('https://accounts.firefox.com/') ||
+                url == 'https://accounts.firefox.com') {
+              return NavigationDecision.navigate;
+            }
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+              unawaited(AndroidCore.openUrl(url));
+            }
+            return NavigationDecision.prevent;
           },
         ),
       )

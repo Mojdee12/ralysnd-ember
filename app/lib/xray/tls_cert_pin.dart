@@ -55,11 +55,3 @@ int tlsCertPinCount(String value) {
       .length;
 }
 
-/// The short display form of a valid pin value — the pin count —
-/// for editor captions and diagnostics. Returns '' for an invalid
-/// value.
-String tlsCertPinSummary(String value) {
-  final n = tlsCertPinCount(value);
-  if (n == 0) return '';
-  return n == 1 ? '1 pinned certificate' : '$n pinned certificates';
-}

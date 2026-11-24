@@ -84,6 +84,22 @@ const _englishNames = <String, String>{
 String countryDisplayName(String code) =>
     _englishNames[code.toUpperCase()] ?? code.toUpperCase();
 
+/// Build 2095 (third-pass audit 7-3): the ONE country a
+/// DISPLAY surface shows for a profile — the measured
+/// exit country when a test recorded one, else the
+/// remark's claim. Three surfaces (the list flag, the
+/// shell map, the home card) used to derive it
+/// differently, so the same profile showed different
+/// countries on different screens. [profileCountryCode]
+/// itself keeps its remark-only semantics for its other
+/// callers (grouping keys, chain logic).
+String? profileDisplayCountryCode(Profile p) {
+  if (p.exitCountryCode.isNotEmpty) {
+    return p.exitCountryCode.toUpperCase();
+  }
+  return profileCountryCode(p);
+}
+
 /// The country a profile's remark claims, or null when it claims none.
 /// Only codes the map has coordinates for are returned.
 String? profileCountryCode(Profile p) {

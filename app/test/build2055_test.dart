@@ -73,16 +73,28 @@ void main() {
       expect(kt, isNot(contains('++tick % 5')));
     });
 
-    test('Psiphon watchHelper: 5 s loop', () {
+    test('Psiphon watchBridge: 5 s loop (build 2091: the '
+        'watchHelper is gone with the sidecar; the bridge '
+        'watcher keeps the 5 s B-H5 loop)', () {
       final kt = _kt('PsiphonVpnService.kt');
-      expect(kt, contains('Build 2055 (audit B-H5): 5 s, not 1 s'));
+      // The supervisor loop is watchBridge now: it polls the
+      // in-process badvpn bridge every 5 s and tears the
+      // session down when the bridge is gone.
+      expect(kt, contains('private fun watchBridge()'));
       expect(kt, contains('Thread.sleep(5000)'));
+      expect(kt,
+          contains('bridgeStarted && !Tun2SocksManager.isRunning'));
     });
 
-    test('Lantern watchProcesses: 5 s loop', () {
+    test('Lantern status poll: 3.5 s core-verdict loop (2129)', () {
+      // Superseded in build 2129: the CLI supervisor loop is
+      // gone with the subprocess; the gomobile shape polls
+      // the core's own isVPNConnected verdict at LML's 3.5 s
+      // cadence instead.
       final kt = _kt('LanternVpnService.kt');
-      expect(kt, contains('Build 2055 (audit B-H5): 5 s, not 1 s'));
-      expect(kt, contains('Thread.sleep(5000)'));
+      expect(kt, contains('STATUS_POLL_MS = 3_500L'));
+      expect(kt, contains('Thread.sleep(STATUS_POLL_MS)'));
+      expect(kt, isNot(contains('fun watchProcesses')));
     });
 
     test('CoreService: country 10 s, speed 5 s', () {
@@ -147,14 +159,17 @@ void main() {
   });
 
   group('B-M4 buffered log writers (source pins)', () {
-    test('Lantern drain: buffered, flushed on 2 s / 8 KB, never per line', () {
+    test('Lantern logs: the gomobile core writes its own files (2129)', () {
+      // Superseded in build 2129: there is no stdout to drain
+      // — the core logs to its Opts logDir (filesDir/lantern/
+      // logs), which the diagnostics export reads.
       final kt = _kt('LanternVpnService.kt');
-      expect(kt, contains('bytesSinceFlush >= 8192'));
-      expect(kt, contains('now - lastFlushMs >= 2000'));
-      expect(
-        kt,
-        isNot(contains('it.write(line); it.newLine(); it.flush()')),
-      );
+      expect(kt, isNot(contains('bytesSinceFlush')));
+      final bridge = File(
+        'android/lantern-plugin-src/com/ralysnd/ember/lanternplugin/LanternEngine.java',
+      ).readAsStringSync();
+      expect(bridge, contains('opts.setLogDir'));
+      expect(bridge, contains('opts.setLogLevel("error")'));
     });
 
     test('Psiphon: one held writer, closed on stop', () {

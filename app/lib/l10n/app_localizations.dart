@@ -3102,7 +3102,7 @@ abstract class AppLocalizations {
   /// No description provided for @muxSub.
   ///
   /// In en, this message translates to:
-  /// **'Multiplexes connections over one tunnel'**
+  /// **'Multiplexes VLESS, VMess, Trojan and Shadowsocks connections over one tunnel'**
   String get muxSub;
 
   /// No description provided for @navSubscriptions.
@@ -3168,7 +3168,7 @@ abstract class AppLocalizations {
   /// No description provided for @pasteHint.
   ///
   /// In en, this message translates to:
-  /// **'One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic) or a whole subscription body.'**
+  /// **'One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic), a subscription link (https://…), or a whole subscription body.'**
   String get pasteHint;
 
   /// No description provided for @perAppProxy.
@@ -3188,6 +3188,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Ping'**
   String get pingLabel;
+
+  /// No description provided for @manualConfigsGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Manual configs'**
+  String get manualConfigsGroup;
+
+  /// No description provided for @bestPingResult.
+  ///
+  /// In en, this message translates to:
+  /// **'Best: {name} · {ms} ms'**
+  String bestPingResult(String name, int ms);
+
+  /// No description provided for @lastPingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Last ping: {when}'**
+  String lastPingLabel(String when);
+
+  /// No description provided for @notTestedYet.
+  ///
+  /// In en, this message translates to:
+  /// **'Not tested yet'**
+  String get notTestedYet;
+
+  /// No description provided for @tabSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{subs} subscriptions · {servers} servers'**
+  String tabSummary(int subs, int servers);
 
   /// No description provided for @presetBypassIran.
   ///
@@ -3552,7 +3582,7 @@ abstract class AppLocalizations {
   /// No description provided for @psiphonRegionAuto.
   ///
   /// In en, this message translates to:
-  /// **'Automatic (fastest)'**
+  /// **'Automatic'**
   String get psiphonRegionAuto;
 
   /// No description provided for @psiphonExitRegion.

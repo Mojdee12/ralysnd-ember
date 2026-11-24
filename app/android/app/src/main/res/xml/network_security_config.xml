@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Build 2084: the MASQUE data probe's first check is a plain
+     HTTP generate_204 through the tunnel (AetherCore.dataProbe,
+     ralysnd's CfDataProbe recipe). With no networkSecurityConfig
+     and targetSdk >= 28 the platform denies ALL cleartext for
+     the java.net stack, so that check died in-process on every
+     carrier-ladder rung in build 2083 even though the core's
+     tunnel had validated. Cleartext stays denied app-wide;
+     only the probe's two hosts are permitted. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">www.gstatic.com</domain>
+        <domain includeSubdomains="false">connectivitycheck.gstatic.com</domain>
+    </domain-config>
+</network-security-config>

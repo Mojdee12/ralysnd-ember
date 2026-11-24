@@ -16,7 +16,15 @@ val releaseKey = Properties().apply {
 
 android {
     namespace = "com.ralysnd.ember"
-    compileSdk = flutter.compileSdkVersion
+    // Build 2104: compileSdk 37 — the WG Tunnel backend
+    // AARs (backend-android, backend-android-jni, and the
+    // androidx.core 1.19.1 they pull) declare
+    // minCompileSdk 37, and checkReleaseAarMetadata refuses
+    // to link them into an app compiled against 36. This is
+    // a compile-time floor only: targetSdk stays at
+    // Flutter's value below, so no runtime behavior changes
+    // (and minSdk's own story is the named 24→26 loss).
+    compileSdk = 37
     // The NDK installed here (Flutter's default, 28.x, is not).
     ndkVersion = "30.0.16248370"
 
@@ -43,6 +51,24 @@ android {
             // hash-verified against the recorded artifacts.
             keepDebugSymbols += "**/libdnstt.so"
             keepDebugSymbols += "**/libwstunnel.so"
+            // Build 2075 sidecars: byte-exact like the 2072
+            // pair (see the libxray note above).
+            keepDebugSymbols += "**/libsingbox.so"
+            keepDebugSymbols += "**/libmieru.so"
+            keepDebugSymbols += "**/libdnscrypt.so"
+            // Build 2129 (Lantern gomobile swap): the official
+            // Lantern v10.0.5-beta.1 libgojni.so, renamed, and
+            // its libc++ runtime ship BYTE-EXACT as extracted
+            // from the official APK (trust gate:
+            // build2129-phase0.md) — no strip.
+            keepDebugSymbols += "**/liblantern_gojni.so"
+            keepDebugSymbols += "**/libc++_shared.so"
+            // Build 2129 (Leg 3): the Senpai scanner binary,
+            // vendored byte-exact from the LML APK extract
+            // (sha256 4ca1a8d9…; MIT, matinsenpai/senpaiscanner
+            // — see SenpaiCore.kt) — no strip, so the packaged
+            // bytes stay hash-verifiable against the extract.
+            keepDebugSymbols += "**/libsenpai_lml.so"
         }
     }
 
@@ -57,7 +83,12 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // The core's aar is built for API 24 (gomobile bind -androidapi 24).
-        minSdk = maxOf(24, flutter.minSdkVersion)
+        // Build 2104: the floor rises to 26 — the WG Tunnel
+        // backend (com.wgtunnel:backend 1.10.1, the AmneziaWG
+        // engine since this build) requires minSdk 26. Named
+        // loss, recorded in BUILD-LOG-2.md: devices on API
+        // 24/25 (Android 7.x) can no longer install Ember.
+        minSdk = maxOf(26, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
@@ -111,14 +142,46 @@ dependencies {
     // The Go core: `gomobile bind -target=android -androidapi 24
     // -o app/android/app/libs/core.aar ./mobile` in core/ (see app/README.md).
     implementation(files("libs/core.aar"))
-    // The Psiphon tunnel core — build 2069 TRANSPLANT: this AAR
-    // is ralysnd's complete Psiphon stack, byte-exact (their
-    // psiphontunnel-2.0.39-ns-recovered.aar: the stock
-    // tunnel-core v2.0.39 wrapper + libpgjni.so, gomobile
-    // runtime renamed go/ -> pg/ and libgojni -> libpgjni so it
-    // coexists with core.aar's gomobile runtime). It replaces
-    // Ember's rebuilt v2.0.42 + fork-patch AAR wholesale — see
-    // BUILD-LOG-2.md, build 2069. Do not rebuild this from the
-    // fork tree without a device-proven reason.
+    // Build 2091: the Psiphon core is the ralysnd app's AAR
+    // again (psiphontunnel-2.0.39-ns, sha256 426c0fda… —
+    // the MLM transplant; see PsiphonVpnService and
+    // mlm-psiphon-full-analysis.md §9). The 2089/2090
+    // libpsiphonbox.so sidecar is retired from the start path
+    // (its vendored build stays at
+    // engines/psiphonbox/build-android/ as the documented
+    // fallback); libs/psiphon.aar is restored.
     implementation(files("libs/psiphon.aar"))
+    // Build 2123 (S-1): the classes the Psiphon AAR references but
+    // does not contain — the wf.* JSON mini-library (extracted
+    // byte-faithful from MLM 1.2.46) plus the R8 outline-host shims
+    // and the ug.b NULL-sentinel shim. Without these, every Psiphon
+    // start died with NoClassDefFoundError: Lwf/c (plan
+    // psiphon-chain-fix-plan.md §3/S-1). Provenance and rebuild
+    // steps: libs/wf-sources/PROVENANCE.md.
+    implementation(files("libs/wf.jar"))
+    // Build 2075: FileProvider for the in-app updater's install
+    // intent. Pinned to the version in the offline Gradle cache
+    // (1.13.1) — no new downloads.
+    implementation("androidx.core:core-ktx:1.13.1")
+    // Build 2104: the WireGuard/AmneziaWG engine is WG Tunnel's
+    // backend (github.com/wgtunnel/core, MIT), replacing the
+    // hand-built libwg-go.so bridge over amneziawg-go v1.0.4
+    // (builds 2040–2103). The backend's Go device is
+    // amneziawg-go v3; its parser and Ember's state reads are
+    // versioned together by the same project, which is the
+    // property the old path lacked (see BUILD-LOG-2.md).
+    // backend-android-jni carries the native libraries
+    // (libam-go.so / libam.so / libam-quick.so); parser is the
+    // .conf / ActiveConfig parser. Transitives (coroutines,
+    // kermit, lifecycle-service, hevtunnel, libsu) resolve
+    // from Maven Central / Google like everything else here.
+    implementation("com.wgtunnel:backend:1.10.1")
+    implementation("com.wgtunnel:backend-android-jni:1.10.1")
+    implementation("com.wgtunnel:parser:1.10.1")
+    // Build 2104: WgTunnelEngine.kt drives the backend's
+    // suspend API from coroutines and writes its log through
+    // kermit — both are the backend's own versions, declared
+    // here because Ember code now names them directly.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("co.touchlab:kermit:2.2.0")
 }

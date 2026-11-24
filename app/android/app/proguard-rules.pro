@@ -22,25 +22,39 @@
     native <methods>;
 }
 
-# Build 2069 (Psiphon transplant): ralysnd's recovered
-# tunnel-core v2.0.39 AAR carries three class references —
-# wf.c, w3.z, f0.a — that exist ONLY in generic Signature
-# attributes and throws clauses of the wrapper classes
-# (ralysnd's own R8 renamed the types when it obfuscated
-# ralysnd's app, and the recovery preserved those names).
-# Verified before adding these rules: (1) NONE of the three
-# classes is defined in ANY of ralysnd's shipped APK's six
-# dexes — the working app runs without them; (2) javap -c
-# over every referencing class shows ZERO bytecode
-# instructions naming them (signatures/throws only — ART
-# executes descriptors, not signatures); (3) the referencing
-# methods (buildPsiphonConfig, parseRegionActivity,
-# addUsableDNSServer) are wrapper-internal utilities that
-# neither ralysnd's host nor Ember's host ever calls — both
-# hosts build the core config themselves. These -dontwarn
-# rules therefore replicate ralysnd's exact runtime
-# conditions inside Ember's stricter R8; they hide nothing
-# that can execute.
--dontwarn wf.c
--dontwarn w3.z
--dontwarn f0.a
+# Build 2091: the MLM transplant's AAR is back, so MLM's
+# own keep rules for it return (its proguard-rules.pro,
+# verbatim in substance): the gomobile library's classes
+# are referenced by name from native code (the
+# Tun2SocksJniLoader class is found by JNI_OnLoad's
+# FindClass — R8 must not rename or strip it), and the
+# recovered wrapper's dangling references (wf.c / w3.z /
+# f0.a — classes the recovery renamed away) fail the build
+# without the dontwarns below. R8's own generated rule for
+# the 2091 build is -dontwarn f0.a; wf.c and w3.z are the
+# other two names from the 2069-era set that shipped with
+# this AAR in builds 2069–2088.
+-keep class ca.psiphon.** { *; }
+-keep class pg.** { *; }
+-keep class psi.** { *; }
+-dontwarn ca.psiphon.**
+-dontwarn pg.**
+-dontwarn psi.**
+# Build 2123 (S-1): the recovery's "dangling references" are dangling
+# no longer — libs/wf.jar now DEFINES wf.* and the R8 outline hosts
+# the AAR references (see libs/wf-sources/PROVENANCE.md), so the 2091
+# -dontwarn f0.a / wf.c / w3.z silencer rules are REMOVED and the
+# bundled classes are kept whole instead (the AAR reaches them only
+# through bytecode references R8 must not rename or strip):
+-keep class wf.** { *; }
+-keep class ug.b { *; }
+-keep class a6.w0 { *; }
+-keep class f0.a { *; }
+-keep class w3.z { *; }
+-keep class androidx.compose.foundation.gestures.d2 { *; }
+-keep class org.telegram.ui.Cells.r3 { *; }
+# Nothing else is warned off: with ug.b shimmed (PROVENANCE.md), the
+# jar's classes reference no type outside wf.jar + the framework.
+# The sidecar (build 2089) is retired from the start path;
+# its fork and PsiphonBoxCore stay on disk as the documented
+# fallback, so no dontwarn of theirs is needed here.

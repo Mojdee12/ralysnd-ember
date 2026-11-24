@@ -5,8 +5,12 @@
     <string name="notification_channel">VPN</string>
     <string name="notification_connecting">Connecting…</string>
     <string name="notification_no_network">No internet connection</string>
+    <string name="notification_kill_switch_held">Kill switch: connection held — traffic is blocked until you disconnect</string>
     <string name="notification_proxy">Proxy only · %1$s</string>
     <string name="notification_stop">Disconnect</string>
+    <string name="notification_rotate">Switch server</string>
+    <string name="notification_pause">Pause</string>
+    <string name="notification_resume">Resume</string>
     <!-- The home-screen widget: its name and description in the widget
          picker, and what its button does (for screen readers). -->
     <string name="widget_label">Quick connect</string>

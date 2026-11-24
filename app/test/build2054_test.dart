@@ -197,7 +197,11 @@ void main() {
       expect(kt, contains('synchronized(coreLock) { restartCoreLocked'));
       // Stop paths run off the main thread: a restart can hold
       // the lock ~20 s, and blocking the main thread is an ANR.
-      expect(kt, contains('name = "xray-stop"'));
+      // Build 2125 re-point (A25-02): stop no longer owns a
+      // private thread — STOP/PAUSE/RESUME/onRevoke all run
+      // on the one serial "xray-actions" executor, which is
+      // also what kills the pause/stop race.
+      expect(kt, contains('"xray-actions"'));
     });
 
     test('F-H1 Dart: the two ticks cross-check both busy flags', () {
@@ -247,9 +251,14 @@ void main() {
       // in-process thread). Its stop discipline — terminate +
       // bounded join, the same signal-then-wait shape — is pinned
       // in build2066_test.dart instead.
+      // Build 2129 supersedes the Lantern entry: the gomobile
+      // core runs IN-PROCESS in the :lantern process — the
+      // service owns no child process any more (the CLI daemon
+      // and the tunlink helper are both gone), so there is
+      // nothing for the shared kill to reap. Its absence is
+      // pinned in build2129_lantern_test.dart.
       for (final entry in {
         'XrayVpnService.kt': 2,
-        'LanternVpnService.kt': 2,
         'EmberWarpCore.kt': 1,
         'XrayTester.kt': 1,
       }.entries) {
@@ -674,11 +683,11 @@ void main() {
       final c1 = seeded();
       addTearDown(c1.dispose);
       final exported = await c1.exportBackup();
-      final doc = jsonDecode(exported) as Map<String, dynamic>;
+      final doc = jsonDecode(exported!) as Map<String, dynamic>;
       expect(doc['schemaVersion'], XrayController.backupSchemaVersion);
       final c2 = XrayController();
       addTearDown(c2.dispose);
-      expect(await c2.importBackup(exported), isTrue);
+      expect(await c2.importBackup(exported), isNotNull);
       expect(c2.profiles.map((p) => p.id), ['a', 'b']);
       expect(c2.subscriptions.map((s) => s.id), ['s1']);
       expect(c2.settings.socksPort, 11880);
@@ -700,7 +709,7 @@ void main() {
         'subscriptions': [],
         'selectedProfileId': 'good',
       };
-      expect(await c.importBackup(jsonEncode(doc)), isTrue);
+      expect(await c.importBackup(jsonEncode(doc)), isNotNull);
       expect(c.profiles.map((p) => p.id), ['good']);
     });
 
@@ -708,9 +717,9 @@ void main() {
       final c = seeded();
       addTearDown(c.dispose);
       final before = c.profiles.map((p) => p.id).toList();
-      expect(await c.importBackup('{"profiles": "nope"}'), isFalse);
-      expect(await c.importBackup('not json at all'), isFalse);
-      expect(await c.importBackup('{"nope": true}'), isFalse);
+      expect(await c.importBackup('{"profiles": "nope"}'), isNull);
+      expect(await c.importBackup('not json at all'), isNull);
+      expect(await c.importBackup('{"nope": true}'), isNull);
       expect(c.profiles.map((p) => p.id), before);
       expect(c.selectedProfileId, 'a');
       expect(c.warpProfile.protocol, 'wg');
@@ -723,7 +732,7 @@ void main() {
         'schemaVersion': 99,
         'profiles': [_vless('x', 'x.example.com').toJson()],
       };
-      expect(await c.importBackup(jsonEncode(doc)), isFalse);
+      expect(await c.importBackup(jsonEncode(doc)), isNull);
       expect(c.profiles.map((p) => p.id), ['a', 'b']);
     });
 
@@ -734,7 +743,7 @@ void main() {
         'profiles': [_vless('a', 'a.example.com').toJson()],
         'selectedProfileId': 'a',
       };
-      expect(await c.importBackup(jsonEncode(doc)), isTrue);
+      expect(await c.importBackup(jsonEncode(doc)), isNotNull);
       expect(c.profiles.map((p) => p.id), ['a']);
     });
 
@@ -748,7 +757,7 @@ void main() {
         upBytes: 0,
         downBytes: 0,
       );
-      expect(await c.importBackup('{"profiles": "nope"}'), isFalse);
+      expect(await c.importBackup('{"profiles": "nope"}'), isNull);
       expect(c.state.running, isTrue);
       expect(fake.calls, isNot(contains('xrayStop')));
       expect(c.profiles.map((p) => p.id), ['a', 'b']);
@@ -768,7 +777,7 @@ void main() {
         'profiles': [_vless('z', 'z.example.com').toJson()],
         'selectedProfileId': 'z',
       };
-      expect(await c.importBackup(jsonEncode(doc)), isTrue);
+      expect(await c.importBackup(jsonEncode(doc)), isNotNull);
       expect(fake.calls, contains('xrayStop'));
       expect(c.profiles.map((p) => p.id), ['z']);
     });
@@ -901,6 +910,28 @@ void main() {
       final c = XrayController();
       addTearDown(c.dispose);
       await c.load();
+      // Build 2125 SUPERSESSION (recorded, not silent):
+      // A25-22 starts the geo install in load() WITHOUT
+      // awaiting it (27.9 MB on the cold-start path was the
+      // finding); the connect funnel awaits its completion
+      // instead. This test therefore waits for the install
+      // to land — bounded, and the assertions below are
+      // unchanged.
+      final deadline = DateTime.now().add(const Duration(seconds: 30));
+      while (true) {
+        final geoip = File('${dir.path}/geoip.dat');
+        final geosite = File('${dir.path}/geosite.dat');
+        if (await geoip.exists() &&
+            await geoip.length() == 16549675 &&
+            await geosite.exists() &&
+            await geosite.length() == 11309380) {
+          break;
+        }
+        if (DateTime.now().isAfter(deadline)) {
+          fail('the geo install did not complete in 30 s');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
       expect(
         await File('${dir.path}/geoip.dat').length(),
         16549675,
@@ -976,7 +1007,10 @@ void main() {
       // Psiphon's remaining ones are clearLogs writing log
       // files — not a store — so they stay. Build 2070 raised
       // the count from 1 to 2: clearLogs now also empties the
-      // shared crash.log section its viewer displays.
+      // shared crash.log section its viewer displays. Build
+      // 2090 raised it from 2 to 3: the record-only watchdog's
+      // establishment-evidence dump appends the box log tail to
+      // crash.log — still a log file, never a store.
       expect(
         'writeAsString('.allMatches(
           _read('lib/openvpn/openvpn_controller.dart'),
@@ -987,7 +1021,7 @@ void main() {
         'writeAsString('.allMatches(
           _read('lib/psiphon/psiphon_controller.dart'),
         ).length,
-        2,
+        3,
       );
       final psi = _read('lib/psiphon/psiphon_controller.dart');
       final psiSave = psi.substring(psi.indexOf('Future<void> _save('));
@@ -999,15 +1033,19 @@ void main() {
 
     test('F-H9: restore decodes into locals, swaps once, disconnects last', () {
       final dart = _read('lib/xray/xray_controller.dart');
-      final fn = dart.substring(dart.indexOf('Future<bool> importBackup'));
+      final fn = dart.substring(dart.indexOf('Future<BackupRestoreResult?> importBackup'));
       expect(fn, contains('newProfiles = _decodeList'));
       expect(fn, contains('newWarpProfile'));
       expect(fn, contains('newCfGoodIps'));
       expect(fn, contains('newShapeCache'));
       expect(fn, contains('schemaVersion'));
       // The disconnect sits AFTER the decode block, not before it.
+      // PIN UPDATED by build 2097 (post-2096 audit C-L11):
+      // the disconnect condition also covers a CONNECTING
+      // attempt — a restore landing mid-connect used to
+      // swap the store under the in-flight attempt.
       expect(
-        fn.indexOf('if (state.running) await disconnect();'),
+        fn.indexOf('if (state.running || connecting) await disconnect();'),
         greaterThan(fn.indexOf('} catch (_) {')),
       );
     });

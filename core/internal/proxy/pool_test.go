@@ -140,7 +140,12 @@ func TestProxySessionPoolKeepsClientOnFailoverSession(t *testing.T) {
 	const clientKey = "127.0.0.1"
 	failedSlot := p.nextSlot(clientKey)
 	failoverSlot := (failedSlot + 1) % len(sessions)
-	sessions[failedSlot].openErr = errors.New("transport closed")
+	// Build 2116: pool construction is parallel, so creation
+	// order no longer names the slot a session lands in —
+	// address the sessions through their slots.
+	failedSession := p.slot(failedSlot).session.(*fakeProxySession)
+	failoverSession := p.slot(failoverSlot).session.(*fakeProxySession)
+	failedSession.openErr = errors.New("transport closed")
 
 	conn, err := p.OpenTunnelForClient("example.com:443", clientKey)
 	if err != nil {
@@ -154,10 +159,10 @@ func TestProxySessionPoolKeepsClientOnFailoverSession(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	if got := sessions[failedSlot].openCount.Load(); got != 1 {
+	if got := failedSession.openCount.Load(); got != 1 {
 		t.Fatalf("expected failed slot to be tried once, got %d", got)
 	}
-	if got := sessions[failoverSlot].openCount.Load(); got != 2 {
+	if got := failoverSession.openCount.Load(); got != 2 {
 		t.Fatalf("expected failover slot to remain sticky, got %d opens", got)
 	}
 }
@@ -331,10 +336,8 @@ func TestProxySessionPoolStartsWithPartialSuccess(t *testing.T) {
 func TestProxySessionPoolReplenishesBrokenSession(t *testing.T) {
 	t.Parallel()
 
-	broken := &fakeProxySession{openErr: errors.New("transport closed")}
-	healthy := &fakeProxySession{}
 	replacement := &fakeProxySession{}
-	sessions := []*fakeProxySession{broken, healthy, replacement}
+	sessions := []*fakeProxySession{{}, {}, replacement}
 	var created atomic.Int32
 	pool, err := newProxySessionPool(2, func() (proxySession, error) {
 		idx := int(created.Add(1)) - 1
@@ -347,6 +350,13 @@ func TestProxySessionPoolReplenishesBrokenSession(t *testing.T) {
 		t.Fatalf("newProxySessionPool returned error: %v", err)
 	}
 	defer pool.Close()
+
+	// Build 2116: pool construction is parallel, so creation
+	// order no longer names the slots — break the session
+	// slot 0 actually holds; the third creation (the
+	// replenishment, drawn serially later) is still the
+	// replacement.
+	pool.slot(0).session.(*fakeProxySession).openErr = errors.New("transport closed")
 
 	conn, err := pool.OpenTunnel("example.com:443")
 	if err != nil {

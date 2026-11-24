@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +14,8 @@ import '../core/tun_service.dart';
 import '../desktop/desktop_bridge.dart';
 import '../l10n/app_localizations.dart';
 import '../platform.dart';
+import 'ember/ember_theme.dart';
+import 'ember/map_widgets.dart';
 import 'bypass_apps_page.dart';
 import 'connection_mode.dart';
 import 'format.dart';
@@ -42,6 +45,18 @@ const _dnsPresets = <String, List<String>>{
 
 /// The app's preferences and the core's settings (config.json, edited
 /// through the API so that every field the app does not show is kept).
+/// Build 2116 (AP-06): on Android this page is hosted by
+/// the Ember shell, whose switch is the MapToggle — the
+/// stock Material Switch read as a different design
+/// language inside the Ember settings tab it is launched
+/// from. The desktop shell keeps its stock Switch.
+Widget settingsToggle({
+  required bool value,
+  required ValueChanged<bool>? onChanged,
+}) => Platform.isAndroid
+    ? MapToggle(value: value, onChanged: onChanged)
+    : Switch(value: value, onChanged: onChanged);
+
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
     super.key,
@@ -110,14 +125,27 @@ class _SettingsPageState extends State<SettingsPage> {
     _load();
   }
 
+  /// Build 2092 (item 4): a failed load is a state of its
+  /// own — the page used to show the progress bar forever
+  /// (and, on CoreUnavailable, said nothing at all).
+  bool _loadFailed = false;
+
   Future<void> _load() async {
     try {
       final config = await _core.settings();
-      if (mounted) setState(() => _config = config);
+      if (mounted) {
+        setState(() {
+          _config = config;
+          _loadFailed = false;
+        });
+      }
     } on CoreApiException catch (e) {
-      if (mounted) showError(context, e.message);
+      if (mounted) {
+        setState(() => _loadFailed = true);
+        showError(context, e.message);
+      }
     } on CoreUnavailable {
-      // The shell shows the problem.
+      if (mounted) setState(() => _loadFailed = true);
     }
   }
 
@@ -235,7 +263,8 @@ class _SettingsPageState extends State<SettingsPage> {
         icon: const Icon(Icons.alt_route_rounded),
         title: Text(l.routingSuggestTitle(country)),
         content: SizedBox(
-          width: 380,
+          // Build 2092 (item 4): capped to the viewport.
+          width: math.min(380.0, MediaQuery.sizeOf(context).width - 48),
           child: Text(l.routingSuggestBody(country)),
         ),
         actions: [
@@ -283,24 +312,53 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               PageTitle(l.settingsTitle),
               const SizedBox(height: 20),
-              Card(
-                margin: EdgeInsets.zero,
-                clipBehavior: Clip.antiAlias,
-                child: Column(
-                  children: [
-                    for (var i = 0; i < sections.length; i++) ...[
-                      if (i > 0) const Divider(height: 1, indent: 56),
-                      ListTile(
-                        leading: Icon(sections[i].$2),
-                        title: Text(sections[i].$3),
-                        // Mirrors itself in right-to-left languages.
-                        trailing: const Icon(Icons.chevron_right_rounded),
-                        onTap: () => setState(() => _open = sections[i].$1),
-                      ),
+              // Build 2116 (AP-06): Ember-hosted (Android),
+              // the section list wears the same glass as
+              // the Panel below; the desktop shell keeps
+              // its Card.
+              if (Platform.isAndroid)
+                MapGlass(
+                  padding: EdgeInsets.zero,
+                  child: Column(
+                    children: [
+                      for (var i = 0; i < sections.length; i++) ...[
+                        if (i > 0) const Divider(height: 1, indent: 56),
+                        ListTile(
+                          leading: Icon(sections[i].$2),
+                          title: Text(sections[i].$3),
+                          // Mirrors itself in right-to-left languages.
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                          ),
+                          onTap: () =>
+                              setState(() => _open = sections[i].$1),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
+                )
+              else
+                Card(
+                  margin: EdgeInsets.zero,
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      for (var i = 0; i < sections.length; i++) ...[
+                        if (i > 0) const Divider(height: 1, indent: 56),
+                        ListTile(
+                          leading: Icon(sections[i].$2),
+                          title: Text(sections[i].$3),
+                          // Mirrors itself in right-to-left languages.
+                          trailing: const Icon(
+                            Icons.chevron_right_rounded,
+                          ),
+                          onTap: () =>
+                              setState(() => _open = sections[i].$1),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-              ),
             ],
           );
         }
@@ -327,6 +385,21 @@ class _SettingsPageState extends State<SettingsPage> {
             if (!fixed) const SizedBox(height: 16),
             if (open == SettingsSection.general)
               _general(l, s)
+            else if (_config == null && _loadFailed)
+              // Build 2092 (item 4): the failure state, with
+              // a way back — not an eternal progress bar.
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('The settings could not be loaded.'),
+                  const SizedBox(height: 12),
+                  TextButton.icon(
+                    onPressed: () => _load(),
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Retry'),
+                  ),
+                ],
+              )
             else if (_config == null)
               const LinearProgressIndicator()
             else
@@ -395,7 +468,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _Row(
           icon: Icons.visibility_outlined,
           label: l.showPublicIp,
-          child: Switch(
+          child: settingsToggle(
             value: s.showPublicIp,
             onChanged: (v) => s.update(showPublicIp: v),
           ),
@@ -406,7 +479,7 @@ class _SettingsPageState extends State<SettingsPage> {
             builder: (context, on, _) => _Row(
               icon: Icons.speed_rounded,
               label: l.speedInNotification,
-              child: Switch(
+              child: settingsToggle(
                 value: on,
                 onChanged: (v) => runShowingErrors(
                   context,
@@ -419,7 +492,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _Row(
             icon: Icons.power_settings_new_rounded,
             label: l.startOnBoot,
-            child: Switch(
+            child: settingsToggle(
               value: s.autostart,
               onChanged: (v) => s.update(autostart: v),
             ),
@@ -431,7 +504,7 @@ class _SettingsPageState extends State<SettingsPage> {
             child: _Row(
               icon: Icons.link_rounded,
               label: l.connectOnStartup,
-              child: Switch(
+              child: settingsToggle(
                 value: s.autoConnect,
                 onChanged: s.autostart ? (v) => s.update(autoConnect: v) : null,
               ),
@@ -444,7 +517,7 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: Icons.system_update_alt_rounded,
             label: l.autoUpdate,
             value: l.autoUpdateHint,
-            child: Switch(
+            child: settingsToggle(
               value: s.autoUpdate,
               onChanged: (v) => s.update(autoUpdate: v),
             ),
@@ -469,13 +542,21 @@ class _SettingsPageState extends State<SettingsPage> {
               _Choice<String>(
                 icon: Icons.http_rounded,
                 title: l.transport,
-                value: _str(['proxy', 'transport']) == 'h2' ? 'h2' : 'h3',
+                // Three-way since build 2105: a two-way read
+                // showed a stored h1 as h3 here, and one tap
+                // silently overwrote the transport with h3.
+                value: switch (_str(['proxy', 'transport'])) {
+                  'h1' => 'h1',
+                  'h2' => 'h2',
+                  _ => 'h3',
+                },
                 onChanged: _saving
                     ? null
                     : (v) => _save({
                         ['proxy', 'transport']: v,
                       }),
                 options: [
+                  ('h1', 'HTTP/1.1', null),
                   ('h2', l.transportH2, null),
                   ('h3', l.transportH3, null),
                 ],
@@ -617,7 +698,7 @@ class _SettingsPageState extends State<SettingsPage> {
               _Row(
                 icon: Icons.alt_route_rounded,
                 label: l.routingDirect,
-                child: Switch(
+                child: settingsToggle(
                   value: on,
                   onChanged: _saving
                       ? null
@@ -630,7 +711,7 @@ class _SettingsPageState extends State<SettingsPage> {
               _Row(
                 icon: Icons.block_rounded,
                 label: l.blockAds,
-                child: Switch(
+                child: settingsToggle(
                   value: on && _blocksAds,
                   onChanged: _saving || !on ? null : _setBlockAds,
                 ),
@@ -682,7 +763,7 @@ class _SettingsPageState extends State<SettingsPage> {
               _Row(
                 icon: Icons.travel_explore_rounded,
                 label: l.resolveDomains,
-                child: Switch(
+                child: settingsToggle(
                   value: _bool(['routing', 'resolve_domains']),
                   onChanged: _saving
                       ? null
@@ -847,7 +928,11 @@ class _SettingsPageState extends State<SettingsPage> {
       builder: (context) => AlertDialog(
         icon: Icon(Icons.delete_outline_rounded, color: colors.error),
         title: Text(l.removeTunService),
-        content: SizedBox(width: 380, child: Text(l.removeTunServiceHint)),
+        content: SizedBox(
+          // Build 2092 (item 4): capped to the viewport.
+          width: math.min(380.0, MediaQuery.sizeOf(context).width - 48),
+          child: Text(l.removeTunServiceHint),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -886,7 +971,7 @@ class _SettingsPageState extends State<SettingsPage> {
             child: _Row(
               icon: Icons.call_rounded,
               label: l.udpNoticeSetting,
-              child: Switch(
+              child: settingsToggle(
                 value: s.udpNotice,
                 onChanged: (v) => s.update(udpNotice: v),
               ),
@@ -1057,7 +1142,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _Row(
             icon: Icons.settings_backup_restore_rounded,
             label: l.dnsFallback,
-            child: Switch(
+            child: settingsToggle(
               value: _bool(['dns', 'fallback_to_system']),
               onChanged: _saving
                   ? null
@@ -1448,8 +1533,10 @@ class _RunningProgramsDialogState extends State<_RunningProgramsDialog> {
       title: Text(l.addProgram),
       contentPadding: const EdgeInsets.only(top: 12),
       content: SizedBox(
-        width: 480,
-        height: 420,
+        // Build 2092 (item 4): capped to the viewport on
+        // both axes.
+        width: math.min(480.0, MediaQuery.sizeOf(context).width - 48),
+        height: math.min(420.0, MediaQuery.sizeOf(context).height - 160),
         child: Column(
           children: [
             Padding(
@@ -1552,7 +1639,8 @@ class _ProgramNameDialogState extends State<_ProgramNameDialog> {
     return AlertDialog(
       title: Text(l.addProgram),
       content: SizedBox(
-        width: 400,
+        // Build 2092 (item 4): capped to the viewport.
+        width: math.min(400.0, MediaQuery.sizeOf(context).width - 48),
         child: TextField(
           controller: _controller,
           autofocus: true,
@@ -1683,7 +1771,8 @@ class _TextSettingState extends State<_TextSetting> {
       maxLines: widget.multiline ? 8 : 1,
       textDirection: TextDirection.ltr,
       style: widget.multiline
-          ? const TextStyle(fontFamily: 'Consolas', fontSize: 13)
+          // Build 2138 (visual review V-06): on the type scale.
+          ? const TextStyle(fontFamily: 'Consolas', fontSize: Ember.fontBody)
           : null,
       decoration: InputDecoration(
         labelText: widget.label,
@@ -1820,6 +1909,7 @@ class _ProxyLoginState extends State<_ProxyLogin> {
             isDense: true,
             border: const OutlineInputBorder(),
             suffixIcon: IconButton(
+              tooltip: _show ? 'Hide password' : 'Show password',
               icon: Icon(
                 _show ? Icons.visibility_off : Icons.visibility,
                 size: 18,

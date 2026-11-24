@@ -78,12 +78,6 @@ void main() {
       ).headers, hasLength(10));
     });
 
-    test('formatCustomHeaders round-trips through the parser', () {
-      const headers = {'X-Panel-Key': 'k', 'Authorization': 'Bearer t'};
-      final back = parseCustomHeaders(formatCustomHeaders(headers));
-      expect(back.error, isNull);
-      expect(back.headers, headers);
-    });
   });
 
   group('Subscription customHeaders persistence', () {

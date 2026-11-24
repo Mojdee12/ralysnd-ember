@@ -181,9 +181,12 @@ void main() {
       // xray.log keeps its size-based rule (not a session log
       // the owner reads for bridge floods).
       expect(xray.contains('rotateLogIfLarge(xrayLog)'), isTrue);
+      // Build 2129 supersedes the Lantern half: the gomobile
+      // core has no tunlink bridge and no bridge log — the
+      // core writes its own log files under its logDir.
       final lantern = ktSrc('LanternVpnService.kt');
-      expect('rotateLogPerSession(tunLog)'.allMatches(lantern).length, 1);
-      expect(lantern.contains('fun rotateLogPerSession('), isTrue);
+      expect(lantern.contains('tunlink'), isFalse);
+      expect(lantern.contains('rotateLogPerSession('), isFalse);
     });
   });
 

@@ -27,7 +27,6 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:firefox_vpn/core/poll_policy.dart';
-import 'package:firefox_vpn/xray/awg_uapi.dart';
 import 'package:firefox_vpn/xray/sha256.dart';
 import 'package:firefox_vpn/xray/sub_fetcher.dart';
 import 'package:firefox_vpn/xray/wg_conf.dart';
@@ -102,49 +101,22 @@ void main() {
     });
   });
 
-  group('AmneziaWG UAPI keys (audit C-1)', () {
+  // Build 2104: the C-1 subject — keys hexed for the old
+  // bridge's IpcSet parser — is deleted with that bridge.
+  // The hand-off is the canonical .conf text now, and the
+  // WG Tunnel parser takes the keys in their stored base64
+  // form; the property worth pinning is that the serializer
+  // carries them VERBATIM (no re-encoding can corrupt a key
+  // on its way to the engine) alongside the AWG parameters.
+  // A malformed key is rejected by the Kotlin parser at
+  // start, surfaced as the engine's problem string — the
+  // native half of the old "throws instead of reaching
+  // IpcSet" property, proven on device.
+  group('AmneziaWG hand-off keys (audit C-1, build 2104 form)', () {
     const zeros = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
     const ones = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';
 
-    test('base64 keys become the hex the UAPI parser accepts', () {
-      expect(uapiKeyHex(zeros), '0' * 64);
-      expect(uapiKeyHex(ones), '01' * 32);
-      // The IpcSet acceptance contract: every key line is 64
-      // lowercase hex chars decoding to exactly 32 bytes.
-      for (final k in [zeros, ones]) {
-        final hex = uapiKeyHex(k);
-        expect(hex, matches(RegExp(r'^[0-9a-f]{64}$')));
-        final bytes = [
-          for (var i = 0; i < hex.length; i += 2)
-            int.parse(hex.substring(i, i + 2), radix: 16),
-        ];
-        expect(bytes.length, 32);
-      }
-    });
-
-    test('hex input passes through lowercased; padding-less base64 works',
-        () {
-      expect(uapiKeyHex('AB' * 32), 'ab' * 32);
-      expect(uapiKeyHex(zeros.replaceAll('=', '')), '0' * 64);
-    });
-
-    test('a non-canonical spelling (non-zero discarded bits) still '
-        'decodes to the same key bytes', () {
-      // 'BBB…' is byte-identical to its canonical form under
-      // every lenient parser; Dart's strict decoder needs the
-      // discarded bits zeroed first (build 2050).
-      expect(
-        uapiKeyHex('BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='),
-        '0410410410410410410410410410410410410410410410410410410410410410',
-      );
-    });
-
-    test('a key that is neither throws instead of reaching IpcSet', () {
-      expect(() => uapiKeyHex('not-a-key'), throwsFormatException);
-      expect(() => uapiKeyHex('AAAA'), throwsFormatException);
-    });
-
-    test('buildAwgUapi carries hex keys and the AWG parameters', () {
+    test('wgConfFromProfile carries the keys verbatim in base64', () {
       final p = Profile(
         id: 'awg',
         protocol: Protocol.wireguard,
@@ -162,14 +134,13 @@ void main() {
         awgS2: '18',
         awgH1: '123456789',
       );
-      final uapi = buildAwgUapi(p);
-      expect(uapi, contains('private_key=${'01' * 32}'));
-      expect(uapi, contains('public_key=${'0' * 64}'));
-      expect(uapi, contains('preshared_key=${'01' * 32}'));
-      expect(uapi, isNot(contains('AQEB')));
-      expect(uapi, contains('jc=5'));
-      expect(uapi, contains('jmin=40'));
-      expect(uapi, contains('h1=123456789'));
+      final conf = wgConfFromProfile(p);
+      expect(conf, contains('PrivateKey = $ones'));
+      expect(conf, contains('PublicKey = $zeros'));
+      expect(conf, contains('PresharedKey = $ones'));
+      expect(conf, contains('Jc = 5'));
+      expect(conf, contains('Jmin = 40'));
+      expect(conf, contains('H1 = 123456789'));
     });
   });
 
@@ -614,11 +585,16 @@ void main() {
         'android/app/src/main/kotlin/com/ralysnd/ember/XrayTester.kt',
       );
       final body = kt.substring(kt.indexOf('fun trafficStats'));
-      expect(body, contains('statsQueryBoth(context, apiPort)?.let'));
+      // Build 2095 (third-pass audit 6-1) changed the
+      // contract: the combined call reports whether it
+      // RAN, and the two-process fallback runs only when
+      // it did not — the pin follows the new shape.
+      expect(body, contains('val (both, ranOk) = statsQueryBoth(context, apiPort)'));
       expect(
-        body.indexOf('statsQueryBoth(context, apiPort)?.let'),
+        body.indexOf('statsQueryBoth(context, apiPort)'),
         lessThan(body.indexOf('counter(context, apiPort')),
       );
+      expect(body, contains('if (ranOk) return null'));
       expect(kt, contains('"statsquery"'));
     });
 
@@ -635,7 +611,11 @@ void main() {
         () {
       final servers = read('lib/ui/ember/ember_servers.dart');
       expect(servers, contains('bool _open = false'));
-      expect(servers, contains('_ActionCell'));
+      // Build 2133 supersedes the action-bar half of this
+      // pin: the owner ordered the Test All action bar off
+      // the V2Ray tab (per-subscription ping instead), so
+      // the cell class is gone by design.
+      expect(servers, isNot(contains('_ActionCell')));
       expect(servers, contains('_PingPill'));
     });
 

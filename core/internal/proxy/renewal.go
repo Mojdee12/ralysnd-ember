@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/accounts"
+	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
 	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
 	"github.com/armanlife/firefox-vpn-client/core/internal/guardian"
 	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
@@ -264,6 +265,14 @@ func (c *Controller) RunRenewalLoop() {
 			}
 		}
 		if err == nil {
+			// Build 2116 (renewal journaling): a success
+			// was the silent outcome — the loop logged the
+			// schedule and the failures, never the landing.
+			// The line carries the route, the new expiry
+			// and the upstream failure counts, so a
+			// renewal boundary is fully on the record.
+			logx.Info("proxy pass renewal succeeded route=%s next_expiry=%s upstream_failures=%s established_failures=%s",
+				c.renewalRoute(), c.currentExpiry().Format(time.RFC3339), c.upstreamFailureSummary(), c.establishedFailureSummary())
 			continue
 		}
 		if c.isClosed() {
@@ -272,7 +281,8 @@ func (c *Controller) RunRenewalLoop() {
 		now := time.Now()
 		retry := RenewalRetryDelay(err, now)
 		c.recordRenewalOutcome(err, now.Add(retry))
-		logx.Warn("proxy pass renewal failed code=%s retry_in=%s err=%s", renewalFailureCode(err), retry, logx.Err(err))
+		logx.Warn("proxy pass renewal failed code=%s route=%s retry_in=%s upstream_failures=%s established_failures=%s err=%s",
+			renewalFailureCode(err), c.renewalRoute(), retry, c.upstreamFailureSummary(), c.establishedFailureSummary(), logx.Err(err))
 		if hint := GuardianFailureHint(err); hint != "" {
 			logx.Warn("%s", hint)
 		}
@@ -574,11 +584,49 @@ func (c *Controller) dialSession(token string) (proxySession, error) {
 }
 
 func (c *Controller) renewLocked(ctx context.Context) error {
-	_, pass, err := c.acquireUsablePass(ctx)
+	_, pass, err := c.acquireRenewalPass(ctx)
 	if err != nil {
 		return err
 	}
 	return c.adoptPass(pass)
+}
+
+// acquireRenewalPass acquires the pass a renewal adopts (build
+// 2114; mozilla-regression-plan.md mechanism 1): always a fresh
+// fetch — never the stored pass the renewal exists to replace —
+// and, when the engine's own listener is known, through the
+// live tunnel (self-egress), so the fetch exits where the
+// still-valid pass authorizes it instead of meeting the region
+// refusal on the direct path. A self-egress failure falls back
+// to the direct acquisition, which keeps the bootstrap retry
+// inside passFor: once the pass has expired the tunnel accepts
+// nothing, and the direct path is then the only one left.
+func (c *Controller) acquireRenewalPass(ctx context.Context) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
+	// Build 2116 (renewal journaling): every attempt
+	// records the route it took on the controller, so the
+	// renewal loop's outcome line names it — success,
+	// fallback and total failure alike.
+	if c.selfEgress == "" || controlplane.InBootstrapEgress(ctx) {
+		auth, pass, err := c.acquireUsablePassForce(ctx, true)
+		c.setRenewalRoute("direct")
+		return auth, pass, err
+	}
+	var auth *runtimeAuth
+	var pass *guardian.ProxyPassInfo
+	err := controlplane.WithSelfEgressURL(ctx, c.selfEgress, func(ctx context.Context) error {
+		var err error
+		auth, pass, err = c.acquireUsablePassForce(ctx, true)
+		return err
+	})
+	if err == nil {
+		c.setRenewalRoute("self-egress")
+		logx.Info("proxy pass fetched through the live tunnel (self-egress)")
+		return auth, pass, nil
+	}
+	logx.Warn("proxy pass renewal through the live tunnel failed; retrying direct err=%s", logx.Err(err))
+	auth, pass, err = c.acquireUsablePassForce(ctx, true)
+	c.setRenewalRoute("direct-fallback")
+	return auth, pass, err
 }
 
 // acquireUsablePass returns an auth and a proxy pass whose monthly quota is
@@ -587,8 +635,24 @@ func (c *Controller) renewLocked(ctx context.Context) error {
 // a Guardian rejection is recovered from by refreshing the OAuth token
 // (HTTP 401) or activating the account (HTTP 403).
 func (c *Controller) acquireUsablePass(ctx context.Context) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
+	return c.acquireUsablePassForce(ctx, false)
+}
+
+// acquireUsablePassForce is acquireUsablePass; with force set
+// the account pool always fetches a fresh pass instead of
+// reusing the stored one (the renewal path — see
+// AccountPool.AcquirePassForced). The single-account path
+// never reuses a stored pass, so force changes nothing there.
+func (c *Controller) acquireUsablePassForce(ctx context.Context, force bool) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
 	if c.accounts != nil {
-		auth, pass, err := c.accounts.AcquirePass(ctx, c.guardian)
+		var auth *runtimeAuth
+		var pass *guardian.ProxyPassInfo
+		var err error
+		if force {
+			auth, pass, err = c.accounts.AcquirePassForced(ctx, c.guardian)
+		} else {
+			auth, pass, err = c.accounts.AcquirePass(ctx, c.guardian)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -649,6 +713,26 @@ func (c *Controller) adoptPass(pass *guardian.ProxyPassInfo) error {
 	}
 	logx.Info("proxy pass renewed successfully next_expiry=%s", pass.ExpiresAt().Format(time.RFC3339))
 	return nil
+}
+
+// RunUpstreamFailureLoop emits the failure summaries on
+// a one-minute cadence (build 2119, audit F-01). The
+// renewal outcome lines were the only place the counts
+// surfaced, and renewals run ~8 minutes apart: a session
+// dying at ~2 minutes — the owner's discriminator —
+// never reached one. emitUpstreamFailureSummary logs
+// only on change, so a healthy controller stays silent.
+func (c *Controller) RunUpstreamFailureLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			c.emitUpstreamFailureSummary()
+		}
+	}
 }
 
 // RunQuotaMonitorLoop reads the quota when heavy traffic brings the active

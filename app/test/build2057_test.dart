@@ -661,12 +661,19 @@ void main() {
       );
       expect(
         _kt('LanternVpnService.kt'),
-        contains('.addDnsServer(dns)'),
+        contains('bridge.setSession(ipv6, mtu, dns)'),
       );
-      expect(
-        _kt('LanternVpnService.kt'),
-        isNot(contains('.addDnsServer("1.1.1.1")')),
-      );
+      // Build 2129: the Builder lives in the plugin-dex
+      // bridge's openTun; the Settings DNS reaches it as the
+      // session DNS (the core's own DNS request wins when it
+      // names one — the gomobile shape; Ember's value is the
+      // floor, never a hardcoded literal).
+      final bridge = File(
+        'android/lantern-plugin-src/com/ralysnd/ember/lanternplugin/LanternEngine.java',
+      ).readAsStringSync();
+      expect(bridge, contains('builder.addDnsServer('));
+      expect(bridge, contains('this.dns'));
+      expect(bridge, isNot(contains('addDnsServer("1.1.1.1")')));
     });
   });
 

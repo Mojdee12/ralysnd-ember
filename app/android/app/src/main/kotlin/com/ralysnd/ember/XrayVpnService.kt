@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
@@ -20,6 +21,7 @@ import android.util.Log
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -47,6 +49,72 @@ class XrayVpnService : VpnService() {
     private val stopping = AtomicBoolean(false)
 
     /**
+     * Build 2125 (audit A25-02 / P-08): the serial executor
+     * for the session actions — Pause, Resume, Stop and
+     * onRevoke. Up to 2124 each action spawned its own bare
+     * daemon thread with no ordering between them:
+     * pauseTunnel() could block on coreLock (held by a
+     * restart) while a Stop ran to completion on its own
+     * thread, and the Pause thread then woke and published
+     * a phantom "Paused" state whose Resume resurrected a
+     * session the user had explicitly disconnected. On one
+     * serial executor the actions run strictly in arrival
+     * order: a Stop queued behind a Pause runs after it and
+     * ends the session for real, and a Resume queued behind
+     * a Stop sees `paused == false` and no-ops.
+     */
+    private val actionWorker = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "xray-actions").apply { isDaemon = true }
+    }
+
+    /**
+     * Build 2123 (audit P-06 / E-03): underlying-network
+     * watch — Mozilla's CoreService pattern, shared via
+     * [UnderlyingNetworkWatch]. A Wi-Fi↔mobile switch used
+     * to blackhole a "Connected" Xray session indefinitely:
+     * the TUN was never re-pointed and the core's sockets
+     * stayed bound to the dead path, while the native
+     * health probe (loopback-only) stayed green.
+     */
+    private val underlyingWatch =
+        UnderlyingNetworkWatch(this, "XrayVpnService") {
+            onUnderlyingNetworkChanged()
+        }
+
+    /**
+     * The underlying network changed under a live session:
+     * rotate the core on its own config so every outbound
+     * re-dials on the new path. rotateCore does not consume
+     * the watchdog's restart budget and refuses cleanly for
+     * sessions with no Xray process (standalone WARP /
+     * Aether) — for those, the watch's setUnderlyingNetworks
+     * re-point is the whole fix. Runs the rotation on a
+     * daemon thread, like ACTION_ROTATE: rotateCore can
+     * hold the core lock for seconds and the callback
+     * arrives on the main thread.
+     */
+    private fun onUnderlyingNetworkChanged() {
+        if (!running || stopping.get()) return
+        val config = sessionConfig
+        if (config.isEmpty()) return
+        CrashLog.breadcrumb(this, "xray:underlying-network-changed")
+        Thread {
+            try {
+                rotateCore(config)
+            } catch (e: Throwable) {
+                CrashLog.append(
+                    this,
+                    "XrayVpnService.networkRotate",
+                    e,
+                )
+            }
+        }.apply {
+            isDaemon = true
+            name = "xray-netrotate"
+        }.start()
+    }
+
+    /**
      * The core lifecycle lock (build 2054, audit F-H1): ONE
      * monitor over restartCore + rotateCore + stopProcesses.
      * Before it, restartCore was callable concurrently from
@@ -66,6 +134,33 @@ class XrayVpnService : VpnService() {
      * is going away anyway.
      */
     private val coreLock = Any()
+
+    /**
+     * Build 2098 (verification, iteration 2): the Paused
+     * notification's Resume action is pointed when the
+     * notification is BUILT (at the app when the lock is
+     * on, at this service when off), but nothing rebuilds
+     * it while a pause lasts — the periodic speed-line
+     * refresh early-returns when paused. A lock toggled
+     * mid-pause therefore left the stale action in place
+     * for the whole pause: a dead Resume in one direction,
+     * an app-open-only Resume in the other. Watch the
+     * marker Dart maintains and re-post the notification
+     * when it flips. (Held in a field: the preferences
+     * keep only a weak reference to listeners.)
+     */
+    private val lockMarkerListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "lock_enabled" && paused) {
+                updateNotification(profileName)
+            }
+        }
+
+    override fun onCreate() {
+        super.onCreate()
+        getSharedPreferences("ember_widget", Context.MODE_PRIVATE)
+            .registerOnSharedPreferenceChangeListener(lockMarkerListener)
+    }
 
     @Volatile
     private var xrayProcess: Process? = null
@@ -97,6 +192,24 @@ class XrayVpnService : VpnService() {
     // The session's tunnel MTU (build 2038, queue 2f), kept so a
     // respawned underlay restarts with the same value.
     private var sessionMtu = MTU
+    // Build 2081 (verification V-8): the IPv6 flag and the LAN
+    // SOCKS credentials, kept like the other session args so a
+    // notification Resume restarts the session exactly as it
+    // started — startTunnel is the only writer, like sessionDns.
+    private var sessionIpv6 = true
+    private var sessionSocksUser = ""
+    private var sessionSocksPass = ""
+    // Build 2081 (verification V-8): the notification speed
+    // line's sampling state — the last session-traffic sample
+    // and when it was taken, and the composed line the
+    // notification shows. Written by the watch loop (worker
+    // thread), read by notification() from any thread.
+    @Volatile
+    private var lastSpeedSample: Pair<Long, Long>? = null
+    @Volatile
+    private var lastSpeedAtMs = 0L
+    @Volatile
+    private var shownSpeed = ""
     private var sessionUnderlayRegion = ""
     private var sessionUnderlayUpstream = ""
     private var sessionUnderlayProtocols: List<String> = emptyList()
@@ -114,6 +227,10 @@ class XrayVpnService : VpnService() {
     private var sessionDnsttArgs: List<String> = emptyList()
     private var sessionWgWstunnel = false
     private var sessionWstunnelArgs: List<String> = emptyList()
+    // OLCRTC underlay session state (build 2134): the
+    // client's argument list (one YAML config path), kept
+    // for supervision + respawn like the DNSTT args above.
+    private var sessionOlcrtcArgs: List<String> = emptyList()
     private var wstunnelFails = 0
     private var wstunnelRespawns = 0
 
@@ -132,15 +249,17 @@ class XrayVpnService : VpnService() {
     private var socksFails = 0
     private var warpFails = 0
 
-    // The AmneziaWG tunnel (build 2040, queue 2h): NO Xray
-    // process and NO tunlink bridge — the userspace device in
-    // libwg-go.so reads/writes the TUN fd directly. The fd
-    // belongs to the device once handed over (see
-    // startAwgTunnel), so tunPfd stays null for this mode and
-    // stopProcesses turns the device off instead of closing it.
-    // The mode flag + device handle live in the companion (like
-    // `running`) so MainActivity's xrayState can report them.
-    private var awgFails = 0
+    // Build 2119 (audit F-04): the EngineClaim identity of
+    // the session this service instance is hosting — plain
+    // Xray, standalone WARP, or the Aether SOCKS tunnel.
+    // Starts set it from the action; the stop path and
+    // onDestroy release THIS name (release is owner-checked,
+    // so releasing "xray" for an Aether session would leave
+    // its marker behind). A system-restarted service that
+    // never saw a start defaults to XRAY, the pre-2119
+    // behaviour.
+    private var claimName: String = EngineClaim.XRAY
+
 
     /** True while a shape rotation respawns the core: the
      * watch loop must not read the mid-rotation process state
@@ -172,15 +291,111 @@ class XrayVpnService : VpnService() {
     }
 
     private fun onStartCommandGuarded(intent: Intent?, flags: Int, startId: Int): Int {
+        // Build 2123 (P-06): the underlying-network watch
+        // lives for the service's lifetime (idempotent).
+        underlyingWatch.start()
+        // Build 2087 (analysis A2): a fresh start clears the
+        // user-stop marker — it describes the last stop only
+        // until a new session begins.
+        when (intent?.action) {
+            ACTION_START, ACTION_START_WARP,
+            ACTION_START_SOCKS -> userStopped = false
+        }
+        // Build 2116 (B7-1, AB-08): a start (or a resume,
+        // which re-runs the start path) claims the VPN slot
+        // through the native single-writer claim — Dart,
+        // notification and system-restart starts all pass
+        // this funnel, so a natively-resumed Xray session
+        // displaces whatever else took the slot meanwhile.
+        // Build 2119 (audit F-04): the claim carries the
+        // session kind's own identity — a WARP or Aether
+        // start now displaces a plain Xray owner natively
+        // (and the reverse), instead of every kind claiming
+        // XRAY and claim() seeing no difference to act on.
+        // A resume re-claims the identity this instance
+        // already hosts.
+        // Build 2125 (audit A25-13 / P-14): the claim is
+        // VALIDATED before it is taken. Up to 2124 every
+        // start/resume claimed first — displacing (stopping)
+        // the running engine — and only afterwards discovered
+        // it had nothing to run: an ACTION_START with an
+        // empty config, an ACTION_START_SOCKS with invalid
+        // extras, or a Resume that the app lock or the
+        // not-paused check turned into a no-op. A no-op no
+        // longer kills a healthy session: those actions fall
+        // through to their existing branches (which still
+        // satisfy the foreground-service deadline and stop
+        // on the record) WITHOUT claiming.
+        val startClaim = when (intent?.action) {
+            ACTION_START ->
+                if ((intent.getStringExtra(EXTRA_CONFIG) ?: "").isEmpty()) {
+                    null
+                } else {
+                    EngineClaim.XRAY
+                }
+            ACTION_START_WARP -> EngineClaim.WARP
+            ACTION_START_SOCKS ->
+                if (intent.getIntExtra(EXTRA_SOCKS_PORT, 0) <= 0 ||
+                    (intent.getStringExtra(EXTRA_ENGINE) ?: "").isEmpty()
+                ) {
+                    null
+                } else {
+                    EngineClaim.AETHER
+                }
+            ACTION_RESUME ->
+                if (paused &&
+                    sessionConfig.isNotEmpty() &&
+                    profileName.isNotEmpty() &&
+                    !ConnectWidget.appLockEnabled(this)
+                ) {
+                    claimName
+                } else {
+                    null
+                }
+            else -> null
+        }
+        if (startClaim != null) {
+            claimName = startClaim
+            EngineClaim.claim(this, startClaim)
+        }
         when (intent?.action) {
             ACTION_STOP -> {
+                // Build 2087 (analysis A2): this stop is the
+                // user's own (the notification's Disconnect, or
+                // the app's stop, which funnels through the same
+                // action) — mark it BEFORE the stop runs, so the
+                // Dart poll can tell it from an unexpected drop.
+                userStopped = true
+                // Build 2116 (B7-1): the claim is released.
+                // Build 2119 (audit F-04): under the session
+                // kind's own identity — releasing XRAY for a
+                // WARP/Aether session would leave its marker.
+                EngineClaim.release(this, claimName)
                 // Off the main thread: stopProcesses takes
                 // coreLock, which a restart can hold for ~20 s.
-                Thread { stopTunnel() }.apply {
-                    isDaemon = true
-                    name = "xray-stop"
-                }.start()
+                // Build 2125 (audit A25-02 / P-08): on the
+                // serial action executor, not a bare thread —
+                // see actionWorker.
+                actionWorker.execute { stopTunnel() }
                 return START_NOT_STICKY
+            }
+            ACTION_PAUSE -> {
+                // Build 2081 (verification V-8): off the main
+                // thread, like ACTION_STOP — pauseTunnel takes
+                // coreLock via stopProcesses. Build 2125
+                // (A25-02): serialized with Stop/Resume on
+                // actionWorker.
+                actionWorker.execute { pauseTunnel() }
+                return START_STICKY
+            }
+            ACTION_RESUME -> {
+                // Build 2081 (verification V-8): off the main
+                // thread — resumeTunnel re-runs the full start
+                // path, which can hold coreLock while it sweeps
+                // orphans and waits for the port. Build 2125
+                // (A25-02): serialized on actionWorker.
+                actionWorker.execute { resumeTunnel() }
+                return START_STICKY
             }
             ACTION_ROTATE -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG) ?: ""
@@ -232,6 +447,9 @@ class XrayVpnService : VpnService() {
                 // DNSTT + wstunnel (build 2072).
                 val dnsttArgs =
                     intent.getStringArrayListExtra(EXTRA_DNSTT_ARGS) ?: arrayListOf()
+                // OLCRTC underlay (build 2134).
+                val olcrtcArgs =
+                    intent.getStringArrayListExtra(EXTRA_OLCRTC_ARGS) ?: arrayListOf()
                 val wgWstunnel = intent.getBooleanExtra(EXTRA_WG_WSTUNNEL, false)
                 val wstunnelArgs =
                     intent.getStringArrayListExtra(EXTRA_WSTUNNEL_ARGS) ?: arrayListOf()
@@ -241,11 +459,29 @@ class XrayVpnService : VpnService() {
                 val socksPass = intent.getStringExtra(EXTRA_SOCKS_PASS) ?: ""
                 // Kill switch (build 2063, feature queue #3).
                 killSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
+                // Build 2110 (wg-start diagnosis, defect 3):
+                // the validity check moves BELOW
+                // startInForeground. This intent arrived via
+                // startForegroundService, which arms a system
+                // deadline the moment it is delivered; the old
+                // order — stopSelf() first, silently — left
+                // that deadline unfulfillable, and the system
+                // delivered the crash
+                // (ForegroundServiceDidNotStartInTimeException)
+                // later, against whatever healthy start was
+                // then in flight (the owner's 2026-11-18
+                // export: two crashes, each mid-AWG→Xray
+                // switch). Going foreground FIRST satisfies
+                // the deadline for every delivered intent;
+                // the empty-config case then stops, on the
+                // record instead of silently.
+                startInForeground(name)
                 if (config.isEmpty()) {
+                    CrashLog.breadcrumb(this, "xray:start-empty-config")
+                    Log.w(TAG, "ACTION_START with an empty config; stopping")
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startInForeground(name)
                 worker.execute {
                     // Build 2070 (review §5.1): the async start
                     // net — see startFailed.
@@ -256,6 +492,7 @@ class XrayVpnService : VpnService() {
                             underlayProtocols, warpArgs,
                             socksUser, socksPass,
                             dnsttArgs, wgWstunnel, wstunnelArgs,
+                            olcrtcArgs,
                         )
                     } catch (e: Throwable) {
                         startFailed("XrayVpnService.startTunnel", e)
@@ -302,11 +539,17 @@ class XrayVpnService : VpnService() {
                 val engine = intent.getStringExtra(EXTRA_ENGINE) ?: ""
                 // Kill switch (build 2063, feature queue #3).
                 killSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
+                // Build 2110 (wg-start diagnosis, defect 3):
+                // foreground first, validity second — the
+                // same armed-deadline reasoning as
+                // ACTION_START above.
+                startInForeground(name)
                 if (socksPort <= 0 || engine.isEmpty()) {
+                    CrashLog.breadcrumb(this, "xray:start-socks-invalid")
+                    Log.w(TAG, "ACTION_START_SOCKS with invalid extras; stopping")
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startInForeground(name)
                 worker.execute {
                     // Build 2070 (review §5.1): the async start
                     // net — see startFailed.
@@ -314,39 +557,6 @@ class XrayVpnService : VpnService() {
                         startSocksTunnel(name, dns, ipv6, mtu, socksPort, engine)
                     } catch (e: Throwable) {
                         startFailed("XrayVpnService.startSocksTunnel", e)
-                    }
-                }
-                return START_STICKY
-            }
-            ACTION_START_AWG -> {
-                // AmneziaWG (build 2040, queue 2h): the Dart
-                // side built the UAPI settings string from the
-                // profile (keys + the Jc/Jmin/Jmax/S1/S2/H1–H4
-                // the config carried); this service brings the
-                // TUN up and hands its fd to the userspace
-                // device in libwg-go.so — no Xray, no bridge.
-                val name = intent.getStringExtra(EXTRA_NAME) ?: ""
-                val settings = intent.getStringExtra(EXTRA_AWG_SETTINGS) ?: ""
-                val addresses = intent.getStringExtra(EXTRA_AWG_ADDRESSES) ?: ""
-                // Kill switch (build 2063): AmneziaWG owns its
-                // TUN fd through the userspace device, so there
-                // is no fd to hold — an AWG session never holds.
-                killSwitch = false
-                val dns = intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1"
-                val ipv6 = intent.getBooleanExtra(EXTRA_IPV6, true)
-                val mtu = clampMtu(intent.getIntExtra(EXTRA_MTU, MTU))
-                if (settings.isEmpty()) {
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-                startInForeground(name)
-                worker.execute {
-                    // Build 2070 (review §5.1): the async start
-                    // net — see startFailed.
-                    try {
-                        startAwgTunnel(name, settings, addresses, dns, ipv6, mtu)
-                    } catch (e: Throwable) {
-                        startFailed("XrayVpnService.startAwgTunnel", e)
                     }
                 }
                 return START_STICKY
@@ -361,14 +571,27 @@ class XrayVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        // Build 2126 (audit A26-10): a revoke is a stop,
+        // not a drop — mark it like ACTION_STOP does, so
+        // the pause machinery cannot resurrect a phantom
+        // "Paused" state for a session the system ended.
+        userStopped = true
         // Same reason as ACTION_STOP: off the main thread.
-        Thread { stopTunnel() }.apply {
-            isDaemon = true
-            name = "xray-stop"
-        }.start()
+        // Build 2125 (A25-02): serialized on actionWorker,
+        // like the ACTION_STOP it mirrors.
+        actionWorker.execute { stopTunnel() }
     }
 
     override fun onDestroy() {
+        // Build 2123 (P-06): the network watch dies with
+        // the service.
+        underlyingWatch.stop()
+        // Build 2116 (B7-1): teardown releases the claim
+        // (owner-checked). Build 2119: under the hosted
+        // session kind's identity (see the ACTION_STOP path).
+        EngineClaim.release(this, claimName)
+        getSharedPreferences("ember_widget", Context.MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(lockMarkerListener)
         stopUnderlay()
         stopProcesses()
         // Kill switch (build 2063): the service itself is dying
@@ -381,6 +604,9 @@ class XrayVpnService : VpnService() {
         // after the service is gone. Queued tasks still run to
         // completion; nothing new can be submitted afterwards.
         worker.shutdown()
+        // Build 2125 (A25-02): the action executor gets the
+        // same treatment.
+        actionWorker.shutdown()
         super.onDestroy()
     }
 
@@ -405,15 +631,24 @@ class XrayVpnService : VpnService() {
         dnsttArgs: List<String> = emptyList(),
         wgWstunnel: Boolean = false,
         wstunnelArgs: List<String> = emptyList(),
+        // OLCRTC underlay (build 2134).
+        olcrtcArgs: List<String> = emptyList(),
     ) {
         // Build 2068 breadcrumb (control trail): the worker
         // reached the tunnel builder.
         CrashLog.breadcrumb(this, "xray:startTunnel-entered")
         stopping.set(false)
+        // Build 2081 (verification V-8): a fresh start (or a
+        // Resume through resumeTunnel) clears any held pause,
+        // and the start args a Resume needs are retained here.
+        paused = false
         sessionConfig = configJson
         sessionPort = socksPort
         sessionDns = dns
+        sessionIpv6 = ipv6
         sessionMtu = mtu
+        sessionSocksUser = socksUser
+        sessionSocksPass = socksPass
         sessionUnderlay = underlay
         sessionUnderlayRegion = underlayRegion
         sessionUnderlayUpstream = underlayUpstream
@@ -422,13 +657,24 @@ class XrayVpnService : VpnService() {
         sessionDnsttArgs = dnsttArgs
         sessionWgWstunnel = wgWstunnel
         sessionWstunnelArgs = wstunnelArgs
+        sessionOlcrtcArgs = olcrtcArgs
         wstunnelFails = 0
         wstunnelRespawns = 0
         sessionWarpMode = false
         sessionSocksMode = false
         chainFails = 0
         chainRespawns = 0
-        chainGraceUntilMs = System.currentTimeMillis() + 45_000
+        // Build 2080: a chained EmberWarp core is spawned by
+        // this service (below) and its cold scan must validate
+        // through the session's exit-node — the old flat 45 s
+        // grace expired mid-scan and the ChainSupervisor then
+        // respawned (killed) the still-scanning core. The warp
+        // grace matches the core's chained greeting budget
+        // (EmberWarpCore.CHAIN_GREETING_WAIT_MS).
+        chainGraceUntilMs = System.currentTimeMillis() +
+            (if (underlay == "warp") WARP_CHAIN_INITIAL_GRACE_MS
+            else if (underlay == "olcrtc") OLCRTC_CHAIN_INITIAL_GRACE_MS
+            else 45_000L)
         chainUnderlay = underlay != "none"
         chainProblem = ""
         coreRestarts = 0
@@ -442,83 +688,56 @@ class XrayVpnService : VpnService() {
             val configFile = File(dir, "config.json")
             AtomicFile.writeText(configFile, configJson)
 
-            // A core leaked by an earlier service instance would hold
-            // the SOCKS port and answer in the new core's place.
-            sweepOrphans()
-            // Build 2049: the sweep's kills are fire-and-forget
-            // signals — wait (bounded) until the port is actually
-            // free, so the checks below can only be answered by
-            // the core spawned here. Build 2054 (audit Q-1): a
-            // timeout FAILS the start instead of spawning blind
-            // on the busy port — the old blind respawn let a
-            // stale listener bless the new session.
-            if (!ProcessKill.waitPortFree(socksPort, 3000)) {
-                Log.e(TAG, "SOCKS port $socksPort still busy 3 s after the orphan sweep; not starting on it")
-                fail()
-                return
+            // Build 2110 (wg-start diagnosis, defect 4):
+            // stop this instance's OWN tracked processes
+            // FIRST. The orphan sweep below is forbidden to
+            // touch them (its exclusion), so a previous
+            // session's core still tracked here — its stop
+            // queued behind a restart's coreLock, or Dart's
+            // state running ahead of the service's — survived
+            // every sweep and held the SOCKS port against its
+            // own successor (the owner's 2026-11-18 export:
+            // "SOCKS port 10808 stayed busy after the
+            // leftover-core sweep", twice). stopProcesses
+            // confirms each death before returning
+            // (ProcessKill.kill). keepTun follows the
+            // kill-switch hold exactly: a held blackhole's fd
+            // survives until the new TUN below replaces it —
+            // closing it here would open the direct-traffic
+            // window the hold exists to prevent.
+            // Build 2127 (H5, audit A26-05): with the kill
+            // switch on, the TUN is established FIRST —
+            // before the processes below stop and the new
+            // core is spawned and proven — so the window
+            // between the user's tap (or a switch) and the
+            // TUN landing no longer leaks direct: a TUN
+            // with no reader is a blackhole, and a failure
+            // below lands in fail(), which holds exactly
+            // that TUN. The engine's own plumbing is
+            // app-UID and disallowed from its own VPN, so
+            // the spawn's dials are unaffected. With the
+            // switch off, the order is 2126's exactly.
+            if (killSwitch) {
+                if (!establishTun(dns, ipv6, mtu)) return
+                stopProcesses(keepTun = true)
+            } else {
+                stopProcesses(keepTun = blackholeHeld)
             }
+            // Sweep + spawn under coreLock (see
+            // spawnCoreLocked): a watchdog restart or a
+            // rotation can no longer interleave its own
+            // kill/respawn with this fresh spawn.
+            val coreSpawned = synchronized(coreLock) {
+                spawnCoreLocked(dir, configFile, socksPort, underlay, warpArgs)
+            }
+            if (!coreSpawned) return
 
-            // 1. The Xray core subprocess.
-            val xrayLog = File(dir, "xray.log")
-            rotateLogIfLarge(xrayLog)
-            xrayProcess = ProcessBuilder(
-                libPath("libxray.so"), "run", "-c", configFile.absolutePath,
-            )
-                .directory(dir)
-                .redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(xrayLog))
-                .start()
-            if (!waitForPort(socksPort, 15000)) {
-                Log.e(TAG, "xray did not open its SOCKS port")
-                fail()
-                return
+            if (!killSwitch) {
+                // 2. The VPN interface (the classic order:
+                // after the core is proven).
+                if (!establishTun(dns, ipv6, mtu)) return
             }
-            // The port answering is not enough: it must be OUR core
-            // answering (a stale listener satisfies waitForPort too).
-            val spawned = xrayProcess
-            if (spawned == null || !spawned.isAlive || !probeSocks(socksPort)) {
-                Log.e(TAG, "xray SOCKS port answered but the spawned core is not serving it")
-                fail()
-                return
-            }
-
-            // 2. The VPN interface.
-            if (prepare(this) != null) {
-                Log.w(TAG, "the VPN has no permission")
-                fail()
-                return
-            }
-            val builder = Builder()
-                .setSession(getString(R.string.app_name))
-                .setMtu(mtu)
-                .addAddress("10.10.14.1", 30)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer(dns)
-            if (ipv6) {
-                builder.addAddress("fdfe:dcba:9876::1", 126)
-                builder.addRoute("::", 0)
-            }
-            applyApps(builder)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
-            // Kill switch (build 2063): a held blackhole's fd
-            // is closed only AFTER the new TUN is up — closing
-            // it first would open a direct-traffic window.
-            val heldPfd = if (blackholeHeld) tunPfd else null
-            val pfd = builder.establish()
-            if (pfd == null) {
-                Log.e(TAG, "establish() returned null")
-                fail()
-                return
-            }
-            tunPfd = pfd
-            if (heldPfd != null) {
-                blackholeHeld = false
-                try {
-                    heldPfd.close()
-                } catch (e: Exception) {
-                    // Already closed.
-                }
-            }
+            val pfd = tunPfd ?: return
 
             // 3. The fd listener the helper connects to — it receives
             //    the same socket string below (see createFdListener
@@ -593,6 +812,134 @@ class XrayVpnService : VpnService() {
     }
 
     /**
+     * Builds and establishes the session's TUN (build
+     * 2127, H5: factored out of startTunnel — the
+     * kill-switch path establishes it before the core
+     * spawn, the classic path after; the body is the one
+     * 2126 ran inline). Any previous TUN — a live one on
+     * a switch, or the kill switch's held blackhole — is
+     * closed only after the new one is up: closing it
+     * first would open the direct-traffic window both
+     * the switch and the hold exist to prevent. On
+     * failure the start fails via fail(), which holds
+     * the new TUN as the blackhole when the kill switch
+     * is on.
+     */
+    private fun establishTun(dns: String, ipv6: Boolean, mtu: Int): Boolean {
+        if (prepare(this) != null) {
+            Log.w(TAG, "the VPN has no permission")
+            fail()
+            return false
+        }
+        val builder = Builder()
+            .setSession(getString(R.string.app_name))
+            .setMtu(mtu)
+            .addAddress("10.10.14.1", 30)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer(dns)
+        if (ipv6) {
+            builder.addAddress("fdfe:dcba:9876::1", 126)
+            builder.addRoute("::", 0)
+        }
+        applyApps(builder)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setMetered(false)
+        }
+        val heldPfd = tunPfd
+        val pfd = builder.establish()
+        if (pfd == null) {
+            Log.e(TAG, "establish() returned null")
+            fail()
+            return false
+        }
+        tunPfd = pfd
+        if (heldPfd != null) {
+            blackholeHeld = false
+            try {
+                heldPfd.close()
+            } catch (e: Exception) {
+                // Already closed.
+            }
+        }
+        return true
+    }
+
+    /**
+     * The fresh-start spawn sequence (build 2110, wg-start
+     * diagnosis defect 4), run by [startTunnel] under
+     * [coreLock] after it stopped this instance's own tracked
+     * processes: sweep the orphans of earlier instances, prove
+     * the SOCKS port free, spawn the chained EmberWarp core
+     * when the session carries one, spawn the Xray core, and
+     * prove the spawned core is the one serving the port.
+     * Every failure runs the same fail() the inline sequence
+     * ran and returns false; the caller abandons the start.
+     */
+    private fun spawnCoreLocked(
+        dir: File,
+        configFile: File,
+        socksPort: Int,
+        underlay: String,
+        warpArgs: List<String>,
+    ): Boolean {
+        // A core leaked by an earlier service instance would hold
+        // the SOCKS port and answer in the new core's place.
+        sweepOrphans()
+        // Build 2049: the sweep's kills are fire-and-forget
+        // signals — wait (bounded) until the port is actually
+        // free, so the checks below can only be answered by
+        // the core spawned here. Build 2054 (audit Q-1): a
+        // timeout FAILS the start instead of spawning blind
+        // on the busy port — the old blind respawn let a
+        // stale listener bless the new session.
+        if (!ProcessKill.waitPortFree(socksPort, 3000)) {
+            Log.e(TAG, "SOCKS port $socksPort still busy 3 s after the orphan sweep; not starting on it")
+            fail("the local SOCKS port $socksPort stayed busy after the leftover-core sweep")
+            return false
+        }
+
+        // Build 2080: the service spawns the chained
+        // EmberWarp core ITSELF, here at session start —
+        // previously the Dart side spawned it only after
+        // its post-start state poll noticed the tunnel,
+        // burning the supervisor's grace before the scan
+        // even began. The core's scan retries ride the
+        // exit-node as soon as the Xray core below is up.
+        // A failed session reaps it via fail() →
+        // stopUnderlay() like every other stop path.
+        if (underlay == "warp" && warpArgs.isNotEmpty()) {
+            EmberWarpCore.start(
+                this, warpArgs, EmberWarpCore.SOCKS_PORT,
+            )
+        }
+
+        // 1. The Xray core subprocess.
+        val xrayLog = File(dir, "xray.log")
+        rotateLogIfLarge(xrayLog)
+        xrayProcess = ProcessBuilder(
+            libPath("libxray.so"), "run", "-c", configFile.absolutePath,
+        )
+            .directory(dir)
+            .redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.appendTo(xrayLog))
+            .start()
+        if (!waitForPort(socksPort, 15000)) {
+            Log.e(TAG, "xray did not open its SOCKS port")
+            fail("the V2Ray core did not open its local port in time")
+            return false
+        }
+        // The port answering is not enough: it must be OUR core
+        // answering (a stale listener satisfies waitForPort too).
+        val spawned = xrayProcess
+        if (spawned == null || !spawned.isAlive || !probeSocks(socksPort)) {
+            Log.e(TAG, "xray SOCKS port answered but the spawned core is not serving it")
+            fail("the local port answered but the spawned core is not the one serving it")
+            return false
+        }
+        return true
+    }
+
+    /**
      * The standalone WARP tunnel (build 2030): startTunnel's
      * TUN half with NO Xray process — the tunlink bridge dials
      * the EmberWarp core's SOCKS port directly (dossier Q2:
@@ -620,6 +967,7 @@ class XrayVpnService : VpnService() {
         sessionDnsttArgs = emptyList()
         sessionWgWstunnel = false
         sessionWstunnelArgs = emptyList()
+        sessionOlcrtcArgs = emptyList()
         sessionWarpMode = true
         sessionSocksMode = false
         warpFails = 0
@@ -749,6 +1097,7 @@ class XrayVpnService : VpnService() {
         sessionDnsttArgs = emptyList()
         sessionWgWstunnel = false
         sessionWstunnelArgs = emptyList()
+        sessionOlcrtcArgs = emptyList()
         sessionWarpMode = false
         sessionSocksMode = true
         sessionSocksEngine = engine
@@ -762,10 +1111,10 @@ class XrayVpnService : VpnService() {
             dir.mkdirs()
             sweepOrphans()
             val slot = AetherCore.slot(engine)
-            if (!slot.running ||
-                slot.stage != AetherStage.CONNECTED ||
-                !probeSocks(socksPort)
-            ) {
+            // Build 2080: readiness is the slot's demotion-aware
+            // isConnected() — a bare CONNECTED stage can be a
+            // hollow session whose data plane is retrying.
+            if (!slot.isConnected() || !probeSocks(socksPort)) {
                 Log.e(TAG, "the $engine engine is not ready for the tunnel")
                 fail()
                 return
@@ -854,257 +1203,6 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    /**
-     * The AmneziaWG tunnel (build 2040, queue 2h): the TUN
-     * interface goes to the userspace device in libwg-go.so,
-     * which owns the fd from here on — there is no Xray core
-     * and no tunlink bridge, so the usual SOCKS-port readiness
-     * does not apply. Proof that the tunnel carries traffic is
-     * the device's handshake (the Dart side polls it through
-     * xrayState's awgConfig dump): a handshake only completes
-     * when the peer answers with the right keys AND the right
-     * obfuscation values.
-     *
-     * The tunnel addresses come from the profile ([addresses],
-     * "ip/prefix" comma-separated, as the .conf carried them);
-     * when the profile has none, the fixed Xray-path addresses
-     * are used — the device only moves packets, the kernel
-     * only needs an address on the interface.
-     */
-    /** The AWG network-change callback (build 2065, item 8),
-     *  registered only while an AmneziaWG session runs. */
-    private var awgNetCallback: ConnectivityManager.NetworkCallback? = null
-
-    /** UDP socket recovery for the AWG path: when the default
-     *  network changes under a running AmneziaWG session (Wi-Fi
-     *  to mobile, a new gateway), wg-go's bound sockets go stale
-     *  and handshakes silently die. Re-applying the session's own
-     *  UAPI config through AwgBackend.setConfig makes the device
-     *  rebind and re-handshake on the new network — the recovery
-     *  hook the bundled engine exposes (AwgBackend.setConfig was
-     *  wired but never called before this build). Best effort:
-     *  a failure is logged, never fatal — the session's own
-     *  handshake retries remain the fallback. */
-    private fun registerAwgNetworkCallback() {
-        if (awgNetCallback != null) return
-        val cm = getSystemService(ConnectivityManager::class.java) ?: return
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                if (!awgMode || awgHandle <= 0) return
-                val text = awgSettingsText
-                if (text.isEmpty()) return
-                worker.execute {
-                    if (!awgMode || awgHandle <= 0) return@execute
-                    val rc = AwgBackend.setConfig(awgHandle, text)
-                    // The rebound sockets are new fds: protect
-                    // them again or they would loop into the
-                    // tunnel.
-                    val v4 = AwgBackend.getSocketV4(awgHandle)
-                    val v6 = AwgBackend.getSocketV6(awgHandle)
-                    if (v4 >= 0) protect(v4)
-                    if (v6 >= 0) protect(v6)
-                    Log.i(
-                        TAG,
-                        "AWG socket recovery: config re-applied " +
-                            "on network change (rc=$rc)",
-                    )
-                }
-            }
-        }
-        try {
-            cm.registerDefaultNetworkCallback(callback)
-            awgNetCallback = callback
-        } catch (e: Exception) {
-            Log.w(TAG, "AWG network callback not registered: $e")
-        }
-    }
-
-    private fun unregisterAwgNetworkCallback() {
-        val callback = awgNetCallback ?: return
-        awgNetCallback = null
-        try {
-            getSystemService(ConnectivityManager::class.java)
-                ?.unregisterNetworkCallback(callback)
-        } catch (e: Exception) {
-            // Already gone.
-        }
-    }
-
-    private fun startAwgTunnel(
-        name: String,
-        settings: String,
-        addresses: String,
-        dns: String,
-        ipv6: Boolean,
-        mtu: Int,
-    ) {
-        stopping.set(false)
-        xrayProcess = null // No Xray in this mode; watch loop keys off it.
-        tunProcess = null // No tunlink bridge either: the device owns the fd.
-        sessionConfig = ""
-        sessionPort = 0
-        sessionDns = dns
-        sessionMtu = mtu
-        sessionUnderlay = "none"
-        sessionDnsttArgs = emptyList()
-        sessionWgWstunnel = false
-        sessionWstunnelArgs = emptyList()
-        sessionWarpMode = false
-        sessionSocksMode = false
-        awgMode = true
-        awgFails = 0
-        chainUnderlay = false
-        chainProblem = ""
-        coreRestarts = 0
-        coreProblem = ""
-        var fd = -1
-        try {
-            val dir = workDir(this)
-            dir.mkdirs()
-            sweepOrphans()
-            if (!AwgBackend.ensureLoaded()) {
-                Log.e(TAG, "libwg-go.so is not available for the AWG tunnel")
-                fail()
-                return
-            }
-            if (prepare(this) != null) {
-                Log.w(TAG, "the VPN has no permission")
-                fail()
-                return
-            }
-            val builder = Builder()
-                .setSession(getString(R.string.app_name))
-                .setMtu(mtu)
-            // Build 2059 (audit §6 engine low): the ::/0 route is
-            // only added when a v6 address was actually assigned —
-            // a v4-only profile with IPv6 on used to get the route
-            // with no v6 address (v6 blackhole, fail-closed).
-            var added = 0
-            var hasV6 = false
-            for (entry in addresses.split(",")) {
-                val parts = entry.trim().split("/")
-                if (parts.size != 2) continue
-                val ip = parts[0].trim()
-                val prefix = parts[1].trim().toIntOrNull() ?: continue
-                if (ip.isEmpty() || prefix < 0) continue
-                try {
-                    builder.addAddress(ip, prefix)
-                    if (ip.contains(":")) hasV6 = true
-                    added++
-                } catch (e: IllegalArgumentException) {
-                    // Not an address the builder accepts: skip it.
-                }
-            }
-            if (added == 0) {
-                builder.addAddress("10.10.14.1", 30)
-                if (ipv6) {
-                    builder.addAddress("fdfe:dcba:9876::1", 126)
-                    hasV6 = true
-                }
-            }
-            builder.addRoute("0.0.0.0", 0)
-            builder.addDnsServer(dns)
-            if (ipv6 && hasV6) builder.addRoute("::", 0)
-            applyApps(builder)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                builder.setMetered(false)
-            }
-            val pfd = builder.establish()
-            if (pfd == null) {
-                Log.e(TAG, "establish() returned null (awg)")
-                fail()
-                return
-            }
-            // Kill switch (build 2063): a held blackhole is
-            // replaced by this establish — close its fd only
-            // now that the new TUN is up, never before.
-            if (blackholeHeld) {
-                blackholeHeld = false
-                try {
-                    tunPfd?.close()
-                } catch (e: Exception) {
-                    // Already closed.
-                }
-                tunPfd = null
-            }
-            // The fd now belongs to the device: detach it so the
-            // ParcelFileDescriptor must not close it, and keep
-            // tunPfd null so stopProcesses does not either — the
-            // device closes it in turnOff. On a failed start
-            // the fd is closed here instead.
-            fd = pfd.detachFd()
-            tunPfd = null
-            val handle = AwgBackend.turnOn(fd, settings)
-            if (handle <= 0) {
-                Log.e(TAG, "the AWG device did not start")
-                try {
-                    // The fd is a raw int here: adopt it into a
-                    // ParcelFileDescriptor just to close it
-                    // (Os.close takes a FileDescriptor, not an int).
-                    ParcelFileDescriptor.adoptFd(fd).close()
-                } catch (e: Exception) {
-                    // Already closed.
-                }
-                fd = -1
-                fail()
-                return
-            }
-            fd = -1 // Owned by the device now.
-            awgHandle = handle
-            awgSettingsText = settings
-            registerAwgNetworkCallback()
-            // The device's own UDP sockets must not loop back
-            // into the tunnel: protect them as soon as they
-            // exist (they appear with the first handshake
-            // initiation, so poll briefly). At most one
-            // initiation is lost unprotected; WireGuard
-            // retransmits it, and the 12 s proof deadline
-            // tolerates that.
-            val protectDeadline = System.currentTimeMillis() + 3000
-            var protected = false
-            while (System.currentTimeMillis() < protectDeadline) {
-                val v4 = AwgBackend.getSocketV4(handle)
-                val v6 = AwgBackend.getSocketV6(handle)
-                if (v4 >= 0) {
-                    protect(v4)
-                    protected = true
-                }
-                if (v6 >= 0) {
-                    protect(v6)
-                    protected = true
-                }
-                if (protected) break
-                Thread.sleep(50)
-            }
-            if (!protected) {
-                Log.w(TAG, "no AWG socket appeared to protect")
-            }
-            running = true
-            profileName = name
-            startedAtMs = System.currentTimeMillis()
-            val uid = android.os.Process.myUid()
-            baseTx = TrafficStats.getUidTxBytes(uid)
-            baseRx = TrafficStats.getUidRxBytes(uid)
-            updateNotification(name)
-            watchProcesses()
-        } catch (e: Throwable) {
-            // Build 2070 (review §5.1): as in startTunnel above —
-            // the fd cleanup below now also runs for an Error
-            // from the userspace-device calls, not only for
-            // Exceptions.
-            CrashLog.append(this, "XrayVpnService.startAwgTunnel", e)
-            Log.e(TAG, "the AWG tunnel did not start", e)
-            if (fd >= 0) {
-                try {
-                    ParcelFileDescriptor.adoptFd(fd).close()
-                } catch (ignored: Exception) {
-                }
-                fd = -1
-            }
-            fail()
-        }
-    }
-
     /** Which apps use the VPN: the same stored choice as the Mozilla engine's. */
     private fun applyApps(builder: Builder) {
         fun each(packages: Set<String>, add: (String) -> Unit) {
@@ -1123,6 +1221,16 @@ class XrayVpnService : VpnService() {
                 added++
             }
             if (added > 0) return
+            // Build 2125 (audit A25-36 / P-41): the Only
+            // set resolved to nothing installed, so the
+            // builder falls through to all-apps semantics
+            // below (an empty allow-list would tunnel this
+            // app too — a loop). The inversion is journaled,
+            // never silent.
+            CrashLog.breadcrumb(
+                this,
+                "xray:per-app Only set empty — all apps use the tunnel",
+            )
         }
         builder.addDisallowedApplication(packageName)
         each(CoreService.appSet(this, CoreService.BYPASS) - packageName) {
@@ -1142,6 +1250,14 @@ class XrayVpnService : VpnService() {
         worker.execute {
             var probeFails = 0
             var tick = 0
+            // Build 2081 (verification V-8): the notification
+            // speed line measures from this session's start —
+            // sessionTraffic() is ~0 here (base captured in the
+            // start body just before), so the first tick already
+            // has a 5 s rate.
+            lastSpeedSample = sessionTraffic()
+            lastSpeedAtMs = System.currentTimeMillis()
+            shownSpeed = ""
             while (!stopping.get() && running) {
                 // Build 2055 (audit B-H5): the loop ticks at 5 s,
                 // not 1 s — every probe below is already a
@@ -1152,6 +1268,10 @@ class XrayVpnService : VpnService() {
                 // visible moves: notifications already re-post
                 // only on change.
                 tick++
+                // Build 2081 (verification V-8): the live speed
+                // line, sampled every tick (5 s) and re-posted
+                // only when the line changed.
+                refreshSpeedLine()
                 val x = xrayProcess
                 val t = tunProcess
                 if (!rotating) {
@@ -1190,9 +1310,19 @@ class XrayVpnService : VpnService() {
                         System.currentTimeMillis() > chainGraceUntilMs
                     ) {
                         val healthy = when (sessionUnderlay) {
-                            "warp" -> EmberWarpCore.running &&
-                                EmberWarpCore.ready &&
-                                probeSocks(EmberWarpCore.SOCKS_PORT)
+                            // Build 2080: a core still in its
+                            // FIRST scan is exempt — counting
+                            // failures against it respawned
+                            // (killed) it mid-scan and restarted
+                            // the very clock being measured.
+                            // The exemption is bounded by the
+                            // core's own greeting wait, after
+                            // which its stage leaves "starting"
+                            // and full supervision applies.
+                            "warp" -> EmberWarpCore.scanInProgress() ||
+                                (EmberWarpCore.running &&
+                                    EmberWarpCore.ready &&
+                                    probeSocks(EmberWarpCore.SOCKS_PORT))
                             // DNSTT (build 2072): the client is
                             // a plain port forward, not a SOCKS
                             // server — the health proof is the
@@ -1203,6 +1333,16 @@ class XrayVpnService : VpnService() {
                             "dnstt" -> DnsttCore.running &&
                                 DnsttCore.ready &&
                                 probeTcp(DnsttCore.PORT)
+                            // OLCRTC (build 2134): the client
+                            // IS a SOCKS5 server, and its
+                            // listener opens only after the
+                            // WebRTC link is up — the process,
+                            // its readiness flag, and a SOCKS
+                            // handshake on its port are the
+                            // health proof.
+                            "olcrtc" -> OlcrtcCore.running &&
+                                OlcrtcCore.ready &&
+                                probeSocks(OlcrtcCore.PORT)
                             // Build 2073: the Psiphon service runs
                             // in its own process — its state is the
                             // published snapshot, not the companion
@@ -1261,8 +1401,12 @@ class XrayVpnService : VpnService() {
                     // session (fail-closed, same rule as WARP).
                     if (sessionSocksMode) {
                         val slot = AetherCore.slot(sessionSocksEngine)
-                        val healthy = slot.running &&
-                            slot.stage == AetherStage.CONNECTED &&
+                        // Build 2080: isConnected() is demotion-
+                        // aware — a data-plane retry after
+                        // CONNECTED withdraws readiness, so a
+                        // hollow session now fails this check and
+                        // is closed instead of sitting green.
+                        val healthy = slot.isConnected() &&
                             probeSocks(sessionPort)
                         if (healthy) {
                             socksFails = 0
@@ -1271,29 +1415,6 @@ class XrayVpnService : VpnService() {
                                 "the engine stopped answering; the " +
                                     "session was closed"
                             Log.e(TAG, "aether slot $sessionSocksEngine unhealthy")
-                            onSessionDied(coreProblem)
-                            return@execute
-                        }
-                    }
-                    // AmneziaWG supervision (build 2040): there is
-                    // no core process and no SOCKS port to probe —
-                    // the device itself is the session. A dump
-                    // that stops answering means the native device
-                    // is gone (its process died with it); three
-                    // failed checks close the session rather than
-                    // showing Connected over nothing. A stale
-                    // handshake alone does NOT close it: an idle
-                    // WireGuard peer legitimately goes quiet, and
-                    // the handshake age is the UI's signal, not a
-                    // death sentence.
-                    if (awgMode) {
-                        if (AwgBackend.getConfig(awgHandle) != null) {
-                            awgFails = 0
-                        } else if (++awgFails >= 3) {
-                            coreProblem =
-                                "the AmneziaWG engine stopped; the " +
-                                    "session was closed"
-                            Log.e(TAG, "awg device unhealthy")
                             onSessionDied(coreProblem)
                             return@execute
                         }
@@ -1320,6 +1441,7 @@ class XrayVpnService : VpnService() {
         val label = when (sessionUnderlay) {
             "warp" -> "Warp"
             "dnstt" -> "DNSTT"
+            "olcrtc" -> "OLCRTC"
             else -> "Psiphon"
         }
         if (chainRespawns >= 3) {
@@ -1337,6 +1459,16 @@ class XrayVpnService : VpnService() {
                 "(try $chainRespawns of 3)"
         Log.w(TAG, "chain underlay unhealthy; respawning (try $chainRespawns)")
         if (sessionUnderlay == "warp") {
+            // Build 2080: never respawn a core still in its
+            // first scan — a restart resets the scan to zero.
+            // Extend the grace and let the scan finish; the
+            // supervisor's exemption normally keeps this path
+            // from being reached mid-scan at all.
+            if (EmberWarpCore.scanInProgress()) {
+                Log.w(TAG, "warp underlay still in its first scan; not respawning")
+                chainGraceUntilMs = System.currentTimeMillis() + 30_000
+                return true
+            }
             // The warp core respawns with the session's exact
             // command line; its readiness completes async and
             // the grace window covers the re-scan.
@@ -1352,6 +1484,17 @@ class XrayVpnService : VpnService() {
             // covers both.
             DnsttCore.restart(this, sessionDnsttArgs)
             chainGraceUntilMs = System.currentTimeMillis() + 30_000
+            return true
+        }
+        if (sessionUnderlay == "olcrtc") {
+            // Build 2134: the OLCRTC client respawns with
+            // the session's config path; it must rejoin the
+            // room and re-find its peer before its listener
+            // returns, so the grace window is the link
+            // budget, not the DNSTT moments.
+            OlcrtcCore.restart(this, sessionOlcrtcArgs)
+            chainGraceUntilMs = System.currentTimeMillis() +
+                OLCRTC_CHAIN_INITIAL_GRACE_MS
             return true
         }
         try {
@@ -1470,6 +1613,15 @@ class XrayVpnService : VpnService() {
         if (sessionUnderlay == "dnstt") {
             try {
                 DnsttCore.stop()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+        // Build 2134: the OLCRTC underlay client is reaped
+        // on every stop path too, like DNSTT above.
+        if (sessionUnderlay == "olcrtc") {
+            try {
+                OlcrtcCore.stop()
             } catch (e: Exception) {
                 // Already gone.
             }
@@ -1675,11 +1827,38 @@ class XrayVpnService : VpnService() {
         return true
     }
 
+    /** The parent pid of a /proc entry, or -1 when it cannot
+     *  be read (build 2110): the sweep's exclusion key. The
+     *  first design read the pid off the Process object —
+     *  java.lang.Process.pid() is a Java 9 surface that
+     *  android.jar does not carry at ANY platform level (the
+     *  release build's Kotlin compile proved it:
+     *  "Unresolved reference 'pid'"), so the exclusion is by
+     *  PARENTAGE instead: a process whose parent is this app
+     *  process is this instance's own child — a tracked core
+     *  or bridge — and is never an orphan; the dedicated stop
+     *  paths own its death. An orphan is exactly a core whose
+     *  spawning process died, which reparents it away from
+     *  us. An unreadable status (-1) never equals our pid, so
+     *  the entry stays sweep-eligible — the pre-2110 default
+     *  for anything unidentifiable. */
+    private fun ppidOf(entry: File): Int = try {
+        File(entry, "status").useLines { lines ->
+            lines.firstOrNull { it.startsWith("PPid:") }
+                ?.substringAfter(':')
+                ?.trim()
+                ?.toIntOrNull()
+        } ?: -1
+    } catch (e: Throwable) {
+        -1
+    }
+
     /**
      * Kills libxray/libtunlink processes of this app that this
      * instance did not spawn (leaked when a service instance died
-     * without its stop path running). Skipped while this instance
-     * has a live tracked process. Best effort throughout.
+     * without its stop path running). This process's own children
+     * are excluded BY PARENTAGE (see ppidOf). Best effort
+     * throughout.
      *
      * Build 2054 (audit F-M1): the sweep now waits, bounded
      * (3 s), for every pid it killed to vanish from /proc
@@ -1691,15 +1870,27 @@ class XrayVpnService : VpnService() {
      * it, so it would never read "free") — the pid vanishing
      * is the observable state that the sweep actually landed.
      * startTunnel keeps its own port-free wait on top (Q-1).
+     *
+     * Build 2110 (wg-start diagnosis, defect 4): the exclusion
+     * used to be a blanket guard — ANY live tracked process
+     * skipped the whole sweep. On a fresh start that guard
+     * blinded the sweep to the likeliest port-holder of all:
+     * this instance's own still-alive tracked core, whose
+     * stop had not landed. startTunnel now stops its tracked
+     * processes before sweeping; the sweep itself excludes
+     * this process's own children by parentage, so a
+     * warp/socks start (whose tracked bridge may legitimately
+     * be alive) no longer disables the sweep either.
      */
     private fun sweepOrphans() {
-        if (xrayProcess?.isAlive == true || tunProcess?.isAlive == true) return
+        val myPid = android.os.Process.myPid()
         val killed = mutableListOf<Int>()
         try {
             val entries = File("/proc").listFiles() ?: return
             for (entry in entries) {
                 val pid = entry.name.toIntOrNull() ?: continue
-                if (pid == android.os.Process.myPid()) continue
+                if (pid == myPid) continue
+                if (ppidOf(entry) == myPid) continue
                 val cmd = try {
                     File(entry, "cmdline").readBytes().toString(Charsets.UTF_8)
                 } catch (e: Exception) {
@@ -1858,7 +2049,12 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    private fun fail() {
+    // Build 2095 (third-pass audit 3-1): fail() takes the
+    // start-failure reason and publishes it as coreProblem —
+    // the four start sites below used to fail silently, so
+    // the Dart side could only ever say "start-failed".
+    private fun fail(reason: String = "") {
+        if (reason.isNotEmpty()) coreProblem = reason
         // Kill switch (build 2063): a failed start, or a dead
         // session, with a TUN already up holds the blackhole
         // instead of tearing down — traffic blocks until the
@@ -1880,6 +2076,12 @@ class XrayVpnService : VpnService() {
         stopUnderlay()
         stopProcesses()
         running = false
+        // Build 2081 (verification V-8): a full stop clears
+        // any held pause and the speed line with it.
+        paused = false
+        shownSpeed = ""
+        lastSpeedSample = null
+        lastSpeedAtMs = 0L
         // A manual stop releases a kill-switch hold (build
         // 2063): the TUN is closed above, so the flag must go
         // with it — otherwise the UI would report a blackhole
@@ -1888,6 +2090,160 @@ class XrayVpnService : VpnService() {
         profileName = ""
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * Whether this session can be paused and resumed by this
+     * service alone (build 2081, verification V-8): a V2Ray
+     * core session whose underlay startTunnel can restart by
+     * itself — none, or EmberWarp (natively spawned in
+     * startTunnel since 2080). Psiphon and DNSTT underlays are
+     * started by Dart, and the WG wstunnel forwarder too, so
+     * pausing one would reap an underlay Resume cannot
+     * restart; those sessions offer no Pause action, and
+     * pauseTunnel refuses them. The WARP / SOCKS / AmneziaWG
+     * starts keep no retained full arg set to resume from.
+     */
+    private fun canPauseSession(): Boolean =
+        !sessionWarpMode && !sessionSocksMode &&
+            !sessionWgWstunnel &&
+            !(chainUnderlay &&
+                (sessionUnderlay == "psiphon" || sessionUnderlay == "dnstt" ||
+                    sessionUnderlay == "olcrtc"))
+
+    /**
+     * Pause (build 2081, verification V-8, feature queue #8):
+     * stops the core and the TUN like a disconnect, but the
+     * service stays foreground with a Paused notification
+     * carrying Resume — the session is held, not ended. A
+     * deliberate pause releases a kill-switch hold exactly
+     * like a manual stop does: traffic goes direct until the
+     * user resumes or disconnects. Runs off the main thread
+     * (ACTION_PAUSE handler).
+     */
+    private fun pauseTunnel() {
+        if (!running || paused || !canPauseSession()) return
+        stopping.set(true)
+        stopUnderlay()
+        stopProcesses()
+        running = false
+        blackholeHeld = false
+        // Build 2125 (audit A25-02 / P-08): re-check AFTER
+        // the coreLock block above. stopProcesses() can
+        // block for ~20 s behind a restart; if the user
+        // tapped Disconnect in that window, the ACTION_STOP
+        // handler has already set userStopped (it does so
+        // on the main thread, before queueing the stop on
+        // actionWorker behind this pause). Publishing a
+        // Paused state now would post a phantom Paused
+        // notification whose Resume resurrects the session
+        // the user just disconnected — instead the pause
+        // lands as a plain down session and the queued
+        // Stop completes the teardown.
+        if (userStopped) {
+            Log.i(TAG, "pause superseded by a user stop; not publishing Paused")
+            return
+        }
+        paused = true
+        shownSpeed = ""
+        lastSpeedSample = null
+        lastSpeedAtMs = 0L
+        updateNotification(profileName)
+    }
+
+    /**
+     * Resume (build 2081, verification V-8): restarts the
+     * paused V2Ray session from the retained start args —
+     * the same startTunnel a fresh connect runs, so a resume
+     * is a fresh session on the same profile, not a half
+     * restoration. A failed resume is a failed start: the
+     * start's own net records it and the service tears down
+     * instead of lingering paused. Runs off the main thread
+     * (ACTION_RESUME handler).
+     */
+    private fun resumeTunnel() {
+        // Build 2098 (post-2097 audit M18): the app lock
+        // gates Resume — ConnectWidget.appLockEnabled reads
+        // the same marker Dart maintains (SharedPreferences
+        // "ember_widget", boolean "lock_enabled"). With the
+        // lock on, Resume must not restart the tunnel behind
+        // the PIN: return without resuming, leaving the
+        // paused state and the notification exactly as they
+        // are. (Pause and Stop stay ungated — they are the
+        // safe direction.) The notification builder is the
+        // user-facing half of the gate (verification V-2):
+        // while the lock is on it points the Resume action
+        // at the app instead of this service, so the tap
+        // opens Ember for the unlock rather than landing on
+        // this silent return; this check remains as the
+        // backstop for a notification posted before the lock
+        // was enabled.
+        if (ConnectWidget.appLockEnabled(this)) return
+        if (!paused) return
+        val config = sessionConfig
+        val name = profileName
+        if (config.isEmpty() || name.isEmpty()) {
+            // Nothing retained to resume from (the service was
+            // recreated without a session): end the stale
+            // pause instead of starting an empty tunnel.
+            stopTunnel()
+            return
+        }
+        try {
+            startTunnel(
+                config, name, sessionPort, sessionDns, sessionIpv6,
+                sessionMtu, sessionUnderlay, sessionUnderlayRegion,
+                sessionUnderlayUpstream, sessionUnderlayProtocols,
+                sessionWarpArgs, sessionSocksUser, sessionSocksPass,
+                sessionDnsttArgs, sessionWgWstunnel, sessionWstunnelArgs,
+                sessionOlcrtcArgs,
+            )
+        } catch (e: Throwable) {
+            startFailed("XrayVpnService.resumeTunnel", e)
+        }
+    }
+
+    /**
+     * Samples the session traffic and refreshes the
+     * notification's live speed line (build 2081, V-8).
+     * Rates come from the UID counters' delta over the tick
+     * interval — the same source the Dart side's rates use.
+     * A re-post happens only when the line changed (the
+     * CoreService pattern: a notification re-posted on every
+     * tick would churn the shade for nothing). A tick racing
+     * a pause is harmless: the guard returns once the
+     * session is down, and notification() renders from the
+     * live flags, so a stale post can only ever show the
+     * Paused text.
+     */
+    private fun refreshSpeedLine() {
+        if (paused || !running) return
+        val now = System.currentTimeMillis()
+        val sample = sessionTraffic()
+        val last = lastSpeedSample
+        val lastAt = lastSpeedAtMs
+        if (last != null && lastAt > 0) {
+            val dtSec = (now - lastAt) / 1000.0
+            if (dtSec > 0) {
+                val down = ((sample.second - last.second) / dtSec).toLong().coerceAtLeast(0)
+                val up = ((sample.first - last.first) / dtSec).toLong().coerceAtLeast(0)
+                val line = "Down ${rateText(down)} · Up ${rateText(up)}"
+                if (line != shownSpeed) {
+                    shownSpeed = line
+                    updateNotification(profileName)
+                }
+            }
+        }
+        lastSpeedSample = sample
+        lastSpeedAtMs = now
+    }
+
+    /** "1.2 MB/s" / "340 KB/s" / "0 B/s" (build 2081, V-8). */
+    private fun rateText(bytesPerSec: Long): String = when {
+        bytesPerSec >= 1024 * 1024 ->
+            String.format(Locale.US, "%.1f MB/s", bytesPerSec / 1048576.0)
+        bytesPerSec >= 1024 -> "${bytesPerSec / 1024} KB/s"
+        else -> "$bytesPerSec B/s"
     }
 
     private fun stopProcesses(keepTun: Boolean = false) {
@@ -1914,16 +2270,6 @@ class XrayVpnService : VpnService() {
         } catch (e: Exception) {
             // Best effort only.
         }
-        // The AmneziaWG device first (build 2040): it owns the
-        // TUN fd, so turning it off closes the interface; the
-        // tunPfd close below is a no-op for this mode (null).
-        unregisterAwgNetworkCallback()
-        awgSettingsText = ""
-        if (awgMode && awgHandle > 0) {
-            AwgBackend.turnOff(awgHandle)
-        }
-        awgHandle = -1
-        awgMode = false
         // The bridge first, so no new flows start while the core goes.
         tunProcess?.let { ProcessKill.kill(it) }
         tunProcess = null
@@ -2013,26 +2359,108 @@ class XrayVpnService : VpnService() {
             this, 11, Intent(this, XrayVpnService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        // Notification actions (build 2075, feature item 12):
+        // Disconnect (above, every engine service carries it)
+        // plus Switch server here — the one engine with
+        // rotation semantics. The action opens the activity
+        // with a rotate extra; MainActivity forwards it to
+        // Dart, which performs the same switch as the in-app
+        // control (the service itself cannot know the next
+        // config — the fallback group lives in Dart).
+        val rotate = PendingIntent.getActivity(
+            this, 12,
+            // Build 2095 (audit 5-9): nonce-stamped, like
+            // every legitimate command intent.
+            EmberIntentNonce.stamp(
+                this,
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra("ember_action", "rotate"),
+            ),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        // Pause / Resume (build 2081, verification V-8): the
+        // actions go straight to this service — unlike Rotate,
+        // no Dart knowledge is needed (the session restarts
+        // from the retained start args). A session that cannot
+        // pause (below) never shows the action.
+        val pause = PendingIntent.getService(
+            this, 13, Intent(this, XrayVpnService::class.java).setAction(ACTION_PAUSE),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val resume = PendingIntent.getService(
+            this, 14, Intent(this, XrayVpnService::class.java).setAction(ACTION_RESUME),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         // Kill switch (build 2063): while the blackhole is
         // held the notification says so — a stale "V2Ray · name"
         // over a dead tunnel would be a lie.
+        // Build 2081 (verification V-8): the live speed line
+        // rides the collapsed line beside the name (the
+        // CoreService pattern — the speed beside the place),
+        // in words, never ↓/↑ glyphs (verification V-1: they
+        // render as missing-glyph boxes on this device's font);
+        // BigTextStyle carries the same text expanded. A paused
+        // session says so instead of naming a dead tunnel.
+        // Build 2095 (whole-app journey audit #23): the
+        // label names the engine this session actually is —
+        // this service also carries the Aether slots' SOCKS
+        // tunnels and EmberWarp sessions, and their
+        // notifications used to say "V2Ray".
+        val engineLabel = when {
+            sessionSocksMode -> when (sessionSocksEngine) {
+                "masque" -> "MASQUE"
+                else -> "WARP"
+            }
+            sessionWarpMode -> "EmberWarp"
+            else -> "V2Ray"
+        }
         val text = if (blocked) "Kill switch active — traffic blocked"
-            else if (name.isEmpty()) getString(R.string.notification_connecting) else "V2Ray · $name"
+            else if (paused) "Paused — $engineLabel · $name"
+            else if (name.isEmpty()) getString(R.string.notification_connecting)
+            else if (shownSpeed.isEmpty()) "$engineLabel · $name"
+            else "$engineLabel · $name  ·  $shownSpeed"
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL)
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
-        return builder
+        val withActions = builder
             .setSmallIcon(R.drawable.ic_stat_logo)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(null, getString(R.string.notification_stop), stop).build())
-            .build()
+        // A paused session offers Resume, not Pause or Switch
+        // (there is no core to rotate while paused); a running
+        // session that cannot pause offers Disconnect + Switch
+        // exactly as before.
+        if (paused) {
+            // Build 2098 (verification V-2): with the app lock
+            // on, Resume must not restart the tunnel behind
+            // the PIN — but pointing the action at the gated
+            // service made it a permanently dead button for
+            // every lock user (the gate reads "lock enabled",
+            // never "currently locked", and offered no path
+            // forward). Like the home widget and the QS tile,
+            // the action then opens the app instead — the
+            // user unlocks and resumes there. resumeTunnel
+            // keeps its own gate as the backstop for a
+            // notification posted before the lock was enabled.
+            val resumeAction = if (ConnectWidget.appLockEnabled(this)) open else resume
+            withActions.addAction(Notification.Action.Builder(null, getString(R.string.notification_resume), resumeAction).build())
+            withActions.addAction(Notification.Action.Builder(null, getString(R.string.notification_stop), stop).build())
+        } else {
+            if (canPauseSession()) {
+                withActions.addAction(Notification.Action.Builder(null, getString(R.string.notification_pause), pause).build())
+            }
+            withActions.addAction(Notification.Action.Builder(null, getString(R.string.notification_stop), stop).build())
+            withActions.addAction(Notification.Action.Builder(null, getString(R.string.notification_rotate), rotate).build())
+        }
+        return withActions.build()
     }
 
     companion object {
@@ -2041,10 +2469,13 @@ class XrayVpnService : VpnService() {
         const val ACTION_ROTATE = "com.ralysnd.ember.XRAY_ROTATE"
         const val ACTION_START_WARP = "com.ralysnd.ember.XRAY_START_WARP"
         const val ACTION_START_SOCKS = "com.ralysnd.ember.XRAY_START_SOCKS"
-        const val ACTION_START_AWG = "com.ralysnd.ember.XRAY_START_AWG"
+        // Pause / Resume (build 2081, verification V-8): the
+        // notification's Pause stops the core and the TUN while
+        // the service stays foreground; Resume restarts the
+        // same session from the retained start args.
+        const val ACTION_PAUSE = "com.ralysnd.ember.XRAY_PAUSE"
+        const val ACTION_RESUME = "com.ralysnd.ember.XRAY_RESUME"
         private const val EXTRA_CONFIG = "config"
-        private const val EXTRA_AWG_SETTINGS = "awgSettings"
-        private const val EXTRA_AWG_ADDRESSES = "awgAddresses"
         private const val EXTRA_NAME = "name"
         private const val EXTRA_SOCKS_PORT = "socksPort"
         // LAN sharing (build 2062, feature queue #2): the SOCKS
@@ -2063,6 +2494,8 @@ class XrayVpnService : VpnService() {
         private const val EXTRA_WARP_ARGS = "warpArgs"
         // DNSTT + wstunnel (build 2072).
         private const val EXTRA_DNSTT_ARGS = "dnsttArgs"
+        // OLCRTC underlay (build 2134).
+        private const val EXTRA_OLCRTC_ARGS = "olcrtcArgs"
         private const val EXTRA_WG_WSTUNNEL = "wgWstunnel"
         private const val EXTRA_WSTUNNEL_ARGS = "wstunnelArgs"
         private const val EXTRA_ENGINE = "engine"
@@ -2073,6 +2506,21 @@ class XrayVpnService : VpnService() {
         private const val TAG = "XrayVpnService"
         private const val MTU = 1500
 
+        /** Build 2080: the initial ChainSupervisor grace for a
+         *  warp-chained session — sized to the core's chained
+         *  greeting budget (EmberWarpCore.CHAIN_GREETING_WAIT_MS,
+         *  150 s): a cold chained scan validates through the
+         *  exit-node and must be allowed to finish before any
+         *  failure is counted against it. */
+        private const val WARP_CHAIN_INITIAL_GRACE_MS = 150_000L
+
+        /** Build 2134: the initial ChainSupervisor grace for
+         *  an OLCRTC-chained session — the client must join
+         *  the SFU room, find its peer and bring the WebRTC
+         *  link up before its SOCKS listener even exists, so
+         *  the grace matches OlcrtcCore's probe window. */
+        private const val OLCRTC_CHAIN_INITIAL_GRACE_MS = 120_000L
+
         /** Clamps a tunnel MTU to the offered range (build 2038,
          *  queue 2f): 1280 is the IPv6 minimum MTU (the floor),
          *  1500 the default ceiling. A corrupt or out-of-range
@@ -2082,6 +2530,37 @@ class XrayVpnService : VpnService() {
         @Volatile
         var running = false
             private set
+
+        /**
+         * Paused (build 2081, verification V-8): the tunnel was
+         * stopped from its notification Pause action while the
+         * service stays foreground with a Resume action — a held
+         * session, not a drop. Reported in xrayState so the Dart
+         * poll does not treat it as an unexpected disconnect.
+         * Cleared by a fresh start, a resume, or a full stop.
+         */
+        @Volatile
+        var paused = false
+            internal set
+
+        /**
+         * Stopped by the user (build 2087, analysis A2): the
+         * last stop arrived through ACTION_STOP — the
+         * notification's Disconnect action, or the app's own
+         * stop, which the companion [stop] funnels through the
+         * same action — rather than through a drop or a
+         * failure. Reported in xrayState so the Dart poll ends
+         * the auto-reconnect expectation instead of treating
+         * the stop as an unexpected drop and resurrecting a
+         * session the user ended. Set in the ACTION_STOP
+         * handler, before the stop runs; cleared by any fresh
+         * start. Deliberately NOT cleared by stopTunnel — the
+         * handler sets it precisely because that stop is about
+         * to run, and the poll must still see it afterwards.
+         */
+        @Volatile
+        var userStopped = false
+            internal set
 
         /**
          * Kill switch (build 2063): true while the service is
@@ -2137,35 +2616,6 @@ class XrayVpnService : VpnService() {
         var startedAtMs = 0L
             private set
 
-        /** The AmneziaWG session (build 2040, queue 2h): whether
-         *  the live tunnel is the userspace device (no Xray
-         *  core to rotate, no SOCKS port to probe), and its
-         *  device handle for the backend calls. */
-        @Volatile
-        var awgMode = false
-            internal set
-
-        @Volatile
-        var awgHandle = -1
-            internal set
-
-        /** The running AWG session's UAPI settings text (build
-         *  2065, item 8): kept so a network change can re-apply
-         *  the SAME config — wg-go rebinds its UDP sockets to the
-         *  new network on a setConfig, which is the engine's own
-         *  socket-recovery hook. */
-        @Volatile
-        var awgSettingsText = ""
-            internal set
-
-        /** The running device's UAPI dump for the UI's handshake
-         *  proof, '' when this is not an AWG session or the
-         *  device is gone. */
-        fun awgConfigDump(): String {
-            if (!awgMode || awgHandle <= 0) return ""
-            return AwgBackend.getConfig(awgHandle) ?: ""
-        }
-
         @Volatile
         private var baseTx = -1L
 
@@ -2211,6 +2661,9 @@ class XrayVpnService : VpnService() {
             dnsttArgs: List<String> = emptyList(),
             wgWstunnel: Boolean = false,
             wstunnelArgs: List<String> = emptyList(),
+            // OLCRTC underlay (build 2134): the client's
+            // argument list, kept for supervision + respawn.
+            olcrtcArgs: List<String> = emptyList(),
         ) {
             val intent = Intent(context, XrayVpnService::class.java).apply {
                 action = ACTION_START
@@ -2232,6 +2685,7 @@ class XrayVpnService : VpnService() {
                 )
                 putStringArrayListExtra(EXTRA_WARP_ARGS, ArrayList(warpArgs))
                 putStringArrayListExtra(EXTRA_DNSTT_ARGS, ArrayList(dnsttArgs))
+                putStringArrayListExtra(EXTRA_OLCRTC_ARGS, ArrayList(olcrtcArgs))
                 putExtra(EXTRA_WG_WSTUNNEL, wgWstunnel)
                 putStringArrayListExtra(
                     EXTRA_WSTUNNEL_ARGS,
@@ -2297,35 +2751,6 @@ class XrayVpnService : VpnService() {
                 putExtra(EXTRA_ENGINE, engine)
                 putExtra(EXTRA_MTU, clampMtu(mtu))
                 putExtra(EXTRA_KILL_SWITCH, killSwitch)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        /** Starts the AmneziaWG tunnel (build 2040, queue 2h):
-         *  [settings] is the UAPI string the Dart side built
-         *  from the profile; [addresses] is the profile's
-         *  tunnel addresses ("ip/prefix" comma-separated). */
-        fun startAwg(
-            context: Context,
-            name: String,
-            settings: String,
-            addresses: String,
-            dns: String,
-            ipv6: Boolean,
-            mtu: Int = 1500,
-        ) {
-            val intent = Intent(context, XrayVpnService::class.java).apply {
-                action = ACTION_START_AWG
-                putExtra(EXTRA_NAME, name)
-                putExtra(EXTRA_AWG_SETTINGS, settings)
-                putExtra(EXTRA_AWG_ADDRESSES, addresses)
-                putExtra(EXTRA_DNS, dns)
-                putExtra(EXTRA_IPV6, ipv6)
-                putExtra(EXTRA_MTU, clampMtu(mtu))
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

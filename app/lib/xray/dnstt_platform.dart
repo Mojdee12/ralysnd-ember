@@ -34,6 +34,11 @@ class DnsttState {
 class DnsttPlatform {
   static const _channel = MethodChannel('app/android');
 
+  /// The last start() channel failure's text (build 2116,
+  /// AB-10) — state() surfaces it when the client reports
+  /// no error of its own.
+  static String lastStartError = '';
+
   /// Spawns the client with [args]. Returns once the process
   /// exists; readiness completes asynchronously — poll [state]
   /// until [DnsttState.ready].
@@ -42,8 +47,10 @@ class DnsttPlatform {
       final v = await _channel.invokeMethod<bool>('dnsttStart', {
         'args': args,
       });
+      if (v == true) lastStartError = '';
       return v ?? false;
-    } catch (_) {
+    } catch (e) {
+      lastStartError = '$e';
       return false;
     }
   }
@@ -60,7 +67,7 @@ class DnsttPlatform {
     try {
       final m = await _channel.invokeMapMethod<String, dynamic>('dnsttState');
       if (m == null) return const DnsttState();
-      return DnsttState(
+      final s = DnsttState(
         available: m['available'] as bool? ?? false,
         running: m['running'] as bool? ?? false,
         ready: m['ready'] as bool? ?? false,
@@ -68,8 +75,19 @@ class DnsttPlatform {
         error: m['error'] as String? ?? '',
         logTail: m['logTail'] as String? ?? '',
       );
-    } catch (_) {
-      return const DnsttState();
+      if (!s.running && s.error.isEmpty && lastStartError.isNotEmpty) {
+        return DnsttState(
+          available: s.available,
+          running: s.running,
+          ready: s.ready,
+          stage: s.stage == 'idle' ? 'error' : s.stage,
+          error: lastStartError,
+          logTail: s.logTail,
+        );
+      }
+      return s;
+    } catch (e) {
+      return DnsttState(stage: 'error', error: '$e');
     }
   }
 }

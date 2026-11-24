@@ -73,11 +73,3 @@ bool isValidVlessEncryption(String value) {
   return sawKey;
 }
 
-/// The short display form of a valid encryption value — the scheme,
-/// the mode and the round-trip mode — for editor captions and
-/// diagnostics. Returns '' for an invalid value.
-String vlessEncryptionSummary(String value) {
-  if (!isValidVlessEncryption(value)) return '';
-  final parts = value.split('.');
-  return 'mlkem768x25519plus · ${parts[1]} · ${parts[2] == '0rtt' ? '0-RTT' : '1-RTT'}';
-}

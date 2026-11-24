@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -8,6 +10,8 @@ import '../core/ports.dart';
 import '../core/remote_flags.dart';
 import '../l10n/app_localizations.dart';
 import 'country_names.dart';
+import 'ember/ember_theme.dart';
+import 'ember/map_widgets.dart';
 import 'local_country_names.dart';
 
 /// Where a Firefox Account is made: Mozilla's site.
@@ -112,13 +116,11 @@ String describeProblem(AppLocalizations l, CoreUnavailable e) =>
       CoreProblem.exited => l.errCoreExited(e.detail),
     };
 
-/// The color of a real delay: green when quick, amber when slow, red when
-/// very slow.
-Color delayColor(int ms) => ms < 400
-    ? StatusColors.good
-    : ms < 1000
-    ? StatusColors.busy
-    : StatusColors.bad;
+/// The color of a real delay. Build 2116 (AP-04): routed
+/// through the ONE ping rule (the frozen ≤150 ms pair in
+/// pingColor) — this legacy rule (<400 green, <1000 amber)
+/// disagreed with the mobile surfaces about the same delay.
+Color delayColor(int ms) => pingColor(ms);
 
 /// Mozilla lists its recommended location as a country of its own, code
 /// REC (named "Recomended Location").
@@ -522,43 +524,56 @@ class Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: padding,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (title != null) ...[
-              Row(
-                children: [
-                  if (icon != null) ...[
-                    Icon(
-                      icon,
-                      size: 18,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  Expanded(
-                    child: Text(
-                      title!,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        letterSpacing: 0.4,
-                      ),
-                    ),
+    // Build 2116 (AP-06): on Android a Panel is hosted by
+    // the Ember shell (the legacy SettingsPage is pushed
+    // from the Ember settings tab), where every other
+    // panel is MapGlass — the stock Card (flat #212228,
+    // radius 16) read as a different design language over
+    // the map. Desktop hosts keep the Card.
+    final emberHosted = Platform.isAndroid;
+    final content = Padding(
+      padding: padding,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (title != null) ...[
+            Row(
+              children: [
+                if (icon != null) ...[
+                  Icon(
+                    icon,
+                    size: 18,
+                    color: emberHosted
+                        ? Ember.dim
+                        : theme.colorScheme.onSurfaceVariant,
                   ),
-                  ?trailing,
+                  const SizedBox(width: 8),
                 ],
-              ),
-              const SizedBox(height: 14),
-            ],
-            child,
+                Expanded(
+                  child: Text(
+                    title!,
+                    style: emberHosted
+                        ? Ember.body.copyWith(
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.4,
+                          )
+                        : theme.textTheme.labelLarge?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            letterSpacing: 0.4,
+                          ),
+                  ),
+                ),
+                ?trailing,
+              ],
+            ),
+            const SizedBox(height: 14),
           ],
-        ),
+          child,
+        ],
       ),
     );
+    if (emberHosted) return MapGlass(child: content);
+    return Card(margin: EdgeInsets.zero, child: content);
   }
 }
 

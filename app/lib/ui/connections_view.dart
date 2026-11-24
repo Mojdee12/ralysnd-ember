@@ -8,6 +8,7 @@ import '../core/core_api.dart';
 import '../core/core_controller.dart';
 import '../core/models.dart';
 import '../l10n/app_localizations.dart';
+import 'ember/ember_theme.dart';
 import 'format.dart';
 import 'widgets.dart';
 
@@ -288,7 +289,12 @@ class _ConnectionsViewState extends State<ConnectionsView> {
 
 const _sidePadding = 12.0;
 
-const _mono = TextStyle(fontFamily: 'Consolas', fontSize: 12.5, height: 1.4);
+// Build 2138 (visual review V-06): on the type scale.
+const _mono = TextStyle(
+  fontFamily: 'Consolas',
+  fontSize: Ember.fontSmall,
+  height: 1.4,
+);
 
 /// Connections are addresses and stay left to right in every language.
 Widget _ltrRow(
@@ -398,7 +404,7 @@ class _Row extends StatelessWidget {
       'inbound' => _oneLine(c.inbound.toUpperCase(), muted),
       'protocol' => _oneLine(c.network.toUpperCase(), muted),
       'traffic' => _oneLine(
-        '↑ ${formatBytes(c.up)}  ↓ ${formatBytes(c.down)}',
+        'Down ${formatBytes(c.down)} · Up ${formatBytes(c.up)}',
         muted,
       ),
       'duration' => Row(

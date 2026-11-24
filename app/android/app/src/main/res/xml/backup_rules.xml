@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Build 2095 (third-pass audit 5-2/5-3): core/app-settings.json (plaintext sync token + PIN hash), the xray//singbox//mieru/ session-config copies and psiphon/state.json (upstream credentials + Conduit pairing id) are excluded too. -->
 <!-- Auto Backup (Android 6 to 11): everything, so a new phone keeps the
      accounts and the settings, except what the core makes again: logs,
      routing lists, caches, and per-run files.
@@ -29,4 +30,9 @@
     <exclude domain="file" path="core/config.json" />
     <exclude domain="file" path="core/accounts/" />
     <exclude domain="file" path="openvpn/state.json" />
+    <exclude domain="file" path="core/app-settings.json" />
+    <exclude domain="file" path="xray/" />
+    <exclude domain="file" path="singbox/" />
+    <exclude domain="file" path="mieru/" />
+    <exclude domain="file" path="psiphon/state.json" />
 </full-backup-content>

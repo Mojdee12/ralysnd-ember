@@ -225,7 +225,7 @@ class ProxyConnection {
   /// vpn, direct, blocked, port (Mozilla refuses the port), or failed.
   final String route;
 
-  /// h2 or h3, through Mozilla.
+  /// h1, h2 or h3, through Mozilla (h1 since build 2105).
   final String transport;
   final int up, down;
 

@@ -45,17 +45,6 @@ Future<String?> resolveFirstIp(String address) async {
   }
 }
 
-/// All IPs [address] resolves to (for DNS-neighbour candidates).
-Future<List<String>> resolveAllIps(String address) async {
-  if (isIpLiteral(address)) return [address];
-  try {
-    final found = await InternetAddress.lookup(address)
-        .timeout(const Duration(seconds: 4));
-    return found.map((a) => a.address).toList();
-  } catch (_) {
-    return const [];
-  }
-}
 
 /// TCP connect + TLS handshake with [sni] against [address]:443.
 /// The latency covers connect + handshake: the honest "ping" an app

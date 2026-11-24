@@ -13,6 +13,7 @@ import 'core/ports.dart';
 import 'core/tun_service.dart';
 import 'desktop/desktop_integration.dart';
 import 'ui/app.dart';
+import 'ui/ember/ember_updater.dart';
 
 /// The desktop app starts the core as its child process (`-app`) and stops
 /// it on quit. Arguments: `--data-dir=<path>` (default: see
@@ -83,10 +84,16 @@ Future<void> runAndroid() async {
   // Build 2071 (review §3.3): the inherited update checker is
   // NOT started on Android. It polls the upstream repo
   // (armanlife/firefox-vpn-client) every 5 days and can surface
-  // a foreign "Firefox-VPN" update in this app; Ember has no
-  // update feed of its own, so until one exists the checker
-  // stays off here. Updates.start also refuses Android itself,
-  // so no other entry point can revive it on this platform.
-  // The desktop entry above keeps its behaviour.
+  // a foreign "Firefox-VPN" update in this app. Updates.start
+  // also refuses Android itself, so no other entry point can
+  // revive it on this platform. The desktop entry above keeps
+  // its behaviour.
+  // Build 2075: Ember now HAS its own feed — the public
+  // GitHub Releases of Mojdee12/ralysnd-ember, where every
+  // build is published — so Android gets its own updater
+  // (EmberUpdater): a silent check once per 24 h plus the
+  // Settings "App updates" panel, downloading and installing
+  // from inside the app. The upstream checker stays off.
+  EmberUpdater.start(settings, dataDir);
   runApp(VpnApp(core: core, settings: settings));
 }

@@ -186,12 +186,14 @@ void main() {
           .toList();
       expect(tags, isNot(contains('psiphon-underlay')));
       final proxy = outboundByTag(config, 'proxy');
-      // Build 2049: the proxy sockopt now always exists — it
-      // carries the IPv4-only server-dial strategy — but an
-      // unchained config still has no dialerProxy in it.
+      // Build 2049: the proxy sockopt carried the IPv4-only
+      // server-dial strategy — REMOVED in build 2101 by the
+      // owner's order (full v2rayNG adoption; see
+      // build2101_test.dart). An unchained config has neither
+      // a dialerProxy nor a domainStrategy in it now.
       final sockopt = proxy['streamSettings']['sockopt'] as Map;
       expect(sockopt['dialerProxy'], isNull);
-      expect(sockopt['domainStrategy'], 'UseIPv4');
+      expect(sockopt['domainStrategy'], isNull);
     });
 
     test('with the fragment chain, the fragment outbound is chained', () {

@@ -2,7 +2,7 @@ name: firefox_vpn
 description: "Cross-platform shell for the Go VPN core"
 publish_to: 'none'
 
-version: 2.2.0+2074
+version: 2.2.0+2146
 
 environment:
   sdk: ^3.13.5
@@ -20,6 +20,9 @@ dependencies:
   # Password-protected expiring share links (build 2030): AES-256-GCM.
   pointycastle: 3.9.1
   webview_flutter: ^4.14.1
+  # Clash YAML subscription import (build 2075): the real YAML
+  # parser — resolved from the offline pub cache, no download.
+  yaml: 3.1.3
 
 # Packages published less than two weeks ago are held back until they have
 # been out longer.
@@ -51,9 +54,16 @@ flutter:
     # Open-source license texts (the AGPL-3.0 full text for the
     # EmberWarp core, build 2030).
     - assets/licenses/
-    # The Psiphon core's embedded server entries (from the official
-    # app's published resources; see PsiphonConstants.kt).
+    # The Psiphon embedded server entries — the bootstrap floor
+    # the service extracts and the sidecar imports at start
+    # (build 2090; removed in 2089, restored byte-exact from
+    # pkg2088 — see lib/psiphon/psiphon_sidecar_config.dart).
     - assets/psiphon/
+    # The offline IP→country tables (build 2129, leg 6):
+    # v2fly/geoip-derived range tables, CC BY-SA 4.0 — see
+    # assets/licenses/geoip-notice.txt and lib/net/geo_country.dart.
+    # ~15.5 MB for both families.
+    - assets/geoip/
 
   fonts:
     # Vazirmatn (SIL Open Font License 1.1, assets/fonts/OFL.txt) for Persian.

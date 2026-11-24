@@ -21,6 +21,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'link_parser.dart';
+import 'profile_validation.dart';
 import 'xray_models.dart';
 
 /// An import failure with a user-facing, English explanation.
@@ -258,12 +259,16 @@ Profile profileFromConnectConfig(
     if (outbound['type'] == 'shadowsocks') {
       sawShadowsocks = true;
       final profile = _singBoxShadowsocks(outbound, fallbackName);
-      if (profile != null) return profile;
+      // Build 2096 (post-2095 audit M4): the fetched
+      // config crosses the same import boundary as every
+      // other profile source — build 2095 returned it
+      // raw (port unbounded above, name unsanitized).
+      if (profile != null) return sanitizeImportedProfile(profile);
     } else if (outbound['protocol'] == 'shadowsocks') {
       // Xray-shaped outbound, tolerated for robustness.
       sawShadowsocks = true;
       final profile = _xrayShadowsocks(outbound, fallbackName);
-      if (profile != null) return profile;
+      if (profile != null) return sanitizeImportedProfile(profile);
     }
   }
   if (sawShadowsocks) {

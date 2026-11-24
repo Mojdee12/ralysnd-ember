@@ -7,6 +7,7 @@ import '../app_settings.dart';
 import '../core/core_controller.dart';
 import '../l10n/app_localizations.dart';
 import 'ember/ember_theme.dart';
+import 'ember/map_widgets.dart';
 import 'widgets.dart';
 
 /// The first run: the user picks a language and a country, and the
@@ -51,6 +52,7 @@ class _WelcomePageState extends State<WelcomePage> {
   }
 
   Future<void> _start() async {
+    if (_saving) return;
     setState(() => _saving = true);
     final region = _region;
     // Ember 2: smart routing starts OFF (everything goes through the
@@ -58,16 +60,26 @@ class _WelcomePageState extends State<WelcomePage> {
     // language-suggested region alone must not turn it on, which was
     // the v1 "sites do not open" trap.
     final picked = _regionPicked;
-    await runShowingErrors(
-      context,
-      () => widget.core.editSettings((config) {
-        final routing = config['routing'];
-        if (routing is! Map<String, Object?>) return;
-        routing['enabled'] = picked && region.isNotEmpty;
-        if (region.isNotEmpty) routing['region'] = region;
-      }),
-    );
-    widget.settings.update(language: _language, firstRun: false);
+    // Build 2092 (item 47): the busy flag resets in a
+    // finally, and firstRun is cleared only when the save
+    // actually succeeded — a failed first save used to mark
+    // the app set up AND wedge the button disabled.
+    try {
+      final ok = await runShowingErrors(
+        context,
+        () => widget.core.editSettings((config) {
+          final routing = config['routing'];
+          if (routing is! Map<String, Object?>) return;
+          routing['enabled'] = picked && region.isNotEmpty;
+          if (region.isNotEmpty) routing['region'] = region;
+        }),
+      );
+      if (ok) {
+        widget.settings.update(language: _language, firstRun: false);
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -92,11 +104,10 @@ class _WelcomePageState extends State<WelcomePage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(
-                      Icons.shield_rounded,
-                      size: 56,
-                      color: Ember.orange,
-                    ),
+                    // Build 2137 (visual review V-28): the
+                    // brand's own shield mark, not the stock
+                    // Material shield icon.
+                    const EmberShieldMark(size: 56),
                     const SizedBox(height: 16),
                     Text(
                       l.welcomeTitle,

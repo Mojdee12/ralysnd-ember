@@ -136,7 +136,10 @@ void main() {
       final src = dartSrc('xray/xray_controller.dart');
       expect(src, contains('killSwitch: settings.killSwitch,'));
       // Once for the V2Ray connect, once for the WARP connect.
-      expect('killSwitch: settings.killSwitch,'.allMatches(src).length, 2);
+      // Build 2127 re-point (H4): 2 -> 3 — the WG Tunnel
+      // connect passes the setting to the library kill
+      // switch as well.
+      expect('killSwitch: settings.killSwitch,'.allMatches(src).length, 3);
     });
 
     test('reconnect notices read the held flag from the live state', () {
@@ -200,10 +203,41 @@ void main() {
 
     test('a held fd closes only after the new TUN is up', () {
       // All three TUN start paths + the AWG path.
+      // Build 2127 re-point (H5): 3 -> 2 literal copies —
+      // the Xray path's hand-off moved into the shared
+      // establishTun(), which keeps the same invariant in
+      // generic form: the previous TUN is captured before
+      // establish() and closed only after the new fd is
+      // installed. The warp and socks paths keep theirs.
       expect('val heldPfd = if (blackholeHeld) tunPfd else null'
           .allMatches(kt)
-          .length, 3);
-      expect(kt, contains('if (blackholeHeld) {\n                blackholeHeld = false'));
+          .length, 2);
+      final est = kt.substring(kt.indexOf('private fun establishTun('));
+      final estBody = est.substring(0, est.indexOf('\n    }\n'));
+      expect(estBody, contains('val heldPfd = tunPfd'));
+      expect(
+        estBody.indexOf('builder.establish()') <
+            estBody.indexOf('heldPfd.close()'),
+        isTrue,
+        reason: 'the held fd closes only after establish()',
+      );
+      // Build 2100 (W-WG2, named reason): the AWG path's own
+      // `if (blackholeHeld)` hand-off block is gone with the
+      // service move — AwgVpnService runs in another process
+      // and cannot touch XrayVpnService's companion statics.
+      // The hold is released before the AWG start instead: the
+      // Dart connect path stops first whenever anything is up
+      // OR held (see build2100_test.dart, "a held blackhole is
+      // released before the AWG start"). The platform revoke
+      // (onRevoke → stopTunnel) remains only as a backstop —
+      // never the mechanism, because it is unproven for a
+      // same-app establish and its stopForeground(REMOVE)
+      // would strip the AWG notification sharing id 2.
+      // What this test still pins: the revoke backstop exists,
+      // and a manual stop releases the hold.
+      expect(kt, contains('override fun onRevoke()'));
+      final stop = kt.substring(kt.indexOf('private fun stopTunnel()'));
+      expect(stop, contains('blackholeHeld = false'));
       // The close never precedes establish(): the swap sits
       // after the null-check in every start function.
       for (final label in ['returned null")', 'returned null (warp)"',
@@ -219,22 +253,46 @@ void main() {
       expect(kt, contains('"Kill switch active — traffic blocked"'));
     });
 
-    test('start paths carry the flag; AWG never holds', () {
+    test('start paths carry the flag; the WG session reports its real hold', () {
       expect(kt, contains('EXTRA_KILL_SWITCH'));
       expect(kt, contains('killSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)'));
       expect(kt, contains('killSwitch: Boolean = false,'));
       expect(kt, contains('putExtra(EXTRA_KILL_SWITCH, killSwitch)'));
-      expect(kt, contains('an AWG session never holds'));
+      // Build 2100 (W-WG2, named reason): the AWG branch moved
+      // to AwgVpnService.kt — the "never holds" comment moved
+      // with it (same wording).
+      // Build 2104: the AWG engine holds no TUN of its own in
+      // Ember's code at all (the WG Tunnel backend owns it,
+      // and Ember runs no kill-switch mode on it) — the
+      // observable half is MainActivity's state merge, which
+      // reports an AWG session's killSwitchHeld as false.
+      // Build 2127 supersession (H4): the WG leg landed —
+      // WgTunnelEngine drives the library's own kill switch
+      // and MainActivity's merge now reports the snapshot's
+      // REAL flag for both AWG state branches.
+      expect(
+        ktSrc('MainActivity.kt'),
+        contains('"killSwitchHeld" to\n                                    awgSnap.killSwitchHeld,'),
+      );
+      expect(
+        'awgSnap.killSwitchHeld'.allMatches(ktSrc('MainActivity.kt')).length,
+        2,
+      );
     });
   });
 
   group('MainActivity threading (build 2063)', () {
-    test('state reports the hold; all three starts pass the flag', () {
+    test('state reports the hold; all eight starts pass the flag', () {
       final src = ktSrc('MainActivity.kt');
       expect(src, contains('"killSwitchHeld" to XrayVpnService.blackholeHeld'));
+      // Build 2125 re-point (A25-04): 3 -> 6 readers — the
+      // Lantern and OpenVPN setOn/start paths and the
+      // Psiphon start now take the flag too.
+      // Build 2127 re-point (H4): 6 -> 8 — the Mozilla
+      // setOn mirror and the WG Tunnel setOn take it too.
       expect('call.argument<Boolean>("killSwitch") ?: false'
           .allMatches(src)
-          .length, 3);
+          .length, 8);
     });
   });
 
@@ -260,9 +318,19 @@ void main() {
       xray.settings.killSwitch = true;
       xray.notifySettingsChanged();
       await tester.pump();
+      // Build 2125 re-point (A25-04): the caption is the
+      // corrected coverage — Psiphon, Lantern and OpenVPN
+      // covered; Mozilla and AmneziaWG not.
+      // Build 2127 supersession (H4): both remaining legs
+      // landed — the caption now covers every engine and
+      // the old exclusion claim is gone.
       expect(
-        find.textContaining('AmneziaWG, Psiphon and Lantern are not covered yet.'),
+        find.textContaining('This covers every engine'),
         findsOneWidget,
+      );
+      expect(
+        find.textContaining('are not covered'),
+        findsNothing,
       );
     });
 

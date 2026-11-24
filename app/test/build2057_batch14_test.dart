@@ -129,18 +129,28 @@ void main() {
       }
     });
 
-    test('the engine rail scrolls horizontally instead of folding', () {
-      // Build 2074 (UI audit item 1): the 9-chip rail (436 dp)
-      // squeezed every page; the fold-to-two-columns mechanism
-      // is replaced by a horizontal scroller in a fixed-height
-      // strip — every engine stays reachable at any window size.
+    test('the engine rail is the restored pre-2074 stack', () {
+      // Build 2075 (owner-ordered revert): the owner disliked
+      // build 2074's horizontal scrolling strip and ordered the
+      // previous build's engine-selector layout back — the
+      // nine chips stacked at the header's top-right in a Wrap,
+      // folding to two columns on short windows (compactRail,
+      // the build 2057 mechanism). 2074's scroller machinery is
+      // gone; every other 2074 UI fix stands.
       final src = _dart('ui/ember/ember_shell.dart');
-      expect(src.contains('scrollDirection: Axis.horizontal'), isTrue);
-      expect(src.contains('_railController'), isTrue);
-      expect(src.contains('compactRail'), isFalse);
+      expect(src.contains('scrollDirection: Axis.horizontal'), isFalse);
+      expect(src.contains('_railController'), isFalse);
+      expect(src.contains('compactRail'), isTrue);
+      // Build 2083 (owner's device report on 2079): the rail's
+      // run spacing tightened 5 → 3 (with the 36 px chip box)
+      // — this pin follows the intentional change.
+      // Build 2092 (items 34/60): run spacing 3 → 0 — the chip
+      // box already carries 3+3 dp of slack, so the
+      // glass-to-glass gap is 6 dp, matching the horizontal
+      // spacing. This pin follows that change too.
       expect(
-        src.contains('Wrap(spacing: 6, runSpacing: 5, children: rail)'),
-        isFalse,
+        src.contains('Wrap(spacing: 6, runSpacing: 0, children: rail)'),
+        isTrue,
       );
     });
   });
@@ -172,24 +182,26 @@ void main() {
   });
 
   group('F-M4 Psiphon IPv6 extra', () {
-    test('service honours the ipv6 extra; v6 is gated, not unconditional', () {
+    // Build 2123 supersession (recorded, not silent): S-3
+    // of the Psiphon fix plan replaced the 2091 posture.
+    // The extra is still carried and still not read back,
+    // but the TUN now CAPTURES IPv6 (ULA address + ::/0)
+    // and drops it — the v4-only bridge has no v6 egress,
+    // so capture-and-drop is the leak fix (audit P-04);
+    // before 2123 the family simply bypassed the tunnel.
+    test('service captures IPv6 and drops it (build 2123: '
+        'S-3 capture-and-drop; bridge stays IPv4-only)', () {
       final src = _kt('PsiphonVpnService.kt');
       expect(src.contains('EXTRA_IPV6 = "ipv6"'), isTrue);
       expect(src.contains('putExtra(EXTRA_IPV6, ipv6)'), isTrue);
-      expect(
-        src.contains('getBooleanExtra(EXTRA_IPV6, true)'),
-        isTrue,
-      );
-      // The v6 address and the ::/0 route exist only inside the
-      // `if (ipv6)` gate — nowhere unconditional.
-      final gate = src.indexOf('if (ipv6) {');
-      expect(gate, isNot(-1));
-      final v6addr = src.indexOf('fdfe:dcba:9876::1');
-      final v6route = src.indexOf('addRoute("::", 0)');
-      expect(v6addr, greaterThan(gate));
-      expect(v6route, greaterThan(gate));
-      expect(src.indexOf('fdfe:dcba:9876::1', v6addr + 1), -1);
-      expect(src.indexOf('addRoute("::", 0)', v6route + 1), -1);
+      // The flag stays threaded but inert: capture is
+      // unconditional, so the host still never reads it.
+      expect(src.contains('getBooleanExtra(EXTRA_IPV6'), isFalse);
+      // Xray's ULA is not Psiphon's; Psiphon uses MLM's.
+      expect(src.contains('fdfe:dcba:9876::1'), isFalse);
+      expect(src.contains('addRoute("::", 0)'), isTrue);
+      expect(src.contains('addAddress(IPV6_BLACKHOLE, 128)'), isTrue);
+      expect(src.contains('if (ipv6) {'), isFalse);
     });
 
     test('Dart sends the setting and the shell wires it to ipv6Route', () {
@@ -207,31 +219,43 @@ void main() {
   });
 
   group('F-M4 Psiphon core liveness', () {
-    test('watchHelper tears down a silently dead core', () {
+    test('watchBridge tears down a silently dead bridge; '
+        'the wedge is the external watchdog\u2019s (build 2091)', () {
       final src = _kt('PsiphonVpnService.kt');
-      // The exit callback arms the teardown...
-      expect(src.contains('coreExited = true'), isTrue);
-      // Build 2065 shape: ladder attempts route their exits to
-      // attemptExited; an unasked exit outside the ladder still
-      // arms coreExited exactly as F-M4 requires.
-      expect(src.contains('else if (!stopping.get())'), isTrue);
-      expect(src.contains('attemptExited = true'), isTrue);
-      // ...the watcher honours it...
-      expect(src.contains('if (coreExited)'), isTrue);
-      // ...and the silence deadline (grace + no notices, never
-      // connected) is the backstop for a core that dies without
-      // even calling onExiting.
-      expect(src.contains('CONNECT_DEADLINE_MS'), isTrue);
-      expect(src.contains('NOTICE_SILENCE_MS'), isTrue);
-      expect(src.contains('lastNoticeMs = System.currentTimeMillis()'), isTrue);
-      // Proxy-only mode is watched too — it previously had no
-      // watcher at all. Build 2065 re-anchor: the watch call must
-      // sit in the proxy-only branch, before the VPN-mode
-      // bridging code (waitForPort) that follows it.
-      final proxyOnly = src.indexOf('if (!vpnMode) {');
-      final watchAfter = src.indexOf('watchHelper()', proxyOnly);
-      expect(watchAfter, isNot(-1));
-      expect(watchAfter, lessThan(src.indexOf('waitForPort', proxyOnly)));
+      // Build 2091 supersession (recorded, not silent): the
+      // provider is an in-process library again, so liveness
+      // is twofold — the bridge watcher (a dead bridge tears
+      // the session down) and the external watchdog (a wedged
+      // start is killed from outside; startReturned is the
+      // discriminator it reads).
+      expect(src.contains('providerExited'), isFalse);
+      expect(src.contains('coreExited'), isFalse);
+      expect(src.contains('attemptExited'), isFalse);
+      // The backstop for a rung that never connects is the
+      // ladder timer (budget + 8 s grace), not a plain
+      // connect deadline. The notice-silence pair is GONE
+      // with the sidecar (the library's notices are the
+      // record again) — pinned absent here and in
+      // build2087's suite.
+      expect(src.contains('CONNECT_DEADLINE_MS'), isFalse);
+      expect(src.contains('NOTICE_SILENCE_MS'), isFalse);
+      expect(src.contains('lastNoticeMs'), isFalse);
+      expect(src.contains('armLadderTimer()'), isTrue);
+      expect(src.contains('startReturned'), isTrue);
+      // The bridge watcher runs in VPN mode, after the TUN
+      // exists and the core starts.
+      expect(src.contains('private fun watchBridge()'), isTrue);
+      expect(
+        src.contains('bridgeStarted && !Tun2SocksManager.isRunning'),
+        isTrue,
+      );
+      expect(
+        src.contains('psiphon bridge exited; tearing the session down'),
+        isTrue,
+      );
+      final start = src.indexOf('startPsiphonTunnel()');
+      final watch = src.indexOf('watchBridge()', start);
+      expect(watch, isNot(-1));
     });
   });
 
@@ -318,8 +342,12 @@ void main() {
         '(~300 s; build 2065 ladder supersession)', () {
       final src = _dart('psiphon/psiphon_controller.dart');
       expect(src.contains('for (var i = 0; i < 1200; i++)'), isTrue);
+      // Build 2090 supersession: the timeout error now carries the
+      // psiphon.log tail (evidence-carrying establishment failure)
+      // instead of the bare literal — the throw is a conditional
+      // between the bare text and the tail-carrying text.
       expect(
-        src.contains("throw StateError('connect-timeout')"),
+        src.contains("'connect-timeout — the Psiphon log tail:"),
         isTrue,
       );
     });
@@ -350,9 +378,40 @@ void main() {
       }
     });
 
-    test('proxy-only mode still succeeds on running alone', () async {
+    test('proxy-only mode waits for connected too (build '
+        '2091: the R12 contract change)', () async {
+      // Build 2091: success means the CORE connected, not
+      // the process running — in proxy mode as in VPN mode.
+      // A proxy-only core that never connects times out
+      // exactly like a VPN-mode one (and is stopped, like
+      // one). The old "running alone is enough" shape is
+      // gone with the sidecar it described.
+      var stopCalls = 0;
       mockPsiphon([
         psiphonState(running: true, connected: false, vpnMode: false),
+        psiphonState(running: true, connected: false, vpnMode: false),
+        // The core then dies without ever connecting.
+        psiphonState(running: false, connected: false, vpnMode: false),
+      ], () => stopCalls++);
+      final c = PsiphonController()..settings.vpnMode = false;
+      Object? error;
+      try {
+        await c.connect();
+      } catch (e) {
+        error = e;
+      } finally {
+        c.dispose();
+      }
+      expect(error, isA<StateError>());
+      expect((error as StateError).message, 'connect-timeout');
+      expect(stopCalls, greaterThan(0));
+    });
+
+    test('proxy-only mode succeeds once the core connects',
+        () async {
+      mockPsiphon([
+        psiphonState(running: true, connected: false, vpnMode: false),
+        psiphonState(running: true, connected: true, vpnMode: false),
       ], () {});
       final c = PsiphonController()..settings.vpnMode = false;
       try {

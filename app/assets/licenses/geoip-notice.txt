@@ -1,0 +1,26 @@
+Offline IP-country data notice
+
+The app's country ranges are adapted from v2fly/geoip, release 202610050438:
+https://github.com/v2fly/geoip/releases/tag/202610050438
+Source geoip.dat SHA-256:
+4ff4b2ec242a9e87b296ba27ddb85f8311e8d3e071eaebac5be9231c60e408dd
+
+Copyright/credits: v2fly/geoip contributors and the authors of their upstream
+data. The v2fly/geoip project states that its material is licensed under the
+Creative Commons Attribution-ShareAlike 4.0 International license:
+https://creativecommons.org/licenses/by-sa/4.0/
+The full license is included in GeoIP-CC-BY-SA-4.0.txt. The v2fly project also
+credits free IP geolocation data by DB-IP (https://db-ip.com), available under
+Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/
+
+Changes: country CIDR groups were converted into sorted, non-overlapping IP
+ranges, adjacent ranges for the same country were merged, and private, test,
+and unspecified-country groups were omitted. Overlapping CIDRs resolve to the
+most specific prefix; equally specific country conflicts fail the conversion.
+Conversion script, code list and reproduction information accompany the Android
+repair patch. These derived country ranges remain CC BY-SA 4.0.
+
+A country is an approximate database assignment for the tested VPN server's
+entry IP; it is not a guarantee of physical, exit, or user location. The app
+looks it up locally and does not send the IP to a geolocation service.

@@ -15,34 +15,44 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
+import '../../aether/aether_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../psiphon/psiphon_strategy.dart';
 import '../../xray/cf_scanner.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
+import '../../xray/link_parser.dart' show newProfileId;
 import 'ember_format.dart';
 import 'ember_theme.dart';
+import 'profile_editor.dart';
 import 'map_widgets.dart';
 
 Future<void> openCfScanner(
   BuildContext context,
   XrayController xray, {
   PsiphonController? psiphon,
+  AetherController? aether,
 }) => Navigator.of(context).push(
   MaterialPageRoute(
-    builder: (_) => CfScannerPage(xray: xray, psiphon: psiphon),
+    builder: (_) => CfScannerPage(xray: xray, psiphon: psiphon, aether: aether),
   ),
 );
 
 class CfScannerPage extends StatefulWidget {
-  const CfScannerPage({super.key, required this.xray, this.psiphon});
+  const CfScannerPage({super.key, required this.xray, this.psiphon, this.aether});
   final XrayController xray;
 
   /// Build 2065 (item 3): when present, a found edge can also be
   /// added to the Psiphon CDN edge list.
   final PsiphonController? psiphon;
+
+  /// Build 2095 (whole-app journey audit #6): when the
+  /// scanner is opened from an Aether engine, a found IP can
+  /// be pinned as THAT slot's endpoint — the apply sheet's
+  /// "WARP endpoint" tile used to write the EmberWarp
+  /// profile no matter which engine the user came from.
+  final AetherController? aether;
 
   @override
   State<CfScannerPage> createState() => _CfScannerPageState();
@@ -79,46 +89,60 @@ class _CfScannerPageState extends State<CfScannerPage> {
       _note = '';
     });
     final extraFirst = <String>[...xray.cfGoodIps];
-    {
-      // Build 2065 (item 3): the host's own DoH-resolved
-      // neighbours are candidates for ANY host now, not only
-      // *.workers.dev — a front hostname's live addresses are
-      // the freshest clean-IP candidates there are.
-      final resolved = await resolveViaDoh(host);
-      extraFirst.insertAll(0, resolved);
-      if (mounted) {
-        setState(() {
-          _note = resolved.isEmpty
-              ? 'The host did not resolve over DoH; probing the '
-                    'curated edges with its name as SNI.'
-              : 'Probing its ${latDigits(resolved.length)} resolved addresses '
-                    'plus the curated edges.';
-        });
-      }
-    }
-    final candidates = cfCandidates(Random(), extraFirst: extraFirst);
-    final found = await scanCfEdges(
-      candidates: candidates,
-      host: host,
-      onProgress: (done, total, soFar) {
+    // Build 2092 (item 16): a throwing resolve/scan used to
+    // leave _scanning true forever — the button read Stop
+    // with nothing running. The failure now lands in the
+    // note line and the flag always clears.
+    var scanFailed = false;
+    var found = <CfProbeResult>[];
+    try {
+      {
+        // Build 2065 (item 3): the host's own DoH-resolved
+        // neighbours are candidates for ANY host now, not only
+        // *.workers.dev — a front hostname's live addresses are
+        // the freshest clean-IP candidates there are.
+        final resolved = await resolveViaDoh(host);
+        extraFirst.insertAll(0, resolved);
         if (mounted) {
           setState(() {
-            _done = done;
-            _total = total;
-            _found = soFar;
+            _note = resolved.isEmpty
+                ? 'The host did not resolve over DoH; probing the '
+                      'curated edges with its name as SNI.'
+                : 'Probing its ${latDigits(resolved.length)} resolved addresses '
+                      'plus the curated edges.';
           });
         }
-      },
-      cancelled: () => _stop,
-    );
-    if (found.isNotEmpty) {
-      await xray.saveCfGoodIps([for (final r in found) r.ip]);
+      }
+      final candidates = cfCandidates(Random(), extraFirst: extraFirst);
+      found = await scanCfEdges(
+        candidates: candidates,
+        host: host,
+        onProgress: (done, total, soFar) {
+          if (mounted) {
+            setState(() {
+              _done = done;
+              _total = total;
+              _found = soFar;
+            });
+          }
+        },
+        cancelled: () => _stop,
+      );
+      if (found.isNotEmpty) {
+        await xray.saveCfGoodIps([for (final r in found) r.ip]);
+      }
+    } catch (_) {
+      scanFailed = true;
     }
     if (mounted) {
       setState(() {
         _scanning = false;
         _found = found;
-        if (found.isEmpty && !_stop) {
+        if (scanFailed) {
+          _note =
+              'The scan failed — check the connection and '
+              'try again.';
+        } else if (found.isEmpty && !_stop) {
           _note = 'No edge answered for $host on this network.';
         }
       });
@@ -141,7 +165,13 @@ class _CfScannerPageState extends State<CfScannerPage> {
         : _host.text.trim();
     final picked = await showModalBottomSheet<Object>(
       context: context,
-      backgroundColor: Ember.card,
+      // Build 2092 (item 44): the app's sheet surface and
+      // radius, scroll-controlled like the other sheets.
+      isScrollControlled: true,
+      backgroundColor: Ember.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
       builder: (context) => SafeArea(
         // Build 2056 (audit A-H8): with many profiles the lower
         // targets were unreachable — the sheet scrolled nowhere.
@@ -158,16 +188,41 @@ class _CfScannerPageState extends State<CfScannerPage> {
               // Build 2074 (audit item 16): every apply-sheet
               // title/subtitle is capped with an ellipsis —
               // user config names and endpoints are unbounded.
+              if (widget.aether != null)
+                ListTile(
+                  leading: const Icon(
+                    Icons.hub_outlined,
+                    color: Ember.orange,
+                  ),
+                  title: Text(
+                    widget.aether!.isWarp
+                        ? 'As the WARP endpoint'
+                        : 'As the MASQUE endpoint',
+                    style: Ember.body,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    'Pins this engine\'s endpoint to ${result.ip}:2408',
+                    style: Ember.caption,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () => Navigator.of(context).pop('aether'),
+                ),
+              // Build 2095 (audit #6): this tile writes the
+              // EmberWarp profile — it is labelled with the
+              // slot it actually writes.
               ListTile(
                 leading: const Icon(Icons.hub_outlined, color: Ember.orange),
                 title: Text(
-                  'As the WARP endpoint',
+                  'As the EmberWarp gateway',
                   style: Ember.body,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(
-                  'Pins the WARP gateway to ${result.ip}:2408',
+                  'Pins the EmberWarp gateway to ${result.ip}:2408',
                   style: Ember.caption,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -191,6 +246,30 @@ class _CfScannerPageState extends State<CfScannerPage> {
                   ),
                   onTap: () => Navigator.of(context).pop('psiphon'),
                 ),
+              // Build 2095 (V2Ray journey audit #9): a
+              // zero-config user had nothing a found IP could
+              // be applied to — the sheet offered only slots
+              // they may not use. Creating a config pre-filled
+              // with the clean IP is always offered.
+              ListTile(
+                leading: const Icon(
+                  Icons.add_circle_outline_rounded,
+                  color: Ember.orange,
+                ),
+                title: Text(
+                  'Create a new config with this address',
+                  style: Ember.body,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  'Opens the editor with ${result.ip} filled in',
+                  style: Ember.caption,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: () => Navigator.of(context).pop('create'),
+              ),
               if (targets.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(18, 10, 18, 2),
@@ -224,6 +303,37 @@ class _CfScannerPageState extends State<CfScannerPage> {
       ),
     );
     if (picked == null || !mounted) return;
+    if (picked == 'aether') {
+      final aether = widget.aether!;
+      await aether.setOptions(
+        aether.options.copyWith(peer: '${result.ip}:2408'),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${aether.isWarp ? 'WARP' : 'MASQUE'} endpoint pinned to '
+              '${result.ip}:2408. Clear it in the engine options to go '
+              'back to the scan.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    if (picked == 'create') {
+      await openProfileEditor(
+        context,
+        xray,
+        draft: Profile(
+          id: newProfileId(),
+          protocol: Protocol.vless,
+          name: 'CF ${result.ip}',
+          address: result.ip,
+        ),
+      );
+      return;
+    }
     if (picked == 'warp') {
       xray.warpProfile.peer = '${result.ip}:2408';
       await xray.saveWarpProfile();
@@ -283,6 +393,7 @@ class _CfScannerPageState extends State<CfScannerPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -294,14 +405,15 @@ class _CfScannerPageState extends State<CfScannerPage> {
         centerTitle: true,
         title: Text(
           'Cloudflare clean IP',
-          style: Ember.heading.copyWith(fontSize: 18),
+          style: Ember.heading.copyWith(fontSize: Ember.fontHeadline),
         ),
       ),
       body: EmberBackground(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
+          padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + kToolbarHeight + 6, 16, 24),
           children: [
             MapGlass(
+        blur: false,
               luminous: true,
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
               child: Column(
@@ -319,11 +431,13 @@ class _CfScannerPageState extends State<CfScannerPage> {
                   // above the input.
                   Text(
                     'SNI / HOST',
+                    // Build 2092 (item 38): 11 sp at dim —
+                    // the micro-label floor.
                     style: TextStyle(
-                      fontSize: 10,
+                      fontSize: Ember.fontMicro,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1.2,
-                      color: MapUi.faint,
+                      color: MapUi.dim,
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -373,17 +487,19 @@ class _CfScannerPageState extends State<CfScannerPage> {
             // two-thirds empty.
             const SizedBox(height: 12),
             MapGlass(
+        blur: false,
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     'RESULTS',
+                    // Build 2092 (item 38): dim, not faint.
                     style: TextStyle(
-                      fontSize: 11,
+                      fontSize: Ember.fontMicro,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1.2,
-                      color: MapUi.faint,
+                      color: MapUi.dim,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -407,9 +523,11 @@ class _CfScannerPageState extends State<CfScannerPage> {
                         onTap: () => unawaited(_tapResult(r)),
                         borderRadius: BorderRadius.circular(10),
                         child: Padding(
+                          // Build 2092 (item 44): the result
+                          // rows reach the 48 dp floor.
                           padding: const EdgeInsets.symmetric(
                             horizontal: 4,
-                            vertical: 9,
+                            vertical: 15,
                           ),
                           child: Row(
                             children: [
@@ -423,7 +541,7 @@ class _CfScannerPageState extends State<CfScannerPage> {
                               Text(
                                 '${latDigits(r.ms)} ms',
                                 style: TextStyle(
-                                  fontSize: 13,
+                                  fontSize: Ember.fontBody,
                                   fontWeight: FontWeight.w700,
                                   color: mapPingColor(r.ms),
                                 ),

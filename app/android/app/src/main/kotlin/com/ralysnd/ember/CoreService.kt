@@ -17,6 +17,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.File
 import java.util.Locale
@@ -67,6 +68,9 @@ class CoreService : VpnService() {
             // behind with no service.
             if (!on) return
             if (!mobile.Mobile.running()) {
+                // Build 2127 (H4): the kill switch may hold
+                // the tunnel instead of tearing it down.
+                if (enterKillSwitchHold()) return
                 Log.e(TAG, "the core stopped; turning the VPN off")
                 turnOff(this@CoreService)
                 return
@@ -74,6 +78,7 @@ class CoreService : VpnService() {
             // The core gave the connect up (no connection to Mozilla within
             // a minute): the VPN and its notification go too.
             if (!mobile.Mobile.isOn()) {
+                if (enterKillSwitchHold()) return
                 Log.w(TAG, "the connect was given up; turning the VPN off")
                 turnOff(this@CoreService)
                 return
@@ -235,8 +240,17 @@ class CoreService : VpnService() {
     private fun onStartCommandGuarded(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             turnOff(this)
+            // Build 2116 (B7-1): a stopped engine releases
+            // the VPN-slot claim.
+            EngineClaim.release(this, EngineClaim.MOZILLA)
             return START_NOT_STICKY
         }
+        // Build 2116 (B7-1, AB-08): every start of this
+        // service — Dart, the QS tile, a system restart of
+        // the sticky service — claims the VPN slot through
+        // the native single-writer claim, displacing any
+        // other engine that held it.
+        EngineClaim.claim(this, EngineClaim.MOZILLA)
         if (intent?.action == ACTION_RECONNECT) {
             // New settings: the apps left out of the VPN, or the mode.
             if (on) {
@@ -276,16 +290,58 @@ class CoreService : VpnService() {
 
     override fun onDestroy() {
         destroyed = true
+        // Build 2116 (B7-1): teardown releases the claim
+        // (owner-checked — a displaced engine's late destroy
+        // never clears its successor's claim).
+        EngineClaim.release(this, EngineClaim.MOZILLA)
         main.removeCallbacks(watchCountry)
         // A notification posted at the last moment goes too.
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
         stopWatchingNetwork()
         mobile.Mobile.stopTun()
+        // Build 2127 (H4): the hold's dup goes with the
+        // service — no interface outlives its owner.
+        closeHeldTun()
+        killSwitchHeld = false
         on = false
         connected = false
         QuickTile.refresh(this)
         ConnectWidget.updateAll(this)
         super.onDestroy()
+    }
+
+    /**
+     * Build 2127 (H4, audit A26-03): the kill-switch hold.
+     * The core died (or gave the connect up) mid-session:
+     * with the switch on, in VPN mode, and a TUN dup in
+     * hand, the session's interface is HELD as a blackhole
+     * instead of being torn down to direct traffic — the
+     * core side is put down exactly as turnOff puts it
+     * down, but the service, its notification and the dup
+     * stay, and only the user's own stop (the
+     * notification's Disconnect included) or a fresh start
+     * releases them. Returns false when the hold does not
+     * apply and the caller tears down as before.
+     */
+    private fun enterKillSwitchHold(): Boolean {
+        if (killSwitchHeld) return true
+        if (!killSwitch(this) || !usesVpn(this) || heldTun == null) {
+            return false
+        }
+        Log.w(TAG, "the core is gone; the kill switch holds the tunnel")
+        if (mobile.Mobile.running()) {
+            mobile.Mobile.stopTun()
+            mobile.Mobile.setOn(false)
+        }
+        killSwitchHeld = true
+        connected = false
+        shownProxy = ""
+        shownSpeed = ""
+        shownCountry = KILL_SWITCH_HELD
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, notification(KILL_SWITCH_HELD))
+        ConnectWidget.updateAll(this)
+        return true
     }
 
     /** Sets up the VPN interface and gives its device to the core. */
@@ -314,6 +370,14 @@ class CoreService : VpnService() {
             applyApps(builder)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
             val tun = builder.establish() ?: return false
+            // Build 2127 (H4): keep a dup of the TUN fd
+            // (closing any previous session's) before the
+            // fd is handed to the core — the kill-switch
+            // hold keeps the interface up through it after
+            // the core's own copy is gone.
+            closeHeldTun()
+            killSwitchHeld = false
+            heldTun = ParcelFileDescriptor.dup(tun.fileDescriptor)
             mobile.Mobile.setTunMTU(mtu)
             mobile.Mobile.startTun(tun.detachFd())
             tunnelUpAt = System.currentTimeMillis()
@@ -360,6 +424,14 @@ class CoreService : VpnService() {
                 added++
             }
             if (added > 0) return
+            // Build 2125 (audit A25-36 / P-41): the Only
+            // set resolved to nothing installed; the
+            // fall-through to all-apps below is journaled,
+            // never silent.
+            CrashLog.breadcrumb(
+                this,
+                "mozilla:per-app Only set empty — all apps use the tunnel",
+            )
         }
         builder.addDisallowedApplication(packageName)
         each(appSet(this, BYPASS) - packageName) { builder.addDisallowedApplication(it) }
@@ -424,6 +496,7 @@ class CoreService : VpnService() {
      */
     private fun notification(code: String): Notification {
         val state = when {
+            code == KILL_SWITCH_HELD -> getString(R.string.notification_kill_switch_held)
             code == NO_NETWORK -> getString(R.string.notification_no_network)
             code.length == 2 -> "${flag(code)}  ${Locale.Builder().setRegion(code).build().displayCountry}"
             else -> getString(R.string.notification_connecting)
@@ -460,8 +533,11 @@ class CoreService : VpnService() {
     }
 
     companion object {
-        const val ACTION_STOP = "com.arman.firefoxvpn.STOP"
-        private const val ACTION_RECONNECT = "com.arman.firefoxvpn.RECONNECT"
+        // Build 2095 (third-pass audit 7-1): the app's own
+        // prefix — these were upstream leftovers naming
+        // another app.
+        const val ACTION_STOP = "com.ralysnd.ember.STOP"
+        private const val ACTION_RECONNECT = "com.ralysnd.ember.RECONNECT"
         private const val PREFS = "vpn"
         private const val MODE = "app_mode"
         const val MODE_EXCLUDE = "exclude"
@@ -477,6 +553,10 @@ class CoreService : VpnService() {
 
         private const val NO_NETWORK = "-"
 
+        // Build 2127 (H4): the notification's held-state
+        // marker, in the country code's slot.
+        private const val KILL_SWITCH_HELD = "!"
+
         private const val SHOW_SPEED = "show_speed"
 
         /** Whether the notification shows the speed (off unless chosen). */
@@ -484,6 +564,19 @@ class CoreService : VpnService() {
 
         fun setShowSpeed(context: Context, on: Boolean) {
             prefs(context).edit().putBoolean(SHOW_SPEED, on).apply()
+        }
+
+        private const val KILL_SWITCH = "kill_switch"
+
+        /** The kill switch for this engine (build 2127,
+         *  H4): the global Settings switch, mirrored here
+         *  by MainActivity at each Mozilla connect (the
+         *  setTunnelMtu pattern). Off when never set. */
+        fun killSwitch(context: Context) =
+            prefs(context).getBoolean(KILL_SWITCH, false)
+
+        fun setKillSwitch(context: Context, on: Boolean) {
+            prefs(context).edit().putBoolean(KILL_SWITCH, on).apply()
         }
 
         private const val TUNNEL_MTU = "tunnel_mtu"
@@ -653,6 +746,28 @@ class CoreService : VpnService() {
         var connected = false
             private set
 
+        // Build 2127 (H4): the kill-switch hold's state —
+        // the retained TUN dup and whether a hold is in
+        // place. The dup keeps the TUN device alive after
+        // the core closes its own fd: the interface stays
+        // up with no reader, a blackhole.
+        @Volatile
+        var heldTun: ParcelFileDescriptor? = null
+            internal set
+
+        @Volatile
+        var killSwitchHeld = false
+            internal set
+
+        fun closeHeldTun() {
+            try {
+                heldTun?.close()
+            } catch (e: Exception) {
+                // Already closed.
+            }
+            heldTun = null
+        }
+
         /** The core's data folder: accounts, settings, logs, the local token. */
         fun dataDir(context: Context): File = File(context.filesDir, "core")
 
@@ -699,6 +814,11 @@ class CoreService : VpnService() {
                 mobile.Mobile.stopTun()
                 mobile.Mobile.setOn(false)
             }
+            // Build 2127 (H4): a user stop releases the
+            // kill-switch hold — the dup closes and the
+            // held interface goes with the service.
+            closeHeldTun()
+            killSwitchHeld = false
             on = false
             connected = false
             context.stopService(Intent(context, CoreService::class.java))
@@ -706,9 +826,16 @@ class CoreService : VpnService() {
             ConnectWidget.updateAll(context)
         }
 
-        /** Starts the core, with the proxy [on] or off, if it does not run. */
+        /**
+         * Starts the core, with the proxy [on] or off, if it does not run.
+         * Build 2095 (third-pass audit 3-4): returns the start
+         * failure's message, or null when the core runs (or was
+         * already running) — the failure used to be swallowed
+         * into CrashLog only, so the Dart side waited on a
+         * "starting" state that could never resolve.
+         */
         @Synchronized
-        fun startCore(context: Context, on: Boolean) {
+        fun startCore(context: Context, on: Boolean): String? {
             // Build 2070 (review §5.1): the running() probe itself
             // touches the gomobile class — if its static init is
             // the thing that fails, the Error lands here, before
@@ -718,9 +845,9 @@ class CoreService : VpnService() {
                 mobile.Mobile.running()
             } catch (e: Throwable) {
                 CrashLog.append(context, "CoreService.startCore", e)
-                return
+                return e.message ?: "the core did not start"
             }
-            if (alreadyRunning) return
+            if (alreadyRunning) return null
             if ((context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
                 importFromComputer(context)
             } else {
@@ -736,7 +863,9 @@ class CoreService : VpnService() {
                 // gomobile boundary is now evidence, not silence.
                 CrashLog.append(context, "CoreService.startCore", e)
                 Log.e(TAG, "the core did not start", e)
+                return e.message ?: "the core did not start"
             }
+            return null
         }
 
         /**

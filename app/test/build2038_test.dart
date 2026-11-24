@@ -71,7 +71,11 @@ void main() {
     test('settings JSON round-trip leaves the DNS defaults alone', () {
       final s = XraySettings()..tunnelMtu = 1280;
       final back = XraySettings.fromJson(decode(jsonEncode(s.toJson())));
-      expect(back.remoteDns, 'https://dns.google/dns-query');
+      // Build 2113: the shipped default remote is v2rayNG's
+      // Cloudflare DoH (the 2111 plain-IP default is
+      // reverted; a fresh store's flags are already migrated,
+      // so the round trip leaves the value alone).
+      expect(back.remoteDns, 'https://cloudflare-dns.com/dns-query');
       expect(back.remoteDnsProto, 'doh');
       expect(back.tunnelMtu, 1280);
     });

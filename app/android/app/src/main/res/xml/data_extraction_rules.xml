@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Build 2095 (third-pass audit 5-2/5-3): core/app-settings.json (plaintext sync token + PIN hash), the xray//singbox//mieru/ session-config copies and psiphon/state.json (upstream credentials + Conduit pairing id) are excluded too. -->
 <!-- Cloud backup and device-to-device transfer (Android 12 and later), as
      backup_rules.xml: everything but what the core makes again — and,
      since build 2057 (audit F-M17), everything that carries secrets.
@@ -17,6 +18,11 @@
         <exclude domain="file" path="core/config.json" />
         <exclude domain="file" path="core/accounts/" />
         <exclude domain="file" path="openvpn/state.json" />
+    <exclude domain="file" path="core/app-settings.json" />
+    <exclude domain="file" path="xray/" />
+    <exclude domain="file" path="singbox/" />
+    <exclude domain="file" path="mieru/" />
+    <exclude domain="file" path="psiphon/state.json" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="core/logs/" />
@@ -28,5 +34,10 @@
         <exclude domain="file" path="core/config.json" />
         <exclude domain="file" path="core/accounts/" />
         <exclude domain="file" path="openvpn/state.json" />
+    <exclude domain="file" path="core/app-settings.json" />
+    <exclude domain="file" path="xray/" />
+    <exclude domain="file" path="singbox/" />
+    <exclude domain="file" path="mieru/" />
+    <exclude domain="file" path="psiphon/state.json" />
     </device-transfer>
 </data-extraction-rules>

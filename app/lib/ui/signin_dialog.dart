@@ -21,18 +21,60 @@ Future<void> showSignInDialog(
   CoreController core, {
   String email = '',
   SignInState? started,
+  bool browserFallbackOffer = false,
 }) => showDialog<void>(
   context: context,
   barrierDismissible: false,
-  builder: (_) => _SignInDialog(core: core, email: email, started: started),
+  builder: (_) => _SignInDialog(
+    core: core,
+    email: email,
+    started: started,
+    browserFallbackOffer: browserFallbackOffer,
+  ),
 );
 
+/// Build 2105 (Mozilla feature 1): whether the failure screen
+/// offers "Sign in with browser instead". The offer exists
+/// only when the owner enabled it (AppSettings
+/// .signinBrowserFallbackOffer, default OFF) and the failure
+/// is a refusal the browser route can plausibly remedy — a
+/// network failure, a rate limit, a rejected unblock code, a
+/// timeout, or an unclassified refusal. Credential problems
+/// never reach the failure screen (they return to the form),
+/// and a user-cancelled sign-in is not a failure to remedy.
+bool signinBrowserFallbackOffered({
+  required bool enabled,
+  required bool failed,
+  required String errorCode,
+}) {
+  if (!enabled || !failed) return false;
+  return switch (errorCode) {
+    SignInError.network ||
+    SignInError.tooManyCodes ||
+    SignInError.timedOut ||
+    SignInError.unblockCodeRejected ||
+    SignInError.tooManyAttempts ||
+    '' => true,
+    _ => false,
+  };
+}
+
 class _SignInDialog extends StatefulWidget {
-  const _SignInDialog({required this.core, required this.email, this.started});
+  const _SignInDialog({
+    required this.core,
+    required this.email,
+    this.started,
+    this.browserFallbackOffer = false,
+  });
 
   final CoreController core;
   final String email;
   final SignInState? started;
+
+  /// Build 2105: the failure screen's browser offer (see
+  /// [signinBrowserFallbackOffered]). Off reproduces the
+  /// pre-2105 failure screen exactly.
+  final bool browserFallbackOffer;
 
   @override
   State<_SignInDialog> createState() => _SignInDialogState();
@@ -300,8 +342,44 @@ class _SignInDialogState extends State<_SignInDialog> {
                       icon: Icons.open_in_new_rounded,
                       onPressed: () => openUrl(firefoxAccountSetPasswordUrl),
                     )
-                  else if (failed)
-                    _EmberFilledButton(label: l.tryAgain, onPressed: _restart)
+                  else if (failed) ...[
+                    _EmberFilledButton(label: l.tryAgain, onPressed: _restart),
+                    // Build 2105 (Mozilla feature 1): the
+                    // browser remedy, offered on the failure
+                    // screen only when the owner enabled it
+                    // and the refusal is browser-remediable.
+                    // Off / any other failure: the screen is
+                    // exactly the pre-2105 one.
+                    if (signinBrowserFallbackOffered(
+                      enabled: widget.browserFallbackOffer,
+                      failed: s?.step == SignInStep.failed,
+                      errorCode: s?.errorCode ?? '',
+                    )) ...[
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: _sending ? null : _startBrowser,
+                        icon: const Icon(
+                          Icons.open_in_browser_rounded,
+                          size: 19,
+                        ),
+                        label: const Text('Sign in with browser instead'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Ember.orange,
+                          side: BorderSide(
+                            color: Ember.orange.withValues(alpha: 0.7),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          textStyle: const TextStyle(
+                            fontSize: Ember.fontTitle,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ]
                   else if (s == null)
                     _EmberFilledButton(
                       label: l.signIn,
@@ -359,7 +437,7 @@ class _SignInDialogState extends State<_SignInDialog> {
                   borderRadius: BorderRadius.circular(18),
                 ),
                 textStyle: const TextStyle(
-                  fontSize: 16,
+                  fontSize: Ember.fontTitle,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -408,7 +486,7 @@ class _SignInDialogState extends State<_SignInDialog> {
               style: Ember.body,
               decoration: emberField(context, l.email).copyWith(
                 labelText: l.email,
-                labelStyle: const TextStyle(color: Ember.faint, fontSize: 13),
+                labelStyle: const TextStyle(color: Ember.faint, fontSize: Ember.fontBody),
                 floatingLabelStyle: const TextStyle(color: Ember.orange),
               ),
               validator: (v) => (v ?? '').contains('@') ? null : l.emailInvalid,
@@ -427,7 +505,7 @@ class _SignInDialogState extends State<_SignInDialog> {
               style: Ember.body,
               decoration: emberField(context, l.password).copyWith(
                 labelText: l.password,
-                labelStyle: const TextStyle(color: Ember.faint, fontSize: 13),
+                labelStyle: const TextStyle(color: Ember.faint, fontSize: Ember.fontBody),
                 floatingLabelStyle: const TextStyle(color: Ember.orange),
                 suffixIcon: IconButton(
                   tooltip: _showPassword ? l.hide : l.show,
@@ -603,7 +681,7 @@ class _SignInDialogState extends State<_SignInDialog> {
                 // Build 2074 (audit item 15): an explicit Ember
                 // style, not the theme's titleLarge.
                 ? const TextStyle(
-                    fontSize: 22,
+                    fontSize: Ember.fontDisplay,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 6,
                     color: Ember.text,
@@ -619,7 +697,7 @@ class _SignInDialogState extends State<_SignInDialog> {
                   labelText: s.step == SignInStep.needCaptcha
                       ? l.captchaLabel
                       : l.codeLabel,
-                  labelStyle: const TextStyle(color: Ember.faint, fontSize: 13),
+                  labelStyle: const TextStyle(color: Ember.faint, fontSize: Ember.fontBody),
                   floatingLabelStyle: const TextStyle(color: Ember.orange),
                 ),
             onSubmitted: (_) => _submitAnswer(),
@@ -736,7 +814,7 @@ class _EmberFilledButton extends StatelessWidget {
       disabledForegroundColor: Ember.dim,
       padding: const EdgeInsets.symmetric(vertical: 14),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+      textStyle: const TextStyle(fontSize: Ember.fontTitle, fontWeight: FontWeight.w800),
     );
     final child = busy
         ? const SizedBox.square(

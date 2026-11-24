@@ -78,10 +78,16 @@ void main() {
     test('runAndroid never starts the checker; desktop still does', () {
       final main = dartSrc('main.dart');
       final android = main.substring(main.indexOf('Future<void> runAndroid()'));
-      expect(android.contains('Updates.start('), isFalse,
-          reason: 'the Android entry must not start the checker');
-      expect('Updates.start('.allMatches(main).length, 1,
-          reason: 'only the desktop entry starts the checker');
+      expect(
+        android.contains('Updates.start('),
+        isFalse,
+        reason: 'the Android entry must not start the checker',
+      );
+      expect(
+        'Updates.start('.allMatches(main).length,
+        1,
+        reason: 'only the desktop entry starts the checker',
+      );
     });
 
     test('Updates.start refuses Android itself', () {
@@ -93,8 +99,7 @@ void main() {
       );
       expect(body.contains('Platform.isAndroid'), isTrue);
       expect(
-        body.indexOf('Platform.isAndroid') <
-            body.indexOf('_first = Timer('),
+        body.indexOf('Platform.isAndroid') < body.indexOf('_first = Timer('),
         isTrue,
         reason: 'the platform gate precedes any timer',
       );
@@ -105,15 +110,28 @@ void main() {
       final decl = segmentOf(info, 'const appBuildNumber', ';');
       expect(decl.contains('String.fromEnvironment'), isTrue);
       expect(decl.contains("'APP_BUILD'"), isTrue);
-      expect(decl.contains("= '2031'"), isFalse,
-          reason: 'the stale hardcoded build number is gone '
-              '(the value survives only in the comment that '
-              'records what it replaced)');
+      expect(
+        decl.contains("= '2031'"),
+        isFalse,
+        reason:
+            'the stale hardcoded build number is gone '
+            '(the value survives only in the comment that '
+            'records what it replaced)',
+      );
       expect(
         File('pubspec.yaml').readAsStringSync().contains(
-          // Updated by build 2074 (the standing per-build pin:
+          // Updated by build 2110 (the standing per-build pin:
           // it names the build the tree currently ships as).
-          'version: 2.2.0+2074',
+          // Build 2128: re-pointed 2126 → 2128 per that same
+          // doctrine (the pin sat stale through 2127, whose
+          // pubspec already read +2127 — the test failed on
+          // the frozen 2127 tree for that reason alone).
+          // Build 2136: re-pointed 2135 → 2136 per the same
+          // standing doctrine.
+          // Build 2146: re-pointed 2145 → 2146 per the same
+          // standing doctrine (all 26 version pins in the
+          // suite moved together, as in every prior build).
+          'version: 2.2.0+2146',
         ),
         isTrue,
         reason: 'pubspec carries the real build this ships as',
@@ -138,8 +156,11 @@ void main() {
       final home = dartSrc('ui/ember/ember_home.dart');
       expect(home.contains("Text('EmberWarp'"), isTrue);
       expect(home.contains('WARP MASQUE'), isFalse);
-      expect(home.contains("label: 'EmberWarp'"), isTrue,
-          reason: 'the underlay chip names the engine it picks');
+      expect(
+        home.contains("label: 'EmberWarp'"),
+        isTrue,
+        reason: 'the underlay chip names the engine it picks',
+      );
       final wsp = dartSrc('ui/ember/warp_settings_page.dart');
       expect(wsp.contains("'EmberWarp settings'"), isTrue);
       expect(wsp.contains("'WARP settings'"), isFalse);
@@ -196,8 +217,11 @@ void main() {
           }
         }
       }
-      expect(offenders, isEmpty,
-          reason: 'the removed engine is not described anywhere');
+      expect(
+        offenders,
+        isEmpty,
+        reason: 'the removed engine is not described anywhere',
+      );
     });
   });
 
@@ -219,26 +243,36 @@ void main() {
       ]) {
         final src = dartSrc(path);
         expect(src.contains('String? storeError'), isTrue, reason: path);
-        expect(src.contains('_lastError ?? storeError'), isTrue,
-            reason: '$path folds storeError into its error surface');
-        expect(src.contains('storeSaveFailedMessage'), isTrue,
-            reason: path);
+        expect(
+          src.contains('_lastError ?? storeError'),
+          isTrue,
+          reason: '$path folds storeError into its error surface',
+        );
+        expect(src.contains('storeSaveFailedMessage'), isTrue, reason: path);
       }
       for (final path in [
         'psiphon/psiphon_controller.dart',
         'openvpn/openvpn_controller.dart',
         'aether/aether_controller.dart',
       ]) {
-        expect(dartSrc(path).contains('storeDamagedMessage'), isTrue,
-            reason: path);
-        expect(dartSrc(path).contains('lastReadProblem'), isTrue,
-            reason: path);
+        expect(
+          dartSrc(path).contains('storeDamagedMessage'),
+          isTrue,
+          reason: path,
+        );
+        expect(dartSrc(path).contains('lastReadProblem'), isTrue, reason: path);
       }
       final xray = dartSrc('xray/xray_controller.dart');
-      expect(xray.contains('The saved data was damaged'), isTrue,
-          reason: 'the Xray store names its own damage');
-      expect(xray.contains('lastWriteError'), isFalse,
-          reason: 'the Xray store is its own writer, not the shared one');
+      expect(
+        xray.contains('The saved data was damaged'),
+        isTrue,
+        reason: 'the Xray store names its own damage',
+      );
+      expect(
+        xray.contains('lastWriteError'),
+        isFalse,
+        reason: 'the Xray store is its own writer, not the shared one',
+      );
     });
   });
 
@@ -267,37 +301,50 @@ void main() {
       expect(store.lastReadProblem, isNull);
     });
 
-    test('a corrupt file surfaces as damaged and is quarantined',
-        () async {
+    test('a corrupt file surfaces as damaged and is quarantined', () async {
       final file = File('${tmp.path}/s.json');
       await file.writeAsString('this is not json {');
       final store = AtomicJsonStore(file);
-      expect(await store.read(), isNull,
-          reason: 'the load still starts empty — it just says so');
+      expect(
+        await store.read(),
+        isNull,
+        reason: 'the load still starts empty — it just says so',
+      );
       expect(store.lastReadProblem, 'damaged');
-      expect(await file.exists(), isFalse,
-          reason: 'the damaged bytes were moved aside');
+      expect(
+        await file.exists(),
+        isFalse,
+        reason: 'the damaged bytes were moved aside',
+      );
       final kept = File('${tmp.path}/s.json.corrupt');
       expect(await kept.exists(), isTrue);
       expect(await kept.readAsString(), 'this is not json {');
     });
 
-    test('a failed write is recorded, then cleared by the next success',
-        () async {
-      final file = File('${tmp.path}/s.json');
-      final store = AtomicJsonStore(file);
-      // Block the temp path with a directory: the atomic
-      // write cannot land.
-      await Directory('${file.path}.tmp').create();
-      await store.write({'a': 1});
-      expect(store.lastWriteError, isNotNull,
-          reason: 'the failure is recorded, not swallowed');
-      await Directory('${file.path}.tmp').delete();
-      await store.write({'a': 2});
-      expect(store.lastWriteError, isNull,
-          reason: 'the next success clears the record');
-      expect(await store.read(), {'a': 2});
-    });
+    test(
+      'a failed write is recorded, then cleared by the next success',
+      () async {
+        final file = File('${tmp.path}/s.json');
+        final store = AtomicJsonStore(file);
+        // Block the temp path with a directory: the atomic
+        // write cannot land.
+        await Directory('${file.path}.tmp').create();
+        await store.write({'a': 1});
+        expect(
+          store.lastWriteError,
+          isNotNull,
+          reason: 'the failure is recorded, not swallowed',
+        );
+        await Directory('${file.path}.tmp').delete();
+        await store.write({'a': 2});
+        expect(
+          store.lastWriteError,
+          isNull,
+          reason: 'the next success clears the record',
+        );
+        expect(await store.read(), {'a': 2});
+      },
+    );
   });
 
   group('store surfacing — Psiphon controller behaviour', () {
@@ -331,18 +378,23 @@ void main() {
       final c = PsiphonController();
       await c.load();
       expect(c.storeError, storeDamagedMessage);
-      expect(c.lastError, storeDamagedMessage,
-          reason: 'the existing error surface carries it');
+      expect(
+        c.lastError,
+        storeDamagedMessage,
+        reason: 'the existing error surface carries it',
+      );
       // A successful save must not erase the notice before
       // anyone saw it (build 2071 rule).
       await c.updateSettings(PsiphonSettings());
-      expect(await stateFile.exists(), isTrue,
-          reason: 'the save landed on a fresh file');
+      expect(
+        await stateFile.exists(),
+        isTrue,
+        reason: 'the save landed on a fresh file',
+      );
       expect(c.storeError, storeDamagedMessage);
     });
 
-    test('a failing save surfaces, then clears on the next success',
-        () async {
+    test('a failing save surfaces, then clears on the next success', () async {
       final c = PsiphonController();
       await c.load();
       expect(c.storeError, isNull);
@@ -352,8 +404,11 @@ void main() {
       expect(c.lastError, storeSaveFailedMessage);
       await Directory('${stateFile.path}.tmp').delete();
       await c.updateSettings(PsiphonSettings());
-      expect(c.storeError, isNull,
-          reason: 'persistent-until-next-success, then clear');
+      expect(
+        c.storeError,
+        isNull,
+        reason: 'persistent-until-next-success, then clear',
+      );
       expect(c.lastError, isNull);
     });
   });

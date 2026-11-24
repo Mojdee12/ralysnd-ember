@@ -15,10 +15,16 @@ import android.content.Context
  * callback object (the service's session): configureTun /
  * addAddress / addRoute / addDns / addSearchDomain /
  * establishTun build the VpnService interface, and
- * onCoreEvent / onCoreTraffic / onCoreLog report back. All
- * native results are fixed error codes ("" = success), never
- * the core's own messages — those can quote profile text, and
- * a profile may carry inline secrets.
+ * onCoreEvent / onCoreTraffic / onCoreLog report back. Native
+ * results are fixed error codes ("" = success). Build 2099:
+ * [run] may append "\n" + the core's own Status message and
+ * onCoreEvent carries the Event's info string as its third
+ * argument — in both cases scrubbed by the bridge with the
+ * same secret-marker discipline as its log lines before
+ * crossing, since a core message can quote profile text and
+ * a profile may carry inline secrets. The service splits
+ * [run]'s result at the first newline: code left, detail
+ * right.
  *
  * The callback methods on the session must keep these exact
  * names and signatures: the bridge resolves them by name.
@@ -53,7 +59,9 @@ object OpenVpnNative {
     /**
      * Runs the session on the calling thread until it ends.
      * "" when it ended without an error (a user stop included),
-     * else an error code. Build 2030: NEED_CREDS is one of the
+     * else an error code — or, build 2099, the code + "\n" +
+     * the core's scrubbed Status message when it carried one
+     * (see the header). Build 2030: NEED_CREDS is one of the
      * codes — the core ended the session asking for credentials
      * because its own copy was purged (a pushed auth-nocache);
      * the service answers by re-running with the pair it holds.

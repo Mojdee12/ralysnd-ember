@@ -176,7 +176,6 @@ void main() {
         'startTunnel',
         'startWarpTunnel',
         'startSocksTunnel',
-        'startAwgTunnel',
       ]) {
         expect(
           xrayService.contains('startFailed("XrayVpnService.$name", e)'),
@@ -184,6 +183,19 @@ void main() {
           reason: '$name dispatch is netted',
         );
       }
+      // Build 2100 (W-WG2, named reason): startAwgTunnel moved
+      // to AwgVpnService.kt — its dispatch is netted there, with
+      // the new service's name in the tag.
+      // Build 2104: the AWG engine is WgTunnelEngine now — no
+      // service, no worker dispatch: the start is one coroutine
+      // body whose own Throwable net (pinned in the next test)
+      // is the whole dispatch story.
+      final engine = ktSrc('WgTunnelEngine.kt');
+      expect(
+        engine.contains('CrashLog.append(appContext, "WgTunnelEngine.start", e)'),
+        isTrue,
+        reason: 'the engine start records escapes to crash.log',
+      );
     });
 
     test('all four start bodies catch Throwable and record', () {
@@ -191,7 +203,6 @@ void main() {
         ('the V2Ray tunnel did not start', 'startTunnel'),
         ('the WARP tunnel did not start', 'startWarpTunnel'),
         ('the SOCKS-engine tunnel did not start', 'startSocksTunnel'),
-        ('the AWG tunnel did not start', 'startAwgTunnel'),
       ]) {
         final at = xrayService.indexOf(logLine);
         expect(at, isNonNegative, reason: '$logLine exists');
@@ -212,6 +223,25 @@ void main() {
           reason: '$label records to crash.log',
         );
       }
+      // Build 2100 (W-WG2, named reason): the AWG start body
+      // moved to AwgVpnService.kt — same Throwable net, new
+      // service name in the tag.
+      // Build 2104: the start body is WgTunnelEngine.start's
+      // coroutine — the net and the crash.log record live
+      // there now, under the engine's name.
+      final engine = ktSrc('WgTunnelEngine.kt');
+      expect(
+        engine.contains('catch (e: Throwable)'),
+        isTrue,
+        reason: 'the engine start body catch is Throwable',
+      );
+      expect(
+        engine.contains(
+          'CrashLog.append(appContext, "WgTunnelEngine.start", e)',
+        ),
+        isTrue,
+        reason: 'the engine start records to crash.log',
+      );
     });
 
     test('startFailed records into xray.log and crash.log, then '
@@ -219,7 +249,9 @@ void main() {
       final helper = segmentOf(
         xrayService,
         'private fun startFailed(',
-        'private fun fail()',
+        // Build 2095 (third-pass audit 3-1): fail() gained
+        // a reason parameter — the segment needle follows.
+        'private fun fail(reason: String = "")',
       );
       expect(helper.contains('CrashLog.appendToFile'), isTrue);
       expect(helper.contains('"xray.log"'), isTrue);
@@ -434,7 +466,12 @@ void main() {
 
     test('the Xray log viewer has Copy All', () {
       final page = dartSrc('ui/ember/xray_logs_page.dart');
-      expect(page.contains('Clipboard.setData'), isTrue);
+      // PIN UPDATED by build 2119 (audit F-20): the copy
+      // rides the self-clearing clipboard helper now —
+      // the raw Clipboard.setData call this pin used to
+      // require was the finding. The intent stands: the
+      // viewer copies its whole text on one tap.
+      expect(page.contains('copySensitive(text)'), isTrue);
       expect(page.contains('l.copyAll'), isTrue);
       expect(page.contains('l.logsCopied'), isTrue);
     });
@@ -576,8 +613,12 @@ void main() {
 
       test('Lantern Clear deletes its own logs and empties the '
           'shared crash.log', () async {
+        // Build 2129: the engine's own logs are the gomobile
+        // core's logDir files (filesDir/lantern/logs/*) — the
+        // CLI era's lantern-stdout.log / tunlink.log are gone.
         final filesDir = Directory('${tmp.path}/files');
-        final own = File('${filesDir.path}/lantern/lantern-stdout.log');
+        final own = File('${filesDir.path}/lantern/logs/core.log');
+        await own.create(recursive: true);
         await own.writeAsString('SENTINEL\n');
         final crash = File('${filesDir.path}/crash.log');
         await crash.writeAsString('SENTINEL\n');

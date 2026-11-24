@@ -53,8 +53,22 @@ void main() {
       final element = manifest.substring(nameAt, nameAt + 700);
       expect(element.contains('android:process=":psiphon"'), isTrue,
           reason: 'the Psiphon service runs in its own process');
-      expect(occurrences(manifest, 'android:process'), 1,
-          reason: 'no other component gained a process attribute');
+      // Build 2100 (W-WG2, named reason): AwgVpnService joined
+      // with android:process=":awg" — the count is now two, and
+      // the standing packaging gate expects exactly
+      // {:psiphon, :awg}. This pin follows the manifest; the
+      // "nothing else" rule still holds for every other
+      // component.
+      // Build 2104: :awg is deleted with the engine swap (the
+      // WG Tunnel backend runs in the main process) — the set
+      // is {:psiphon} alone again, and the packaging gate's
+      // named expectation follows.
+      // Build 2129: LanternVpnService joins with
+      // android:process=":lantern" (the gomobile core runs in
+      // its own process, mirroring :psiphon) — the set is
+      // {:psiphon, :lantern}.
+      expect(occurrences(manifest, 'android:process'), 2,
+          reason: ':psiphon and :lantern carry process attributes');
     });
   });
 
@@ -74,16 +88,33 @@ void main() {
           reason: 'onCreate captures the publishing context');
     });
 
-    test('every state setter republishes (10 setters + the definition)',
+    // Build 2087: the count grows 10 -> 11 setters — the wedge
+    // flag (hang diagnosis F1) is a published state field like
+    // the others, with its own republishing setter.
+    // Build 2088: 11 -> 12 — startReturned (the external
+    // watchdog's discriminator) joins it the same way.
+    // Build 2116 (B10-1): 13 -> 14 call sites — the periodic
+    // republish loop republishes the unchanged snapshot every
+    // 30 s while running, which is what makes the reader-side
+    // staleness bound meaningful. Deliberate re-point; the 12
+    // setters + the definition are unchanged.
+    test('every state setter republishes (12 setters + the definition)',
         () {
-      expect(occurrences(service, 'publishState()'), 11,
+      // Build 2125 re-point (A25-04): 14 -> 15 call sites —
+      // killSwitchHeld (the Psiphon kill-switch hold) joins
+      // the published set, and its setter republishes like
+      // every other.
+      expect(occurrences(service, 'publishState()'), 15,
           reason: 'running, connected, isVpnMode, startedAtMs, '
               'totalUp, totalDown, egressRegion, clientAddress, '
-              'availableRegions, activeMethod — each setter calls '
-              'publishState(), plus its one definition');
+              'availableRegions, activeMethod, wedged, '
+              'startReturned, killSwitchHeld — each setter '
+              'calls publishState(), plus its definition, plus '
+              'the 2116 republish loop');
     });
 
-    test('the snapshot carries all ten fields under the channel keys', () {
+    test('the snapshot carries all twelve fields under the channel keys',
+        () {
       for (final key in [
         'running',
         'connected',
@@ -95,6 +126,8 @@ void main() {
         'clientAddress',
         'regions',
         'method',
+        'wedged',
+        'startReturned',
       ]) {
         expect(service.contains('"$key"'), isTrue, reason: 'key $key');
       }
@@ -113,6 +146,7 @@ void main() {
       'clientAddress',
       'availableRegions',
       'activeMethod',
+      'wedged',
     ];
 
     test('MainActivity answers psiphonState from the snapshot', () {

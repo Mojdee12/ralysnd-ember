@@ -1,60 +1,39 @@
 // Build 2069 — the TRANSPLANT build: ralysnd's complete
-// Psiphon stack replaces Ember's rebuilt core, by the
-// owner's direct order («چرا کامل همون هسته ralysnd که کار
-// میکنه نمیزاری» — why don't you use ralysnd's working core
-// completely).
+// Psiphon stack replaced Ember's rebuilt core, by the
+// owner's direct order. Its pins fingerprinted the
+// transplanted AAR (libpgjni.so size + CRC-32, classes.jar),
+// the v2.0.39 HostService adaptation, the stock-field
+// config parity, and the Beast withdrawal.
 //
-// The evidence chain: 2068's breadcrumbs proved Ember's
-// entire start path healthy through openLog, with no crash
-// record and no caught throwable — the death is native,
-// inside core start, fresh-install only. The host-diff
-// (psiphon-fresh-install-diff.md) then cleared every
-// host-side difference: both hosts drive the identical
-// upstream wrapper sequence into the same Go start sequence.
-// The one unshared component in the dying setup was Ember's
-// rebuilt v2.0.42 + fork-patch libpsiphoncore.so (build
-// 2065). So 2069 changes the variable:
+// Build 2089 REWRITE of this file: the transplant did not
+// survive the owner's phone either. His verdict on 2088 —
+// and his report that ralysnd's own app crashes the same
+// way on the same phone — closed the AAR line entirely:
+// the fault sits at the old-core-vs-Android-16 layer, so
+// build 2089 replaces the provider with the
+// hiddify-sing-box sidecar (libpsiphonbox.so; PsiphonBoxCore)
+// and DELETES libs/psiphon.aar. The AAR fingerprint pins
+// are therefore replaced by removal pins — an AAR that
+// quietly came back would resurrect the wedge — and the
+// still-living parts of 2069's brief (Beast honesty, the
+// start-phase log flushing, the Throwable-wide start
+// catch) are re-pinned against the new service shape.
 //
-//  1. TRANSPLANT: libs/psiphon.aar is now ralysnd's own
-//     psiphontunnel-2.0.39-ns-recovered.aar, byte-exact
-//     (sha256 426c0fda…): the stock tunnel-core v2.0.39
-//     wrapper (44 classes: ca.psiphon + pg + psi) and
-//     libpgjni.so (sha256 4f625112…, verified byte-identical
-//     to the lib inside ralysnd's shipped APK, whose dex
-//     carries the identical wrapper class set). Ember's
-//     rebuilt AAR is preserved at
-//     ~/workspace/ember-app/psiphon/psiphon-aar-2065.aar.
-//     libpsiphoncore.so no longer exists in the package.
-//  2. HOST ADAPTATION: the v2.0.39 HostService interface is
-//     Ember's old one minus onAccessToken (v2.0.42-only,
-//     never used) — every callback Ember overrides exists
-//     unchanged. The one real adaptation: loadLibrary is
-//     NOT overridden any more. Ralysnd has no override; the
-//     renamed wrapper's default loads "pgjni" itself. The
-//     old override forced "psiphoncore" and is gone.
-//  3. CONFIG PARITY: the host emits only fields the stock
-//     binary contains. Gone: AggressiveEstablishment (Beast
-//     — toggle, setting, channel key, extra, emission all
-//     removed; never a dead toggle), FrontedMeekDialOverrides
-//     / FrontedMeekCDNScanSpec / FrontedMeekCDNScanUseBuiltInSpec
-//     (0 occurrences in the stock binary), the fork-only
-//     FRONTED-MEEK-CDN-* protocol names, and the
-//     AdditionalParameters blob (it silently overrode
-//     Ember's explicit official server-list URLs with a
-//     different channel's). Tested edges now steer the
-//     fronted rungs as preresolved provider CIDRs —
-//     ralysnd's own clean-IP mechanism. The ladder,
-//     fronting, clean-IP, Conduit, pairing and winner memory
-//     all survive through standard fields.
-//  4. KEPT from the earlier briefs: start-phase synchronous
-//     log flushing (a failure between openLog and connected
-//     can never again hide behind the 2055 buffer — the
-//     2068 empty log was partly that buffer), and
-//     startTunnel's catch widened to Throwable, recorded
-//     to crash.log before fail(). All 2068 recorder /
-//     breadcrumb machinery stands untouched.
+// Build 2091 REWRITE of this file: the owner ordered the
+// COMPLETE MLM implementation, from its source — and the
+// complete implementation was never what Ember ran (2069
+// took the AAR with an adapted host; 2089/2090 replaced it
+// with the sidecar). The AAR is RESTORED, byte-exact, and
+// MLM's host is ported verbatim into the service. The
+// removal pins flip back to presence pins (an AAR that
+// quietly went missing would resurrect the sidecar's
+// no-connect), the config parity group points at the
+// Kotlin builder again, and the start-phase / start-catch
+// pins point at onConnected / failAndStop /
+// startPsiphonTunnel. The still-living parts (Beast
+// honesty, the start-phase log flushing) are re-pinned
+// against the new service shape, unchanged in substance.
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -75,67 +54,6 @@ String segmentOf(String source, String from, String to) {
   return source.substring(start, end);
 }
 
-/// All entry names in a zip, from its central directory.
-List<String> zipEntryNames(Uint8List bytes) {
-  final data = ByteData.sublistView(bytes);
-  var eocd = -1;
-  final floor = bytes.length > 65557 ? bytes.length - 65557 : 0;
-  for (var i = bytes.length - 22; i >= floor; i--) {
-    if (data.getUint32(i, Endian.little) == 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) return const [];
-  final count = data.getUint16(eocd + 10, Endian.little);
-  var at = data.getUint32(eocd + 16, Endian.little);
-  final names = <String>[];
-  for (var n = 0; n < count; n++) {
-    if (data.getUint32(at, Endian.little) != 0x02014b50) break;
-    final nameLen = data.getUint16(at + 28, Endian.little);
-    final extraLen = data.getUint16(at + 30, Endian.little);
-    final commentLen = data.getUint16(at + 32, Endian.little);
-    names.add(
-      String.fromCharCodes(bytes.sublist(at + 46, at + 46 + nameLen)),
-    );
-    at += 46 + nameLen + extraLen + commentLen;
-  }
-  return names;
-}
-
-/// One zip central-directory entry's fingerprint (uncompressed
-/// size + CRC-32), read without inflating anything: the
-/// End-Of-Central-Directory record sits at the file's tail and
-/// the central directory lists every entry's CRC and sizes in
-/// the clear. Enough to pin WHICH binaries the AAR carries.
-({int size, int crc})? zipEntryFingerprint(Uint8List bytes, String name) {
-  final data = ByteData.sublistView(bytes);
-  var eocd = -1;
-  final floor = bytes.length > 65557 ? bytes.length - 65557 : 0;
-  for (var i = bytes.length - 22; i >= floor; i--) {
-    if (data.getUint32(i, Endian.little) == 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) return null;
-  final count = data.getUint16(eocd + 10, Endian.little);
-  var at = data.getUint32(eocd + 16, Endian.little);
-  for (var n = 0; n < count; n++) {
-    if (data.getUint32(at, Endian.little) != 0x02014b50) return null;
-    final crc = data.getUint32(at + 16, Endian.little);
-    final size = data.getUint32(at + 24, Endian.little);
-    final nameLen = data.getUint16(at + 28, Endian.little);
-    final extraLen = data.getUint16(at + 30, Endian.little);
-    final commentLen = data.getUint16(at + 32, Endian.little);
-    final entryName =
-        String.fromCharCodes(bytes.sublist(at + 46, at + 46 + nameLen));
-    if (entryName == name) return (size: size, crc: crc);
-    at += 46 + nameLen + extraLen + commentLen;
-  }
-  return null;
-}
-
 void main() {
   final service = ktSrc('PsiphonVpnService.kt');
   final constants = ktSrc('PsiphonConstants.kt');
@@ -144,157 +62,98 @@ void main() {
   final platform = dartSrc('psiphon/psiphon_platform.dart');
   final pages = dartSrc('ui/ember/psiphon_pages.dart');
 
-  group('the transplant: the AAR is ralysnd\u2019s complete stack',
-      () {
-    test('libpgjni.so in psiphon.aar is ralysnd\u2019s binary '
-        '(size + CRC-32 fingerprint), and no libpsiphoncore '
-        'exists in it', () {
-      final aar = File('android/app/libs/psiphon.aar');
-      expect(aar.existsSync(), isTrue);
-      final bytes = aar.readAsBytesSync();
-      final names = zipEntryNames(bytes);
-      // ralysnd's shipped core: 31,185,552 B, sha256
-      // 4f625112…, CRC-32 0xf34ffa72 — byte-identical to the
-      // lib inside ralysnd-1.2.45.apk.
-      final core =
-          zipEntryFingerprint(bytes, 'jni/arm64-v8a/libpgjni.so');
-      expect(core, isNotNull, reason: 'the AAR carries pgjni');
-      expect(core!.size, 31185552);
-      expect(core.crc, 0xf34ffa72);
-      // ralysnd's artifact ships the v7a lib too (packaging
-      // strips the final APK to arm64, as for every engine).
-      expect(names, contains('jni/armeabi-v7a/libpgjni.so'));
-      // The rebuilt core is OUT of the package entirely:
-      // no dead native lib ships.
-      expect(names.where((n) => n.contains('psiphoncore')), isEmpty);
+  group('the transplant is RESTORED (build 2091): the AAR '
+      'is back, the sidecar is out of the APK', () {
+    test('libs/psiphon.aar is staged and wired, and the '
+        'sidecar .so is out of the APK', () {
+      expect(File('android/app/libs/psiphon.aar').existsSync(),
+          isTrue);
+      final gradle =
+          File('android/app/build.gradle.kts').readAsStringSync();
+      expect(gradle.contains('libs/psiphon.aar")'), isTrue);
       expect(
-        zipEntryFingerprint(bytes, 'jni/arm64-v8a/libpsiphoncore.so'),
-        isNull,
+        File(
+          'android/app/src/main/jniLibs/arm64-v8a/libpsiphonbox.so',
+        ).existsSync(),
+        isFalse,
       );
     });
 
-    test('the wrapper classes are ralysnd\u2019s v2.0.39 set '
-        '(classes.jar fingerprint)', () {
-      final bytes = File('android/app/libs/psiphon.aar').readAsBytesSync();
-      final classes = zipEntryFingerprint(bytes, 'classes.jar');
-      expect(classes, isNotNull);
-      // ralysnd's recovered AAR classes.jar: 38,357 B,
-      // CRC-32 0x06052ad3 (44 classes: ca.psiphon wrapper +
-      // pg runtime + psi bindings; the class set was verified
-      // identical to the set in ralysnd's shipped APK dex,
-      // modulo the generated R class and the host-side
-      // Tun2SocksJniLoader, which Ember supplies itself).
-      expect(classes!.size, 38357);
-      expect(classes.crc, 0x06052ad3);
+    test('the service hosts the library: the wrapper, the '
+        'HostService, the callbacks', () {
+      expect(service.contains('PsiphonTunnel'), isTrue);
+      expect(service.contains('HostService'), isTrue);
+      expect(service.contains('override fun getPsiphonConfig()'),
+          isTrue);
+      expect(service.contains('override fun onConnected()'),
+          isTrue);
+      expect(service.contains('override fun bindToDevice('),
+          isTrue);
+      expect(service.contains('loadLibrary'), isFalse);
     });
-  });
 
-  group('the recovered wrapper\u2019s dead references are '
-      'documented, not hidden', () {
-    test('proguard carries exactly the three -dontwarn rules '
-        'the recovered AAR needs, with the evidence comment',
-        () {
+    test('the recovered wrapper\u2019s silencer -dontwarn '
+        'rules are GONE (build 2123: S-1 bundles the classes '
+        'they hid)', () {
+      // Build 2091: R8 hard-errors on the recovered
+      // wrapper's dangling references (f0.a from pg.Seq$Ref
+      // — see missing_rules.txt) without these, and MLM's
+      // own rules keep the pg/psi packages whole.
+      // Build 2123 supersession (recorded, not silent):
+      // the three silencers existed only because wf.*,
+      // f0.a and w3.z were MISSING — the NoClassDefFoundError
+      // behind every failed Psiphon start (plan S-1).
+      // wf.jar now bundles them, so the silencer RULES are
+      // removed and keeps stand in their place; the pg/psi
+      // rules are unchanged. Rule lines only — the proguard
+      // comments still name the removed rules historically.
       final proguard =
           File('android/app/proguard-rules.pro').readAsStringSync();
-      // wf.c / w3.z / f0.a: ralysnd-R8-renamed types that
-      // appear only in Signature attributes and throws
-      // clauses of the recovered wrapper classes. None is
-      // defined in any of ralysnd's shipped APK's dexes;
-      // no bytecode instruction references them; the
-      // referencing utilities are called by neither host.
-      // R8's missing-class check needs the explicit
-      // -dontwarn; ART never did.
-      expect(proguard.contains('-dontwarn wf.c'), isTrue);
-      expect(proguard.contains('-dontwarn w3.z'), isTrue);
-      expect(proguard.contains('-dontwarn f0.a'), isTrue);
-      expect(proguard.contains('Build 2069 (Psiphon transplant)'),
-          isTrue);
+      final rules = proguard
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty && !l.startsWith('#'))
+          .join('\n');
+      expect(rules.contains('-dontwarn f0.a'), isFalse);
+      expect(rules.contains('-dontwarn wf.c'), isFalse);
+      expect(rules.contains('-dontwarn w3.z'), isFalse);
+      expect(proguard.contains('-keep class pg.**'), isTrue);
+      expect(proguard.contains('-keep class psi.**'), isTrue);
+      expect(proguard.contains('-dontwarn pg.**'), isTrue);
+      expect(proguard.contains('-dontwarn psi.**'), isTrue);
     });
   });
 
-  group('host adaptation to the v2.0.39 wrapper', () {
-    test('loadLibrary is NOT overridden — the wrapper\u2019s '
-        'default loads pgjni, exactly as ralysnd runs it', () {
-      expect(service.contains('override fun loadLibrary'), isFalse);
-      expect(service.contains('loadLibrary("psiphoncore")'), isFalse);
-      expect(service.contains('System.loadLibrary("psiphoncore")'),
-          isFalse);
-    });
-
-    test('every HostService callback Ember implements exists '
-        'in the stock wrapper contract (source shape)', () {
-      // The v2.0.39 interface\u2019s callback set equals the old
-      // one minus onAccessToken; these overrides are the ones
-      // the service relies on, and each is a default method
-      // of ralysnd\u2019s wrapper too.
-      for (final cb in [
-        'override fun getContext()',
-        'override fun getPsiphonConfig()',
-        'override fun bindToDevice(',
-        'override fun onDiagnosticMessage(',
-        'override fun onAvailableEgressRegions(',
-        'override fun onConnecting()',
-        'override fun onConnected()',
-        'override fun onClientRegion(',
-        'override fun onClientAddress(',
-        'override fun onBytesTransferred(',
-        'override fun onUpstreamProxyError(',
-        'override fun onExiting()',
-      ]) {
-        expect(service.contains(cb), isTrue, reason: cb);
-      }
-      // The one v2.0.42-only callback is not implemented
-      // (it has no stock counterpart to call it; the class
-      // header names it in prose, so the pin targets the
-      // override shape).
-      expect(service.contains('override fun onAccessToken'), isFalse);
-    });
-  });
-
-  group('config parity: only fields the stock binary contains',
-      () {
+  group('config parity: the config lives in the Kotlin '
+      'builder again (build 2091)', () {
     test('the AdditionalParameters blob is gone — from the '
         'emission and from the constants', () {
-      expect(service.contains('put("AdditionalParameters"'), isFalse);
+      expect(service.contains('AdditionalParameters'), isFalse);
       expect(constants.contains('ADDITIONAL_PARAMETERS'), isFalse);
-      // And the explicit official lists it used to override
-      // are still emitted, now authoritative.
-      expect(service.contains('RemoteServerListURLs'), isTrue);
-      expect(service.contains('ObfuscatedServerListRootURLs'), isTrue);
+      // The explicit official lists it used to override are
+      // still the config's, now in the constants.
+      expect(constants.contains('RemoteServerListURLs'), isTrue);
+      expect(constants.contains('ObfuscatedServerListRootURLs'), isTrue);
     });
 
-    test('no fork-only fields are emitted, and the fork-only '
-        'protocol names are gone', () {
-      expect(service.contains('put("AggressiveEstablishment"'), isFalse);
-      expect(service.contains('put("FrontedMeekDialOverrides"'), isFalse);
-      expect(
-          service.contains('put("FrontedMeekCDNScanUseBuiltInSpec"'),
-          isFalse);
-      expect(service.contains('put("FrontedMeekCDNScanSpec"'), isFalse);
-      expect(service.contains('FRONTED_CDN_PROTOCOLS'), isFalse);
+    test('no fork-only fields are emitted anywhere', () {
+      expect(constants.contains('AggressiveEstablishment'), isFalse);
+      expect(constants.contains('FrontedMeekDialOverrides'), isFalse);
+      expect(constants.contains('FrontedMeekCDNScanSpec'), isFalse);
       expect(constants.contains('FRONTED_CDN_PROTOCOLS'), isFalse);
-      // The quoted protocol literal (the withdrawal comments
-      // name the family in unquoted prose).
       expect(constants.contains('"FRONTED-MEEK-CDN-OSSH"'), isFalse);
       expect(service.contains('"FRONTED-MEEK-CDN-OSSH"'), isFalse);
     });
 
-    test('the fronted rungs steer through preresolved '
-        'provider CIDRs — ralysnd\u2019s clean-IP mechanism', () {
-      expect(service.contains('private fun putPreresolvedCidrs('), isTrue);
+    test('the clean-IP steering is BACK on rung E (build '
+        '2091: MLM, not a fork slot)', () {
+      expect(service.contains('putPreresolvedCidrs'), isFalse);
       expect(
-        service.contains('put("DNSResolverPreresolvedIPAddressCIDRs"'),
-        isTrue,
-      );
-      final rungA = segmentOf(service, '"A" -> {', '"E" -> {');
-      expect(rungA.contains('putPreresolvedCidrs(cfg)'), isTrue);
-      expect(
-        rungA.contains('JSONArray(PsiphonConstants.FRONTED_PROTOCOLS)'),
-        isTrue,
-      );
+          service.contains('DNSResolverPreresolvedIPAddressCIDRs'),
+          isTrue);
     });
 
-    test('the dial-override channel is gone end to end', () {
+    test('the dial-override channel stays gone end to end', () {
       expect(service.contains('EXTRA_EDGE_OVERRIDES'), isFalse);
       expect(service.contains('ladderEdgeOverrides'), isFalse);
       expect(mainActivity.contains('argument<String>("edgeOverrides")'),
@@ -304,8 +163,8 @@ void main() {
     });
   });
 
-  group('Beast honesty: no dead toggle survives the transplant',
-      () {
+  group('Beast honesty: no dead toggle survives (kept from '
+      '2069)', () {
     test('the UI has no Beast row, and fronting no longer '
         'claims a fork core', () {
       expect(pages.contains("'Beast Mode'"), isFalse);
@@ -342,7 +201,7 @@ void main() {
   });
 
   group('start-phase synchronous flushing: no failure can '
-      'hide behind the buffer again', () {
+      'hide behind the buffer again (kept from 2069)', () {
     test('the flag exists and is volatile', () {
       expect(
         service.contains(
@@ -384,18 +243,26 @@ void main() {
 
     test('connected, fail, and stop each end the start phase',
         () {
-      final onConnected = segmentOf(
+      // Build 2091: "connected" is the core's onConnected
+      // callback again (was: the probe's first success in
+      // 2089–2090); "fail" is failAndStop, which stops the
+      // tunnel — and stopTunnel ends the phase itself.
+      final connected = segmentOf(
         service,
         'override fun onConnected()',
-        'override fun onClientRegion',
+        'private fun scheduleLadderAttribution',
       );
-      expect(onConnected.contains('logStartPhaseSync = false'), isTrue);
-      final failFn = segmentOf(
-        service,
-        'private fun fail()',
-        'private fun stopTunnel()',
+      expect(connected.contains('logStartPhaseSync = false'), isTrue);
+      final failFn = service.substring(
+        service.indexOf('private fun failAndStop('),
+        // Build 2125 re-point (A25-04): failAndStop first
+        // routes an established, kill-switch-on session to
+        // the hold; the stopTunnel() call sits just past
+        // the old 200-char window.
+        service.indexOf('private fun failAndStop(') + 300,
       );
-      expect(failFn.contains('logStartPhaseSync = false'), isTrue);
+      expect(failFn.contains('stopTunnel()'), isTrue);
+      expect(failFn.contains('holdKillSwitch(reason)'), isTrue);
       final stopFn = segmentOf(
         service,
         'private fun stopTunnel()',
@@ -405,25 +272,25 @@ void main() {
     });
   });
 
-  group('startTunnel catch: Throwable, recorded, then fail', () {
+  group('startTunnel catch: Throwable, recorded, then fail '
+      '(kept from 2069)', () {
     test('the catch is Throwable-wide and records to '
         'crash.log before failing', () {
       final start = segmentOf(
         service,
-        'private fun startTunnel',
-        'private fun waitForConnected',
+        'private fun startPsiphonTunnel()',
+        'private fun rungSeconds',
       );
       expect(start.contains('catch (e: Throwable)'), isTrue);
-      expect(start.contains('catch (e: Exception)'), isFalse);
       expect(
         start.contains(
-            'CrashLog.append(this, "PsiphonVpnService.startTunnel", e)'),
+            'CrashLog.append(this, "PsiphonVpnService.startPsiphonTunnel", e)'),
         isTrue,
       );
       expect(
         start.indexOf(
-            'CrashLog.append(this, "PsiphonVpnService.startTunnel", e)'),
-        lessThan(start.lastIndexOf('fail()')),
+            'CrashLog.append(this, "PsiphonVpnService.startPsiphonTunnel", e)'),
+        lessThan(start.lastIndexOf('failAndStop(')),
       );
     });
   });

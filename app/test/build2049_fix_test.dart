@@ -29,9 +29,30 @@
 /// C. The core restart race (kill/restartCore never confirming
 ///    port 10808 free) is Kotlin-side and not host-testable
 ///    here; it is pinned by the service code itself.
+///    Build 2110 addendum: the FRESH-start half of that race —
+///    startTunnel never calling stopProcesses(), holding no
+///    coreLock, and the orphan sweep's blanket live-process
+///    guard blinding it to this instance's own tracked core —
+///    is now fixed and pinned in build2110_test.dart (the
+///    fresh-start source pin this header always lacked).
 ///
 /// The scheduled run's failover-handover half of build 2049 is
 /// pinned in build2049_test.dart.
+///
+/// Build 2101 addendum (owner order 2026-11-18, «حفاظت ول کن» —
+/// DNS defaults become v2rayNG's own, FULL adoption): fix A's
+/// sockopt domainStrategy pin and the DNS queryStrategy pin,
+/// and fix B's built-in Quad9-TCP fallback, are REMOVED —
+/// named removals, see BUILD-LOG-2.md 2101. The assertions
+/// below were updated to pin the post-removal shape (no
+/// strategy emitted anywhere; the default DNS section is
+/// v2rayNG's: Cloudflare DoH alone, disableFallbackIfMatch,
+/// no queryStrategy) while keeping everything the removal did
+/// NOT touch: the hostname stays the address and stays in
+/// SNI/Host, IP literals are emitted unchanged, the chain
+/// wiring (dialerProxy) and dialMode merging still work, and
+/// the user's own fallback / DNS group / ad-block choices
+/// behave exactly as before.
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -72,12 +93,13 @@ Profile wsProfile({
 );
 
 void main() {
-  group('IPv4-only server dial (build 2049, fix A)', () {
-    test('WS VLESS tunnel config: strategy on the proxy outbound, '
+  group('IPv4-only server dial (build 2049, fix A — pin removed '
+      'in build 2101 by owner order)', () {
+    test('WS VLESS tunnel config: no strategy on the proxy outbound, '
         'hostname kept as address, SNI and Host', () {
       final cfg = decode(buildTunnelConfig(wsProfile(), XraySettings()));
       final proxy = outboundByTag(cfg, 'proxy');
-      expect(sockoptOf(proxy)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(proxy)['domainStrategy'], isNull);
       final vnext =
           ((proxy['settings'] as Map)['vnext'] as List).first as Map;
       expect(vnext['address'], 'node.example.com');
@@ -92,18 +114,18 @@ void main() {
     test('the delay-test config exercises the same dial path', () {
       final cfg = decode(buildTestConfig(wsProfile(), XraySettings()));
       final proxy = outboundByTag(cfg, 'proxy');
-      expect(sockoptOf(proxy)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(proxy)['domainStrategy'], isNull);
     });
 
-    test('Trojan and VMess outbounds carry the strategy', () {
+    test('Trojan and VMess outbounds carry no strategy (2101)', () {
       for (final proto in [Protocol.trojan, Protocol.vmess]) {
         final out = buildOutbound(wsProfile(protocol: proto), XraySettings());
         expect(out, isNotNull);
-        expect(sockoptOf(out!)['domainStrategy'], 'UseIPv4', reason: '$proto');
+        expect(sockoptOf(out!)['domainStrategy'], isNull, reason: '$proto');
       }
     });
 
-    test('Shadowsocks and SOCKS outbounds carry the strategy', () {
+    test('Shadowsocks and SOCKS outbounds carry no strategy (2101)', () {
       final ss = Profile(
         id: 's',
         protocol: Protocol.shadowsocks,
@@ -114,7 +136,7 @@ void main() {
         method: 'aes-256-gcm',
       );
       final ssOut = buildOutbound(ss, XraySettings());
-      expect(sockoptOf(ssOut!)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(ssOut!)['domainStrategy'], isNull);
       final sk = Profile(
         id: 'k',
         protocol: Protocol.socks,
@@ -125,10 +147,10 @@ void main() {
         username: 'user',
       );
       final skOut = buildOutbound(sk, XraySettings());
-      expect(sockoptOf(skOut!)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(skOut!)['domainStrategy'], isNull);
     });
 
-    test('Hysteria2 carries the strategy in its own stream settings', () {
+    test('Hysteria2 carries no strategy in its own stream settings (2101)', () {
       final hy2 = Profile(
         id: 'h',
         protocol: Protocol.hysteria2,
@@ -141,7 +163,7 @@ void main() {
       final cfg = decode(buildTunnelConfig(hy2, XraySettings()));
       expect(
         sockoptOf(outboundByTag(cfg, 'proxy'))['domainStrategy'],
-        'UseIPv4',
+        isNull,
       );
     });
 
@@ -163,30 +185,30 @@ void main() {
       expect(vnext['address'], '203.0.113.7');
     });
 
-    test('fragment chain: the frag hop dials IPv4-only and the proxy '
-        'sockopt keeps both dialerProxy and the strategy', () {
+    test('fragment chain: the proxy sockopt keeps its dialerProxy '
+        'and neither hop carries the strategy (2101)', () {
       final s = XraySettings()..fragmentEnabled = true;
       final cfg = decode(buildTunnelConfig(wsProfile(), s));
       final proxy = outboundByTag(cfg, 'proxy');
       expect(sockoptOf(proxy)['dialerProxy'], 'frag');
-      expect(sockoptOf(proxy)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(proxy)['domainStrategy'], isNull);
       expect(
         sockoptOf(outboundByTag(cfg, 'frag'))['domainStrategy'],
-        'UseIPv4',
+        isNull,
       );
     });
 
-    test('Psiphon chain: dialerProxy and the strategy coexist', () {
+    test('Psiphon chain: the dialerProxy survives the removal', () {
       final cfg = decode(
         buildTunnelConfig(wsProfile(), XraySettings(), psiphonUnderlay: true),
       );
       final proxy = outboundByTag(cfg, 'proxy');
       expect(sockoptOf(proxy)['dialerProxy'], 'psiphon-underlay');
-      expect(sockoptOf(proxy)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(proxy)['domainStrategy'], isNull);
     });
 
-    test('Warp chain: the exit node carries the strategy and the proxy '
-        'keeps its chain wiring', () {
+    test('Warp chain: the exit node carries no strategy and the proxy '
+        'keeps its chain wiring (2101)', () {
       final cfg = decode(
         buildTunnelConfig(
           wsProfile(),
@@ -197,10 +219,10 @@ void main() {
       );
       final proxy = outboundByTag(cfg, 'proxy');
       expect(sockoptOf(proxy)['dialerProxy'], 'warp-underlay');
-      expect(sockoptOf(proxy)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(proxy)['domainStrategy'], isNull);
       expect(
         sockoptOf(outboundByTag(cfg, 'exit-node'))['domainStrategy'],
-        'UseIPv4',
+        isNull,
       );
     });
 
@@ -208,31 +230,34 @@ void main() {
       final p = wsProfile()..dialMode = 'oob';
       final out = buildOutbound(p, XraySettings());
       expect(sockoptOf(out!)['dialMode'], 'oob');
-      expect(sockoptOf(out)['domainStrategy'], 'UseIPv4');
+      expect(sockoptOf(out)['domainStrategy'], isNull);
     });
   });
 
-  group('DNS resilience (build 2049, fix B)', () {
+  group('DNS resilience (build 2049, fix B — built-in fallback '
+      'removed in build 2101 by owner order)', () {
     List<dynamic> serversOf(Map<String, dynamic> cfg) =>
         (cfg['dns'] as Map)['servers'] as List;
 
-    test('default settings: primary DoH plus the bounded TCP fallback, '
-        'and queryStrategy UseIPv4', () {
+    test('default settings: v2rayNG\u2019s shape — the single remote entry, '
+        'no queryStrategy, disableFallbackIfMatch set', () {
       final cfg = decode(buildTunnelConfig(wsProfile(), XraySettings()));
+      // Build 2113: the single entry is v2rayNG's Cloudflare
+      // DoH (the 2111 UDP-first pair and its append are gone);
+      // the rest of the shape is 2101's.
       expect(serversOf(cfg), [
-        'https://dns.google/dns-query',
-        'tcp://9.9.9.9',
+        'https://cloudflare-dns.com/dns-query',
       ]);
-      expect((cfg['dns'] as Map)['queryStrategy'], 'UseIPv4');
+      expect((cfg['dns'] as Map).containsKey('queryStrategy'), isFalse);
+      expect((cfg['dns'] as Map)['disableFallbackIfMatch'], isTrue);
     });
 
     test('the test config carries the same DNS section', () {
       final cfg = decode(buildTestConfig(wsProfile(), XraySettings()));
       expect(serversOf(cfg), [
-        'https://dns.google/dns-query',
-        'tcp://9.9.9.9',
+        'https://cloudflare-dns.com/dns-query',
       ]);
-      expect((cfg['dns'] as Map)['queryStrategy'], 'UseIPv4');
+      expect((cfg['dns'] as Map).containsKey('queryStrategy'), isFalse);
     });
 
     test('a custom remote resolver is left exactly as it was', () {
@@ -242,21 +267,27 @@ void main() {
       expect(serversOf(cfg), ['https://dns.example.net/dns-query']);
     });
 
-    test('the user fallback still wins over the built-in one', () {
+    test('the user fallback is the only fallback there is (2101)', () {
       final s = XraySettings()..dnsFallback = true;
       final cfg = decode(buildTunnelConfig(wsProfile(), s));
+      // Build 2113: behind the single primary entry, the
+      // user's own fallback is still the only ADDED fallback
+      // there is.
       expect(serversOf(cfg), [
-        'https://dns.google/dns-query',
+        'https://cloudflare-dns.com/dns-query',
         'https://dns.quad9.net/dns-query',
       ]);
     });
 
-    test('the DNS group is unchanged', () {
+    test('the DNS group is unchanged apart from the new primary', () {
       final s = XraySettings()..dnsGroup = true;
       final cfg = decode(buildTunnelConfig(wsProfile(), s));
+      // Build 2113: the group members follow the single
+      // primary; the Cloudflare member dedupes against the
+      // primary itself.
       expect(serversOf(cfg), [
-        'https://dns.google/dns-query',
         'https://cloudflare-dns.com/dns-query',
+        'https://dns.google/dns-query',
         'https://dns.quad9.net/dns-query',
       ]);
     });
@@ -267,20 +298,21 @@ void main() {
       expect(serversOf(cfg), [adGuardDohUrl]);
     });
 
-    test('fakeDNS still leads, with the built-in fallback after it', () {
+    test('fakeDNS still leads; nothing rides behind the primary (2101)', () {
       final s = XraySettings()..fakeDns = true;
       final cfg = decode(buildTunnelConfig(wsProfile(), s));
+      // Build 2113: behind fakeDNS rides the single primary
+      // entry; nothing else follows.
       expect(serversOf(cfg), [
         'fakedns',
-        'https://dns.google/dns-query',
-        'tcp://9.9.9.9',
+        'https://cloudflare-dns.com/dns-query',
       ]);
     });
 
-    test('DNS-over-TCP mode: fallback adds a second provider over TCP', () {
+    test('DNS-over-TCP mode: the primary alone, over TCP (2101)', () {
       final s = XraySettings()..remoteDnsProto = 'tcp';
       final cfg = decode(buildTunnelConfig(wsProfile(), s));
-      expect(serversOf(cfg), ['tcp://8.8.8.8', 'tcp://9.9.9.9']);
+      expect(serversOf(cfg), ['tcp://1.1.1.1']);
     });
   });
 }

@@ -47,7 +47,17 @@ class ShapeWin {
     final at = raw['at'];
     final rtt = raw['rtt'];
     if (shape is! String || shape.isEmpty) return null;
-    if (at is! num || rtt is! num) return null;
+    // Build 2125 (audit A25-05 / P-16): a `1e999` literal in
+    // a stored document parses as double.infinity — a num,
+    // but toInt() on it throws, and the throw used to abort
+    // the whole store load mid-document (the sections after
+    // the shape cache never decoded, and the next ordinary
+    // save then persisted them empty — a silent wipe of all
+    // DPI Lab data). A non-finite entry is corrupt: it reads
+    // as "no win", like every other malformed entry.
+    if (at is! num || rtt is! num || !at.isFinite || !rtt.isFinite) {
+      return null;
+    }
     return ShapeWin(
       shapeId: shape,
       verifiedMs: at.toInt(),
@@ -64,6 +74,14 @@ class WinningShapeCache {
 
   /// A win is trusted for a week.
   static const maxAgeMs = 7 * 24 * 3600 * 1000;
+
+  /// Build 2125 (audit A25-46): the cache's size bound —
+  /// enforced on decode and on record. Up to 2124 the
+  /// cache had no cap at all, so a hostile or corrupt
+  /// backup could bloat the store without limit. 256
+  /// (profile × network) wins is far past any real use;
+  /// excess drops oldest-verified first.
+  static const maxEntries = 256;
 
   static String keyOf(String profileId, String networkFingerprint) =>
       '$profileId|$networkFingerprint';
@@ -82,7 +100,13 @@ class WinningShapeCache {
     final win = _wins[keyOf(profileId, networkFingerprint)];
     if (win == null) return null;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
-    if (now - win.verifiedMs > maxAgeMs) return null;
+    if (now - win.verifiedMs > maxAgeMs) {
+      // Build 2095 (third-pass audit 6-3): an expired win
+      // is DELETED, not just distrusted — expired entries
+      // used to accumulate forever and ride every save.
+      _wins.remove(keyOf(profileId, networkFingerprint));
+      return null;
+    }
     return win;
   }
 
@@ -94,15 +118,41 @@ class WinningShapeCache {
     int? nowMs,
   }) {
     if (networkFingerprint.isEmpty) return;
+    // Build 2095 (audit 6-3): recording prunes the expired
+    // entries too, so the map stays bounded by live wins.
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    _wins.removeWhere((_, w) => now - w.verifiedMs > maxAgeMs);
     _wins[keyOf(profileId, networkFingerprint)] = ShapeWin(
       shapeId: shapeId,
       verifiedMs: nowMs ?? DateTime.now().millisecondsSinceEpoch,
       rttMs: rttMs,
     );
+    // Build 2125 (A25-46): the size bound, oldest first.
+    while (_wins.length > maxEntries) {
+      var dropKey = '';
+      var dropAt = 1 << 62;
+      for (final e in _wins.entries) {
+        if (e.value.verifiedMs < dropAt) {
+          dropKey = e.key;
+          dropAt = e.value.verifiedMs;
+        }
+      }
+      if (dropKey.isEmpty) break;
+      _wins.remove(dropKey);
+    }
   }
 
   void forget(String profileId, String networkFingerprint) {
     _wins.remove(keyOf(profileId, networkFingerprint));
+  }
+
+  /// Build 2095 (third-pass audit 7-8): forgets a profile
+  /// on EVERY network — the delete/prune paths know the
+  /// profile, not the networks it won on, and the old
+  /// single-network forget was never called from them, so
+  /// a deleted profile's wins outlived it in the store.
+  void forgetProfile(String profileId) {
+    _wins.removeWhere((key, _) => key.startsWith('$profileId|'));
   }
 
   Map<String, dynamic> toJson() => {
@@ -112,12 +162,23 @@ class WinningShapeCache {
   /// Reads a stored cache document. Every entry is validated
   /// on its own; corrupt entries are dropped, and a wholly
   /// corrupt document reads as an empty cache.
+  ///
+  /// Build 2125 (audit A25-46): the [maxEntries] bound is
+  /// enforced here too — the newest-verified wins are the
+  /// ones kept.
   factory WinningShapeCache.fromJson(Object? raw) {
     final wins = <String, ShapeWin>{};
     if (raw is Map) {
       for (final e in raw.entries) {
         final win = ShapeWin.fromJson(e.value);
         if (win != null && e.key is String) wins[e.key as String] = win;
+      }
+    }
+    if (wins.length > maxEntries) {
+      final keys = wins.keys.toList()
+        ..sort((a, b) => wins[b]!.verifiedMs.compareTo(wins[a]!.verifiedMs));
+      for (final k in keys.sublist(maxEntries)) {
+        wins.remove(k);
       }
     }
     return WinningShapeCache(wins);

@@ -186,6 +186,15 @@ const _externalFileDirectives = {'ca', 'cert', 'key', 'tls-auth', 'tls-crypt'};
 
 /// Directives the phone build cannot honour at all.
 const _unsupportedDirectives = {
+  // Build 2119 (audit F-07): compression. Ember applies
+  // neither comp-lzo nor compress itself — up to 2118 a
+  // profile carrying them rode verbatim to the native
+  // core, unapplied by app code, unstripped, and never
+  // flagged. They are flagged now, like the rest of this
+  // set (the native library's own negotiated-compression
+  // behaviour is its own property, not an app feature).
+  'comp-lzo',
+  'compress',
   'up',
   'down',
   'route-up',

@@ -50,22 +50,87 @@ class EmberApplication : Application() {
         // doc). CrashLog.breadcrumb timestamps it and can never
         // throw, so the birth record cannot break the birth.
         CrashLog.breadcrumb(this, "process-birth ${currentProcessName()}")
+        // Build 2104 (verification iteration 1, finding 1):
+        // install the WG Tunnel backend eagerly in the MAIN
+        // process. Its constructor is the only place
+        // BackendRuntime.install runs, and the backend's own
+        // services dereference that runtime when the system
+        // restarts them — a lazy Dart-driven first build
+        // would leave a fresh process crashing instead of
+        // restoring. The :psiphon process never runs the
+        // backend and skips this.
+        if (currentProcessName() == packageName) {
+            WgTunnelEngine.install(this)
+            // Build 2125 (audit A25-18 / P-25): reap helper
+            // orphans at process birth. Each helper's
+            // reapOrphan used to run only from its own
+            // start(), so when Android killed the main
+            // process mid-session, the orphaned helper kept
+            // its loopback listener (and any egress) until
+            // that same helper was next started —
+            // potentially never. A pid file present at
+            // birth in a fresh process is by construction
+            // from a previous life. MAIN process only: the
+            // :psiphon process must never reap the main
+            // process's live helpers. Every reap is
+            // failure-proof by design; the runCatching is
+            // belt and braces — a sweep must never break a
+            // birth.
+            runCatching { SingBoxCore.reapOrphan(this) }
+            // Build 2135 (audit A34-03): the two
+            // SubprocessCore families added in 2127 were
+            // missing from this list — their orphans were
+            // reaped only at their own next start(), so a
+            // killed process left libzapret.so /
+            // libsudokubox.so holding 127.0.0.1:20864 /
+            // :20865 across restarts.
+            runCatching { ZapretCore.reapOrphan(this) }
+            runCatching { SudokuBoxCore.reapOrphan(this) }
+            runCatching { MieruCore.reapOrphan(this) }
+            runCatching { DnsCryptCore.reapOrphan(this) }
+            runCatching { DnsttCore.reapOrphan(this) }
+            runCatching { OlcrtcCore.reapOrphan(this) }
+            runCatching { WstunnelCore.reapOrphan(this) }
+            runCatching { EmberWarpCore.reapOrphan(this) }
+            runCatching { AetherCore.reapOrphans(this) }
+            // Build 2129 (Leg 3): the Senpai scanner — a
+            // killed app's scan must not leak into the next
+            // launch (its state file makes the run resumable
+            // instead; see SenpaiCore).
+            runCatching { SenpaiCore.reapOrphan(this) }
+        }
     }
 
     /** This process's name ("com.ralysnd.ember" for the main
      *  process, "com.ralysnd.ember:psiphon" for the Psiphon
      *  service's), or "unknown" when the platform won't say. */
     private fun currentProcessName(): String {
-        return try {
+        val named = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                getProcessName() ?: "unknown"
+                getProcessName()
             } else {
                 val manager =
                     getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
                 manager?.runningAppProcesses
                     ?.firstOrNull { it.pid == Process.myPid() }
-                    ?.processName ?: "unknown"
+                    ?.processName
             }
+        } catch (_: Throwable) {
+            null
+        }
+        if (!named.isNullOrEmpty()) return named
+        // Build 2104 (verification iteration 2, L1): on API
+        // 26/27 — inside the new minSdk — the platform paths
+        // above can yield nothing, and an "unknown" here
+        // would silently skip the eager backend install the
+        // guard in onCreate keys on. /proc/self/cmdline is
+        // readable on every API level and always carries the
+        // process name as its first NUL-terminated token.
+        return try {
+            val raw = java.io.File("/proc/self/cmdline").readBytes()
+            String(raw, Charsets.UTF_8)
+                .split('\u0000')
+                .firstOrNull { it.isNotEmpty() } ?: "unknown"
         } catch (_: Throwable) {
             "unknown"
         }

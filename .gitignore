@@ -67,3 +67,15 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Build 2146 CI sync (2026-11-24): local packaging outputs and
+# audit snapshots never enter the repository.
+/pkg*/
+/audit-snapshot-*/
+.gradle/
+
+# The real RegionHop defaults (panel address, password, bridge
+# credentials) live ONLY as the Actions secret
+# EMBER_REGIONHOP_DEFAULTS_B64 and are written into place by CI.
+# The tracked file at this path is a placeholder with dummy values.
+app/lib/regionhop/regionhop_defaults.dart

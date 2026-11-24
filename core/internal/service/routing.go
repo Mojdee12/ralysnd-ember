@@ -26,6 +26,15 @@ const listDownloadTimeout = 3 * time.Minute
 // routingCheckInterval is how often the update loop checks the lists' age.
 const routingCheckInterval = time.Hour
 
+// The missing-lists retry ladder (build 2116): the first
+// retry after a failed download while the lists are
+// missing, and its cap. Stale-but-present lists keep the
+// hourly cadence; only absence climbs the ladder.
+const (
+	routingMissingRetryMin = 30 * time.Second
+	routingMissingRetryMax = 5 * time.Minute
+)
+
 // routingState is the daemon's routing: the router built from the
 // settings and the lists, and the state of the list updates.
 type routingState struct {
@@ -140,19 +149,52 @@ func (d *Daemon) wakeRouting() {
 // runRoutingUpdates downloads the lists while routing is on and they are
 // missing or older than routing.update_interval; it checks every hour and
 // when woken, until the daemon stops.
+//
+// Build 2116 (audit AB-06): while the lists are MISSING (not
+// merely stale) a failed attempt retries on a short ladder
+// (30 s doubling to 5 min) instead of waiting out the hour.
+// The old shape stranded a fresh install forever: the first
+// attempt ran inside the session's restart window, when the
+// through-Mozilla route has no usable upstream yet, and the
+// direct route is exactly the filtered one — both failed,
+// and with routing on and no lists, everything rides the
+// proxy until the lists land, so nothing self-healed until
+// the hourly tick. The ladder's first retry lands after
+// the restart window, through the by-then-stable tunnel.
+// missingRetryLadder is the wait after one update cycle
+// and the ladder's next rung (build 2116): a FAILED
+// attempt with the lists still missing waits the current
+// rung and doubles it (capped); anything else — success,
+// lists present, no attempt — returns to the hourly check
+// and resets the ladder.
+func missingRetryLadder(failed, stillMissing bool, rung time.Duration) (wait, next time.Duration) {
+	if !failed || !stillMissing {
+		return routingCheckInterval, routingMissingRetryMin
+	}
+	next = rung * 2
+	if next > routingMissingRetryMax {
+		next = routingMissingRetryMax
+	}
+	return rung, next
+}
+
 func (d *Daemon) runRoutingUpdates() {
+	retry := routingMissingRetryMin
 	for {
 		cfg := d.config().Routing
+		wait := routingCheckInterval
 		if cfg.Enabled && (routing.Due(d.paths.RoutingDir, cfg.UpdateInterval.Duration(), routingFiles(cfg)) ||
 			routing.SourceChanged(d.paths.RoutingDir, cfg.GeoSiteURL, cfg.GeoIPURL) ||
 			(appListsWanted && routing.AppListDue(d.paths.RoutingDir, cfg.Region, cfg.UpdateInterval.Duration()))) {
-			_ = d.updateRoutingLists()
+			err := d.updateRoutingLists()
+			stillMissing := routing.Due(d.paths.RoutingDir, cfg.UpdateInterval.Duration(), routingFiles(cfg))
+			wait, retry = missingRetryLadder(err != nil, stillMissing, retry)
 		}
 		select {
 		case <-d.stop:
 			return
 		case <-d.routing.wake:
-		case <-time.After(routingCheckInterval):
+		case <-time.After(wait):
 		}
 	}
 }

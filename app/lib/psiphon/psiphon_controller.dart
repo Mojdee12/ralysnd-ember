@@ -13,10 +13,12 @@ import 'package:flutter/foundation.dart';
 import '../atomic_json_store.dart';
 import '../core/android_core.dart';
 import '../core/poll_policy.dart';
+import '../net/geo_country.dart';
 import '../net/probe.dart';
 import '../xray/exit_info.dart';
 import 'psiphon_platform.dart';
 import 'psiphon_strategy.dart';
+import 'psiphon_watchdog.dart';
 
 /// One selectable tunnel transport: the friendly name the UI shows
 /// and the protocol value the core's LimitTunnelProtocols takes.
@@ -77,6 +79,13 @@ class PsiphonSettings {
   /// letter (A/E/D/C/P/X — see psiphon_strategy.dart).
   String method = '';
 
+  /// Bridge policy for the Auto ladder (build 2075, feature
+  /// item 10): 'auto' (fronted and plain rungs alternate as
+  /// the ladder falls through), 'on' (bridges only — the
+  /// plain direct rung never runs), 'off' (no bridges — the
+  /// fronted rungs never run). A pinned method ignores it.
+  String bridgeMode = 'auto';
+
   /// Winner memory, keyed by network identity (build 2065, item
   /// 4): network key -> the rung that last connected there. The
   /// pre-2065 single 'lastMethod' value migrates into every key's
@@ -103,19 +112,48 @@ class PsiphonSettings {
 
   /// CDN fronting (scanned + dial-override edges) on the
   /// fronted rung: config-level, stock-core supported.
-  /// Default on.
-  bool cdnFronting = true;
+  /// Build 2125 (audit A25-26 / F-05): the default flips
+  /// to OFF under the owner's defaults law (every
+  /// Ember-added feature ships OFF; the owner enables what
+  /// he wants) — it shipped default-ON, a dial-override
+  /// egress change nobody chose. Stored values move once
+  /// via the defaultsReset2125 migration in fromJson.
+  bool cdnFronting = false;
 
   /// Disable core timeouts (NetworkLatencyMultiplierLambda=0.1 —
   /// Shir's Disable-Timeouts option). Default off.
   bool disableTimeouts = false;
+
+  /// Build 2129 (Leg 2): the Shiro bootstrap — the public
+  /// Shirokhorshid (GPL-3.0-or-later) partner bootstrap as
+  /// ONE set: its identity, its 2,434-entry embedded server
+  /// list and its fronting overrides replace the MLM set on
+  /// the next start. Default OFF: off, the engine runs the
+  /// 2128 MLM identity + 493-entry list exactly as before.
+  bool shiroBootstrap = false;
+
+  /// Build 2129 (Leg 2): strong mode — AggressiveEstablishment
+  /// in the core config (LML's Shiro "strong" option).
+  /// Default OFF, in both bootstrap modes.
+  bool strongMode = false;
 
   /// The CDN edge list: built-ins (merged in at load) plus the
   /// owner's custom entries, each carrying its last probe result.
   List<CdnEdge> cdnEdges = [];
 
   /// Feed the fastest reachable edges to the core automatically.
-  bool edgeAutoUse = true;
+  /// Build 2125 (audit A25-26 / F-05): default OFF, like
+  /// [cdnFronting] above — an automatic egress change is
+  /// the owner's to enable.
+  bool edgeAutoUse = false;
+
+  /// Build 2125 (audit A25-26 / F-05): the one-time
+  /// defaults-reset marker, the 2114/2116 pattern — the
+  /// two fields above were written on every save, so a
+  /// stored ON cannot be told apart from the shipped
+  /// default; both move to OFF exactly once, and a value
+  /// set afterwards is kept.
+  bool defaultsReset2125 = false;
 
   /// The manually pinned edge id (used when [edgeAutoUse] is off).
   String pinnedEdgeId = '';
@@ -136,14 +174,18 @@ class PsiphonSettings {
         'upstream': upstream,
         'protocols': protocols.toList(),
         'method': method,
+        'bridgeMode': bridgeMode,
         'lastMethodByNetwork': lastMethodByNetwork,
         'lastMethod': lastMethod,
         'compartmentId': compartmentId,
         'compartmentName': compartmentName,
         'cdnFronting': cdnFronting,
         'disableTimeouts': disableTimeouts,
+        'shiroBootstrap': shiroBootstrap,
+        'strongMode': strongMode,
         'cdnEdges': cdnEdges.map((e) => e.toJson()).toList(),
         'edgeAutoUse': edgeAutoUse,
+        'defaultsReset2125': defaultsReset2125,
         'pinnedEdgeId': pinnedEdgeId,
         'edgesTestedAtMs': edgesTestedAtMs,
       };
@@ -172,6 +214,12 @@ class PsiphonSettings {
         .toSet();
     final method = str(j['method']);
     s.method = psiphonMethods.containsKey(method) ? method : '';
+    // Build 2075: the bridge policy — an unknown stored value
+    // reads as 'auto', never as a broken ladder.
+    final bridge = str(j['bridgeMode']);
+    s.bridgeMode = const {'auto', 'on', 'off'}.contains(bridge)
+        ? bridge
+        : 'auto';
     final winners = j['lastMethodByNetwork'];
     s.lastMethodByNetwork = (winners is Map ? winners : const {}).map(
       (k, v) => MapEntry(k.toString(), v.toString()),
@@ -179,19 +227,45 @@ class PsiphonSettings {
     s.lastMethod = str(j['lastMethod']);
     s.compartmentId = str(j['compartmentId']);
     s.compartmentName = str(j['compartmentName']);
-    s.cdnFronting = flag(j['cdnFronting'], true);
+    // Build 2125 (audit A25-26 / F-05): the fallbacks are
+    // the new OFF defaults; a pre-2125 store's values are
+    // then moved OFF once by the reset below.
+    s.cdnFronting = flag(j['cdnFronting'], false);
     s.disableTimeouts = flag(j['disableTimeouts'], false);
+    // Build 2129 (Leg 2): absent in older stores = OFF.
+    s.shiroBootstrap = flag(j['shiroBootstrap'], false);
+    s.strongMode = flag(j['strongMode'], false);
     s.cdnEdges = listOf(j['cdnEdges'])
         .whereType<Map>()
         .map((e) => CdnEdge.fromJson(e.cast<String, dynamic>()))
         .where((e) => e.address.isNotEmpty)
         .toList();
-    s.edgeAutoUse = flag(j['edgeAutoUse'], true);
+    s.edgeAutoUse = flag(j['edgeAutoUse'], false);
+    // Build 2125 (audit A25-26 / F-05) defaults reset, the
+    // 2114/2116 pattern: cdnFronting and edgeAutoUse
+    // shipped default-ON and are written on every save, so
+    // a stored ON is the shipped default, not a
+    // discernible choice — both move to OFF exactly once.
+    // A value set afterwards is kept.
+    s.defaultsReset2125 = j['defaultsReset2125'] == true;
+    if (!s.defaultsReset2125) {
+      s.cdnFronting = false;
+      s.edgeAutoUse = false;
+      s.defaultsReset2125 = true;
+    }
     s.pinnedEdgeId = str(j['pinnedEdgeId']);
     final testedAt = j['edgesTestedAtMs'];
     s.edgesTestedAtMs = testedAt is num ? testedAt.toInt() : 0;
     return s;
   }
+}
+
+/// Build 2095 (third-pass audit 2.1): a disconnect during
+/// connect()'s pre-start window bumps [_connectGen]; the
+/// attempt checks it and unwinds quietly instead of
+/// raising the tunnel the user just cancelled.
+class _PsiphonConnectCancelled implements Exception {
+  const _PsiphonConnectCancelled();
 }
 
 class PsiphonController extends ChangeNotifier {
@@ -243,9 +317,52 @@ class PsiphonController extends ChangeNotifier {
   /// Defaults to true (the unchanged behaviour) when unwired.
   bool Function() tunnelIpv6 = () => true;
 
+  /// Set by the shell: the Settings kill switch (build
+  /// 2125, audit A25-04 / plan S-4) — read at connect time
+  /// and passed to the TUN start; with it on, an
+  /// unexpectedly dead standalone session's TUN is held
+  /// as a blackhole instead of being closed to direct
+  /// traffic. Defaults to false when unwired.
+  bool Function() killSwitchEnabled = () => false;
+
   Timer? _poll;
   PsiphonState? _lastSample;
   DateTime? _lastSampleAt;
+
+  /// Build 2088: the external watchdog (psiphon_watchdog.dart)
+  /// — armed by every connect() for its attempt, fed by the
+  /// connect path's own state samples, and settled when the
+  /// attempt resolves. Its firing is the native side's: find
+  /// the wedged :psiphon process, dump it, kill it, publish
+  /// the failure this controller already fails fast on.
+  final PsiphonWatchdog _watchdog = PsiphonWatchdog();
+
+  /// Build 2095 (audit 2.1): the connect generation.
+  int _connectGen = 0;
+
+  /// Build 2095 (audit 1.4): the on-disk store belongs to
+  /// a newer build; saves are refused.
+  bool _storeFromNewerVersion = false;
+
+  /// Build 2097 (post-2096 audit C-L7/C-L12): the on-disk
+  /// document is not safely ours to overwrite — it was
+  /// unreadable at load (intact) or valid JSON of the
+  /// wrong shape (foreign). Saves are refused while it
+  /// exists; if the file disappears, saves resume.
+  bool _storeProtected = false;
+
+  /// The tail timer for an attempt whose start call is still
+  /// inside the library when connect() returns (build 2088):
+  /// connect() now waits for a tunnel in BOTH modes (build
+  /// 2091), so a return with the call still inside is the
+  /// wedge frontier only — the deadline keeps ticking on this
+  /// one-shot timer until it can be settled.
+  Timer? _watchdogTail;
+
+  /// The watchdog's clock (a test seam; production reads
+  /// the wall clock).
+  @visibleForTesting
+  DateTime Function() nowForWatchdog = DateTime.now;
 
   /// The regions to offer: the core's own list once known, else the
   /// fallback captured from the core.
@@ -287,7 +404,44 @@ class PsiphonController extends ChangeNotifier {
       // but damaged starts from defaults as before — but it
       // says so on the error surface instead of silently
       // pretending nothing was ever saved.
-      if (store.lastReadProblem != null) {
+      if (store.lastReadProblem == 'damaged') {
+        storeError = storeDamagedMessage;
+      }
+      // Build 2097 (post-2096 audit C-L7): an UNREADABLE
+      // store (intact file, filesystem error) is not
+      // damage — build 2096 set the damaged message and
+      // let the first save overwrite the intact original.
+      // The file is protected now (see _storeProtected).
+      if (store.lastReadProblem == 'unreadable') {
+        _storeProtected = true;
+        storeError = storeUnreadableMessage;
+      }
+      // Build 2095 (third-pass audit 1.4): never
+      // overwrite a newer build's store.
+      if (doc != null && storeSchemaVersion(doc) > 1) {
+        _storeFromNewerVersion = true;
+        storeError =
+            'Your saved data was written by a newer build '
+            'of Ember — this build will not overwrite it.';
+      }
+      // Build 2097 (post-2096 audit C-L12): a 'settings'
+      // value of the wrong shape (a foreign document) used
+      // to be silently ignored — defaults in memory, no
+      // surface, and the next save overwrote the foreign
+      // file. It is damage-shaped now: surfaced, and the
+      // file is protected from overwrite.
+      if (doc != null && doc['settings'] != null && doc['settings'] is! Map) {
+        _storeProtected = true;
+        storeError = storeDamagedMessage;
+      }
+      // Build 2098 (post-2097 audit L10): the missing-key
+      // sibling — a non-empty document with NO 'settings'
+      // key at all (a foreign or misplaced file) used to
+      // fall silently into defaults and be overwritten by
+      // the next save. A real Psiphon store always carries
+      // 'settings'; its absence is damage-shaped too.
+      if (doc != null && doc.isNotEmpty && !doc.containsKey('settings')) {
+        _storeProtected = true;
         storeError = storeDamagedMessage;
       }
       if (doc != null && doc['settings'] is Map) {
@@ -319,7 +473,15 @@ class PsiphonController extends ChangeNotifier {
     if (!_loaded) return;
     try {
       final store = await _atomicStore();
+      if (_storeFromNewerVersion) return;
+      // Build 2097 (post-2096 audit C-L7/C-L12): never
+      // overwrite a protected document while it exists.
+      if (_storeProtected) {
+        if (await store.file.exists()) return;
+        _storeProtected = false;
+      }
       await store.write({
+        'schemaVersion': 1,
         'settings': settings.toJson(),
       });
       // Build 2071 (review §5.4): the store's write never
@@ -387,7 +549,16 @@ class PsiphonController extends ChangeNotifier {
       _lastSample = state;
       _lastSampleAt = DateTime.now();
       _startPolling();
-      if (state.connected) _fetchExitInfo();
+      if (state.connected) {
+        _fetchExitInfo();
+      } else {
+        // Build 2095 (third-pass audit 1.5): a session
+        // adopted after process death had NO establishment
+        // watchdog — connect() arms it, adoption did not,
+        // so a running-but-never-connected session was
+        // polled forever with no owner. Re-arm on adoption.
+        _watchdog.arm(nowForWatchdog());
+      }
     }
     notifyListeners();
   }
@@ -439,6 +610,18 @@ class PsiphonController extends ChangeNotifier {
         // remember their winner too.
         unawaited(_recordWinner(sample.method));
       }
+      // Build 2123 (S-5, audit P-52): an adopted session's
+      // re-armed watchdog (see refreshState) previously had
+      // no evaluator — the tail timer is a connect-path
+      // artifact and this poll never fed the decision, so a
+      // running-but-never-connected adoption could sit at
+      // "connecting" past the 25 s deadline indefinitely.
+      // The poll evaluates while armed; the decision itself
+      // fires at most once per attempt, so evaluating here
+      // alongside the connect loop cannot double-fire.
+      if (_watchdog.armed && sample.running && !sample.connected) {
+        await _maybeFireWatchdog();
+      }
       if (!sample.running) {
         _poll?.cancel();
         _poll = null;
@@ -462,14 +645,19 @@ class PsiphonController extends ChangeNotifier {
     final nextTry = _exitNextTryAt;
     if (nextTry != null && DateTime.now().isBefore(nextTry)) return;
     _exitFetching = true;
-    PsiphonPlatform.exitInfo().then((m) {
-      _exitFetching = false;
+    PsiphonPlatform.exitInfo().then((m) async {
       if (m != null && m['ip'] != null && m['ip']!.isNotEmpty) {
-        exitInfo = ExitInfo.fromMap(m);
+        // Build 2129 (leg 6): online answer primary; the
+        // offline range tables fill a missing country
+        // only (see lib/net/geo_country.dart).
+        final info = await exitInfoWithOfflineCountry(ExitInfo.fromMap(m));
+        _exitFetching = false;
+        exitInfo = info;
         _exitFailures = 0;
         _exitNextTryAt = null;
         notifyListeners();
       } else {
+        _exitFetching = false;
         _exitFailures++;
         _exitNextTryAt = DateTime.now().add(exitRetryDelay(_exitFailures));
       }
@@ -590,16 +778,32 @@ class PsiphonController extends ChangeNotifier {
   // ---- connect / disconnect ----------------------------------------------
 
   Future<void> connect() async {
+    if (connecting) return; // Build 2095 (audit 2.2).
     connecting = true;
     lastError = null;
     exitInfo = null;
     _exitFailures = 0;
     _exitNextTryAt = null;
     notifyListeners();
+    // Build 2088: set when the attempt's watchdog has been
+    // settled on the success path; the finally below disarms
+    // it on every other exit.
+    var attemptSettled = false;
     try {
       // One tunnel at a time: the other engines go off first.
       await stopOtherEngine?.call();
       if (state.running) await disconnect();
+      // Build 2095 (audit 2.1): the generation is captured
+      // AFTER the prologue's own disconnect() call (which
+      // bumps it) — from here on, a user disconnect cancels
+      // this attempt.
+      final gen = _connectGen;
+      void checkAlive() {
+        if (gen != _connectGen) {
+          throw const _PsiphonConnectCancelled();
+        }
+      }
+
       // Build 2065: the strategy ladder. Pinned methods with a
       // missing prerequisite fail BEFORE starting anything, with
       // the reason in plain words — a ladder that silently drops
@@ -607,6 +811,7 @@ class PsiphonController extends ChangeNotifier {
       final method = settings.method;
       if (method == 'E') {
         await _refreshEdgesIfStale();
+        checkAlive();
         if (!_hasEdges) {
           throw StateError(
             'Clean IP needs at least one reachable CDN edge — '
@@ -629,6 +834,7 @@ class PsiphonController extends ChangeNotifier {
         // The fronted/clean-IP rungs feed on tested edges; refresh
         // a stale list first (bounded, a few seconds at most).
         await _refreshEdgesIfStale();
+        checkAlive();
       }
       final edges = _edgesForCore();
       final rungs = psiphonRungOrder(
@@ -637,7 +843,9 @@ class PsiphonController extends ChangeNotifier {
         hasEdges: edges.akamai.isNotEmpty || edges.fastly.isNotEmpty,
         hasPairing: settings.compartmentId.isNotEmpty,
         hasUpstream: settings.upstream.trim().isNotEmpty,
+        bridgeMode: settings.bridgeMode,
       );
+      checkAlive();
       await PsiphonPlatform.setOn(
         vpnMode: settings.vpnMode,
         region: settings.region,
@@ -652,12 +860,30 @@ class PsiphonController extends ChangeNotifier {
         cleanFastly: edges.fastly,
         disableTimeouts: settings.disableTimeouts,
         cdnFront: settings.cdnFronting,
+        // Build 2125 (A25-04 / S-4): standalone sessions
+        // only — a chain underlay's start passes
+        // vpnMode=false and the service never holds those.
+        killSwitch: settings.vpnMode && killSwitchEnabled(),
+        // Build 2129 (Leg 2): the Shiro bootstrap + strong
+        // mode, from settings (both default OFF).
+        shiroBootstrap: settings.shiroBootstrap,
+        strongMode: settings.strongMode,
       );
+      // Build 2088: the external watchdog's deadline starts
+      // with the attempt (its decision is fed by the samples
+      // below; see _maybeFireWatchdog).
+      _watchdog.arm(nowForWatchdog());
       // The service reports itself once the core is up; a tunnel to a
       // Psiphon server can take a while longer (state.connected).
       for (var i = 0; i < 40; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 250));
+        checkAlive();
         state = await PsiphonPlatform.state();
+        // Build 2087 (diagnosis F1/F3): a wedged start publishes
+        // its failure and exits its process — fail here, at
+        // once, never after the long waits below.
+        if (state.wedged) throw StateError('start-wedged');
+        await _maybeFireWatchdog();
         if (state.running) break;
       }
       if (!state.running) throw StateError('start-failed');
@@ -668,30 +894,69 @@ class PsiphonController extends ChangeNotifier {
       // core's own onConnected (the chain-underlay path already waits
       // for exactly this, 90 s); a core that never connects is
       // stopped, so a retry starts clean instead of stacking on a
-      // dead core. Proxy-only mode keeps the old bar: there is no
-      // TUN to blackhole, and the SOCKS proxy serves whenever the
-      // core answers it.
-      if (settings.vpnMode) {
-        var connected = false;
-        // Build 2065: the ladder's worst case is the sum of its
-        // rung budgets (region phase 25 s + A 60 + E 45 + D 45 +
-        // C 75 = 250 s); wait past it (300 s) instead of the old
-        // single-attempt 110 s. A service that gives up stops
-        // running, which breaks the wait early either way.
-        for (var i = 0; i < 1200; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 250));
-          state = await PsiphonPlatform.state();
-          if (state.connected) {
-            connected = true;
-            break;
-          }
-          if (!state.running) break;
+      // dead core.
+      //
+      // Build 2091: the same bar now applies to proxy-only mode
+      // (the MLM transplant's contract change, analysis §9.2/R12):
+      // the AAR core's onConnected is the only success signal in
+      // either mode, and the 2089/2090 sidecar's success-at-running
+      // contract is closed. The old reason for the lower bar — "no
+      // TUN to blackhole" — never held for the chain: Xray dials
+      // the SOCKS and a running-but-not-connected core fails every
+      // dial while the UI claims a session. The 90 s Xray underlay
+      // wait and this 300 s ladder wait both read the same
+      // published connected flag.
+      var connected = false;
+      // Build 2065: the ladder's worst case is the sum of its
+      // rung budgets (region phase 25 s + A 60 + E 45 + D 45 +
+      // C 75 = 250 s); wait past it (300 s) instead of the old
+      // single-attempt 110 s. A service that gives up stops
+      // running, which breaks the wait early either way.
+      for (var i = 0; i < 1200; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        checkAlive();
+        state = await PsiphonPlatform.state();
+        if (state.connected) {
+          connected = true;
+          break;
         }
-        if (!connected) {
-          await disconnect();
-          throw StateError('connect-timeout');
-        }
+        // Build 2087: the wedge signal ends the wait the
+        // moment it is published (~15 s into the attempt),
+        // not at this loop's 300 s bound.
+        if (state.wedged) throw StateError('start-wedged');
+        // Build 2088: the external watchdog's tick — at
+        // its deadline a start still inside the library is
+        // recorded and killed from the main process, and
+        // the wedge it publishes ends this wait above.
+        await _maybeFireWatchdog();
+        if (!state.running) break;
       }
+      if (!connected) {
+        // Build 2090: the timeout carries its evidence —
+        // the service's session log carries the core's own
+        // notices directly now (build 2091: the AAR core's
+        // onDiagnosticMessage writes into psiphon.log; the
+        // sidecar's appendBoxEvidence is retired with the
+        // sidecar), so the error surface shows the core's
+        // last words instead of the bare 'connect-timeout'
+        // of 2089, whose pasted logs were two content-free
+        // lines.
+        final dir = await workDir();
+        final sessionTail =
+            await _tailLines(File('${dir.path}/psiphon.log'), 15);
+        await disconnect();
+        throw StateError(
+          sessionTail.isEmpty
+              ? 'connect-timeout'
+              : 'connect-timeout — the Psiphon log tail:\n$sessionTail',
+        );
+      }
+      // Build 2088: the attempt resolved — settle its
+      // watchdog (disarm, or hand the deadline to the tail
+      // timer when a proxy-only start call is still inside
+      // the library).
+      _settleWatchdog();
+      attemptSettled = true;
       // Build 2065: winner memory — the rung the service reports
       // is remembered for this network and tried first next time.
       await _recordWinner(state.method);
@@ -699,15 +964,168 @@ class PsiphonController extends ChangeNotifier {
       _lastSampleAt = DateTime.now();
       _startPolling();
     } catch (e) {
-      lastError = e.toString();
+      // Build 2095 (audit 2.1): a user-cancelled attempt
+      // unwinds quietly.
+      if (e is _PsiphonConnectCancelled) {
+        lastError = null;
+        return;
+      }
+      // Build 2087: the wedge's code becomes a plain sentence
+      // on the error surface — the raw "Bad state" form of it
+      // would tell the owner nothing.
+      lastError =
+          e is StateError && e.message == 'start-wedged'
+              ? 'Psiphon got stuck while starting and its process '
+                  'was restarted. Tap Connect to try again.'
+              : e.toString();
       rethrow;
     } finally {
+      // Build 2088: a failed attempt leaves no deadline
+      // ticking behind it.
+      if (!attemptSettled) {
+        _watchdog.disarm();
+        _cancelWatchdogTail();
+      }
       connecting = false;
       notifyListeners();
     }
   }
 
+  /// Build 2088: feeds the current sample to the external
+  /// watchdog's decision; on its firing, invokes the native
+  /// firing (record + kill + publish) and re-reads the
+  /// state, so the caller's next check sees the published
+  /// wedge in the same iteration.
+  Future<void> _maybeFireWatchdog() async {
+    if (_watchdog.evaluate(
+      now: nowForWatchdog(),
+      running: state.running,
+      connected: state.connected,
+      wedged: state.wedged,
+      startReturned: state.startReturned,
+    )) {
+      await PsiphonPlatform.externalWatchdog();
+      state = await PsiphonPlatform.state();
+      return;
+    }
+    // Build 2090: the record-only establishment branch —
+    // a start that spawned fine and never tunnels gets
+    // its evidence into crash.log while the attempt is
+    // still running (see psiphon_watchdog.dart).
+    await _maybeDumpEstablishmentEvidence();
+  }
+
+  /// Build 2090: on the watchdog's establishment decision,
+  /// appends the core's own log tail to crash.log.
+  /// Record-only: no kill, no state change — the service's
+  /// deadlines own the teardown; this only makes sure a
+  /// stalled establishment leaves the core's own words
+  /// behind even if the session log is never pasted.
+  /// Build 2091: the evidence source is psiphon.log itself
+  /// (the AAR core's notices land there directly; the
+  /// sidecar's psiphonbox logs are retired with the sidecar).
+  Future<void> _maybeDumpEstablishmentEvidence() async {
+    if (!_watchdog.evaluateEstablishment(
+      now: nowForWatchdog(),
+      running: state.running,
+      connected: state.connected,
+      wedged: state.wedged,
+      startReturned: state.startReturned,
+    )) {
+      return;
+    }
+    try {
+      final dir = await workDir();
+      final sessionTail =
+          await _tailLines(File('${dir.path}/psiphon.log'), 20);
+      final buf = StringBuffer()
+        ..writeln(
+          '==== psiphon establishment evidence '
+          '(${DateTime.now().toIso8601String()}) ====',
+        )
+        ..writeln(
+          'running past ${PsiphonWatchdog.establishmentEvidenceBound.inSeconds}s '
+          'with no tunnel; the session log tail follows.',
+        );
+      if (sessionTail.isNotEmpty) {
+        buf.writeln('—— psiphon.log ——');
+        buf.writeln(sessionTail);
+      } else {
+        buf.writeln('(the session log wrote nothing)');
+      }
+      await File('${dir.parent.path}/crash.log').writeAsString(
+        buf.toString(),
+        mode: FileMode.append,
+        flush: true,
+      );
+    } catch (_) {
+      // Evidence only; a failed dump changes nothing.
+    }
+  }
+
+  /// The last [count] non-empty lines of [file] (bounded
+  /// read: the last 64 KB), or '' when there is nothing.
+  Future<String> _tailLines(File file, int count) async {
+    try {
+      if (!await file.exists()) return '';
+      final bytes = await file.readAsBytes();
+      final tail = bytes.length > 64 * 1024
+          ? bytes.sublist(bytes.length - 64 * 1024)
+          : bytes;
+      final lines = utf8
+          .decode(tail, allowMalformed: true)
+          .split('\n')
+          .map((l) => l.trimRight())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      return lines.length <= count
+          ? lines.join('\n')
+          : lines.sublist(lines.length - count).join('\n');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Build 2088: settles a resolved attempt's watchdog.
+  /// Connected — or a start call that has returned — disarms
+  /// it outright. A proxy-only attempt whose start call is
+  /// still inside the library keeps its deadline on the
+  /// tail timer: connect() returns at "running" there, and
+  /// the wedge frontier is the start call, not the wait
+  /// for a tunnel that proxy-only mode never raises.
+  void _settleWatchdog() {
+    _cancelWatchdogTail();
+    if (!_watchdog.armed) return;
+    if (state.connected || state.startReturned) {
+      _watchdog.disarm();
+      return;
+    }
+    final armedAt = _watchdog.armedAt;
+    if (armedAt == null) return;
+    var remaining =
+        PsiphonWatchdog.deadline - nowForWatchdog().difference(armedAt);
+    if (remaining.isNegative) remaining = Duration.zero;
+    _watchdogTail = Timer(remaining, () async {
+      if (!_watchdog.armed) return;
+      state = await PsiphonPlatform.state();
+      await _maybeFireWatchdog();
+      _watchdog.disarm();
+      notifyListeners();
+    });
+  }
+
+  void _cancelWatchdogTail() {
+    _watchdogTail?.cancel();
+    _watchdogTail = null;
+  }
+
   Future<void> disconnect() async {
+    // Build 2095 (audit 2.1): cancel any in-flight connect.
+    _connectGen++;
+    // Build 2088: a user stop ends any ticking deadline —
+    // the attempt it belonged to is over by his hand.
+    _watchdog.disarm();
+    _cancelWatchdogTail();
     await PsiphonPlatform.stop();
     for (var i = 0; i < 20; i++) {
       state = await PsiphonPlatform.state();
@@ -722,28 +1140,35 @@ class PsiphonController extends ChangeNotifier {
   @override
   void dispose() {
     _poll?.cancel();
+    _watchdogTail?.cancel();
     super.dispose();
   }
 
   // ---- logs ----------------------------------------------------------------
 
   /// The tails of the Psiphon logs, newest content last.
-  /// tunlink.log is the pre-2066 bridge's file: since build 2066
-  /// the bridge logs into psiphon.log, and this stays readable
-  /// only so an upgraded phone's old file is not orphaned.
+  /// psiphon.log is the session log (the core's own notices
+  /// land there directly in the AAR era, as they did in
+  /// builds 2066–2088 — the badvpn bridge logs into it too).
   /// crash.log (build 2068) is the native crash recorder's file:
   /// every uncaught native death and every guarded start
   /// refusal, with its full stack — the evidence the 2066/2067
   /// tap-crash never left behind.
+  /// Build 2091: the 2089/2090 sections are gone — tunlink.log
+  /// (the libtunlink subprocess bridge) and the psiphonbox
+  /// logs (the sidecar) are retired with the sidecar; the
+  /// badvpn bridge of the MLM transplant logs into
+  /// psiphon.log, as in the AAR era.
   Future<String> readLogs() async {
     final dir = await workDir();
     final out = StringBuffer();
-    for (final name in ['psiphon.log', 'tunlink.log', 'crash.log']) {
+    final sections = <(String, File)>[
+      ('psiphon.log', File('${dir.path}/psiphon.log')),
       // crash.log lives in filesDir itself (the recorder's
       // home), one level above this engine's workDir.
-      final file = name == 'crash.log'
-          ? File('${dir.parent.path}/$name')
-          : File('${dir.path}/$name');
+      ('crash.log', File('${dir.parent.path}/crash.log')),
+    ];
+    for (final (name, file) in sections) {
       out.writeln('—— $name ——');
       try {
         if (await file.exists()) {
@@ -764,7 +1189,9 @@ class PsiphonController extends ChangeNotifier {
 
   Future<void> clearLogs() async {
     final dir = await workDir();
-    for (final name in ['psiphon.log', 'tunlink.log']) {
+    // Build 2091: tunlink.log is gone with the sidecar —
+    // the bridge logs into psiphon.log now.
+    for (final name in ['psiphon.log']) {
       try {
         await File('${dir.path}/$name').writeAsString('');
       } catch (_) {

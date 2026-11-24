@@ -13,21 +13,50 @@ import '../../psiphon/psiphon_controller.dart';
 import '../../psiphon/psiphon_platform.dart';
 import '../../psiphon/psiphon_strategy.dart';
 import '../../xray/exit_info.dart';
+import 'ember_dialogs.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
 
 String regionName(String code) => englishCountryNames[code] ?? code;
 
-/// The Psiphon exit-region panel, Map Control edition: one
-/// glass panel with the caps header and the two-column region
-/// pill grid (sample 3) — radius-10 pills, centred text only,
-/// the selected one in an orange gradient tint with a check.
-/// Used inline on the home page (there [compact]: ~68% wide,
-/// at most four pill rows tall with an internal scroll, so the
-/// map actors keep the upper canvas) and as the Servers-tab
-/// view; picking a region while the tunnel is up takes effect
-/// on the next connect, exactly as before.
+/// Build 2145 (pro6 composition rebuild): the flat hairline
+/// panel — a solid card fill and a 1 px hairline edge, no
+/// blur, no luminous ring — that replaces MapGlass on the
+/// recomposed Psiphon surfaces.
+class _HairlinePanel extends StatelessWidget {
+  const _HairlinePanel({required this.child, required this.padding});
+
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: MapUi.card,
+        border: Border.all(color: MapUi.line),
+        borderRadius: MapUi.panelBorder,
+      ),
+      padding: padding,
+      child: child,
+    );
+  }
+}
+
+/// The Psiphon exit-region panel: the hero header and the
+/// typographic region list open over the map (build 2145,
+/// pro6 sample — the glass panel of 2144 leaves) — big light
+/// country names as hairline rows, the selected one carrying
+/// a check and, while Psiphon runs proxy-only (the
+/// chain-underlay mode, the settings page's own wording),
+/// the orange micro-label tag; the chain-underlay toggle row
+/// sits at the list foot, bound to that same mode setting.
+/// No per-region ping exists in the app, so no numeral is
+/// shown — the sample's figures are not invented here.
+/// Used inline on the home page (there [compact]) and as the
+/// Servers-tab view; picking a region while the tunnel is up
+/// takes effect on the next connect, exactly as before.
 class PsiphonRegionsPanel extends StatelessWidget {
   const PsiphonRegionsPanel({
     super.key,
@@ -50,118 +79,129 @@ class PsiphonRegionsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final selected = psiphon.settings.region;
-    Widget pill(String code, String label) {
+    // Build 2144 (pro6 reskin): the chain-underlay state is
+    // the app's own proxy-only mode (the settings page's
+    // segmented control) — while it is on, the selected
+    // region's row carries its wording as the orange tag.
+    final chainUnderlay = !psiphon.settings.vpnMode;
+    Widget row(String code, String label) {
       final on = selected == code;
       return InkWell(
-        borderRadius: BorderRadius.circular(10),
         onTap: () => _pick(code),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-          decoration: BoxDecoration(
-            gradient: on
-                ? LinearGradient(
-                    colors: [
-                      Ember.orange.withValues(alpha: 0.24),
-                      Ember.orange.withValues(alpha: 0.10),
-                    ],
-                  )
-                : null,
-            color: on ? null : Colors.white.withValues(alpha: 0.045),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: on
-                  // Build 2074 (audit item 5): the selected pill
-                  // wears the one Ember.orange, not an off-palette
-                  // hardcode.
-                  ? Ember.orange
-                  // 2023 polish (Gemini round-3 audit): the
-                  // frosted slate the samples give unselected
-                  // pills, not the old faint white.
-                  : const Color(0x665E82A8),
-              width: on ? 1.4 : 1,
-            ),
-            boxShadow: on
-                ? [
-                    BoxShadow(
-                      color: Ember.orange.withValues(alpha: 0.22),
-                      blurRadius: 10,
-                      spreadRadius: -1,
-                    ),
-                  ]
-                : null,
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: MapUi.line, width: 1)),
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              if (on) ...[
-                const Icon(Icons.check_rounded, size: 14, color: Ember.orange),
-                const SizedBox(width: 4),
-              ],
-              Flexible(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: on ? Ember.orange : MapUi.body,
-                    // 2025 (Gemini audit v5, item 4): 13 -> 11.5 so
-                    // the long region names ("Automatic", "United
-                    // Kingdom") stop truncating in the pill.
-                    fontSize: 11.5,
-                    fontWeight: on ? FontWeight.w700 : FontWeight.w500,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        // Batch 4 (pro6-psiphon): the sample's
+                        // typographic row scale (was fontDisplay).
+                        // Batch 5: the size is the theme's
+                        // fontRegion token (value unchanged).
+                        fontSize: Ember.fontRegion,
+                        fontWeight: FontWeight.w300,
+                        color: on ? Ember.text : MapUi.body,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                    if (on && chainUnderlay) ...[
+                      const SizedBox(height: 4),
+                      Text(l.psiphonProxyOnly, style: Ember.microLabelOrange),
+                    ],
+                  ],
                 ),
               ),
+              if (on)
+                const Icon(
+                  Icons.check_rounded,
+                  size: 18,
+                  color: Ember.orange,
+                ),
             ],
           ),
         ),
       );
     }
 
-    final cells = <Widget>[
-      pill('', l.psiphonRegionAuto),
-      for (final code in psiphon.regionChoices) pill(code, regionName(code)),
-    ];
-    final grid = Column(
+    final list = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        for (var i = 0; i < cells.length; i += 2)
-          Padding(
-            padding: EdgeInsets.only(top: i == 0 ? 0 : 8),
-            child: Row(
-              children: [
-                Expanded(child: cells[i]),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: i + 1 < cells.length
-                      ? cells[i + 1]
-                      : const SizedBox.shrink(),
-                ),
-              ],
-            ),
-          ),
+        row('', l.psiphonRegionAuto),
+        for (final code in psiphon.regionChoices) row(code, regionName(code)),
       ],
     );
+    // Build 2145 (pro6 composition rebuild): the open
+    // composition — hero header, hairline rows and the
+    // chain-underlay toggle row at the list foot, directly
+    // over the map; no panel under them.
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        MapGlass(
-          luminous: true,
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        // Batch 4 (pro6 fidelity rollout): the sample's
+        // tracked engine label over the hero (the WireGuard
+        // home's pattern).
+        Text('ENGINE · PSIPHON', style: Ember.microLabelOrange),
+        const SizedBox(height: 10),
+        // Build 2144 (pro6 reskin): the header takes the
+        // samples' hero tier; the close control is the
+        // header's own (same tooltip, icon, size).
+        Row(
+          children: [
+            Expanded(child: Text('Exit Region', style: Ember.hero)),
+            if (onClose != null)
+              IconButton(
+                tooltip: 'Close',
+                onPressed: onClose,
+                icon: const Icon(Icons.close_rounded, size: 19),
+                color: MapUi.dim,
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.only(left: 4),
+                constraints: const BoxConstraints(
+                  minWidth: 48,
+                  minHeight: 48,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        // Build 2074 (audit item 26): no nested scroll —
+        // the rows lay out in full and the page scrolls
+        // them.
+        list,
+        // Build 2145: the chain-underlay toggle row at the
+        // list foot (the sample's foot row). Its value is
+        // the same proxy-only mode state the selected row's
+        // tag reads, and its callback is the settings page's
+        // own update path (a settings copy with vpnMode
+        // flipped, through updateSettings) — the segmented
+        // control there and this toggle drive one setting.
+        Container(
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
             children: [
-              MapPanelHeader(title: 'Exit Region', onClose: onClose),
-              const SizedBox(height: 12),
-              // Build 2074 (audit item 26): no nested scroll —
-              // the compact panel used to cap itself at 180dp
-              // with its own SingleChildScrollView inside the
-              // page ListView, and the two drags fought. The
-              // grid now lays out in full and the page scrolls
-              // it; the old "more regions below" cue (build
-              // 2056) went with the cap it described.
-              grid,
+              Expanded(child: Text(l.psiphonProxyOnly, style: Ember.body)),
+              EmberToggle(
+                value: chainUnderlay,
+                onChanged: (on) {
+                  final next = PsiphonSettings.fromJson(
+                    psiphon.settings.toJson(),
+                  );
+                  next.vpnMode = !on;
+                  unawaited(psiphon.updateSettings(next));
+                },
+              ),
             ],
           ),
         ),
@@ -215,13 +255,15 @@ class PsiphonAboutView extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
           children: [
-            Center(child: Text(l.navAccounts, style: Ember.title)),
-            Center(child: Text('Psiphon', style: Ember.caption)),
+            Center(child: Text(l.navAccounts, style: Ember.microLabel)),
+            // Build 2144 (pro6 reskin): the engine name takes
+            // the samples' hero tier.
+            Center(child: Text('Psiphon', style: Ember.hero)),
             const SizedBox(height: 16),
-            // Build 2074 (audit item 5): MapGlass directly, not
-            // the legacy GlassCard — the padding is the old
-            // GlassCard default, spelled out.
-            MapGlass(
+            // Build 2145 (pro6 composition rebuild): the
+            // about view's cards go flat — hairline panels,
+            // contents unchanged.
+            _HairlinePanel(
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
@@ -232,7 +274,7 @@ class PsiphonAboutView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            MapGlass(
+            _HairlinePanel(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -302,8 +344,25 @@ class PsiphonAboutView extends StatelessWidget {
                   if (!state.vpnMode && state.running) ...[
                     const SizedBox(height: 8),
                     Text(
-                      'SOCKS 127.0.0.1:${PsiphonPlatform.socksPort} · '
-                      'HTTP 127.0.0.1:${PsiphonPlatform.httpPort}',
+                      // Build 2095 (whole-app journey audit
+                      // #30): SOCKS only — the HTTP proxy half
+                      // of this line named a port the bundled
+                      // core does not serve.
+                      'SOCKS 127.0.0.1:${latDigits(PsiphonPlatform.socksPort)}',
+                      style: Ember.caption,
+                    ),
+                  ],
+                  // Build 2125 (audit A25-04 / plan S-4):
+                  // the kill-switch hold names itself — the
+                  // session is down, but its TUN is held so
+                  // traffic is blocked, never direct.
+                  if (state.killSwitchHeld) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Kill switch holding: the session dropped, '
+                      'and its tunnel is being held so traffic '
+                      'stays blocked instead of going direct. '
+                      'Reconnect or disconnect to clear it.',
                       style: Ember.caption,
                     ),
                   ],
@@ -332,11 +391,25 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
     text: widget.psiphon.settings.upstream,
   );
 
+  /// Build 2095 (whole-app journey audit, §9 minor): the
+  /// upstream field used to save only when the page was
+  /// popped — it now also saves on submit and on focus loss.
+  final FocusNode _upstreamFocus = FocusNode();
+
   PsiphonController get psiphon => widget.psiphon;
+
+  @override
+  void initState() {
+    super.initState();
+    _upstreamFocus.addListener(() {
+      if (!_upstreamFocus.hasFocus) _saveUpstream();
+    });
+  }
 
   @override
   void dispose() {
     _saveUpstream();
+    _upstreamFocus.dispose();
     _upstream.dispose();
     super.dispose();
   }
@@ -373,6 +446,7 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
     final l = AppLocalizations.of(context);
     final settings = psiphon.settings;
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -382,7 +456,7 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
       ),
       body: EmberBackground(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+          padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
           children: [
             Text(l.psiphonConnectionMode, style: Ember.heading),
             const SizedBox(height: 10),
@@ -396,6 +470,7 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
             ),
             const SizedBox(height: 18),
             MapGlass(
+        blur: false,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Column(
                 children: [
@@ -409,6 +484,7 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
                       await Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => Scaffold(
+                            extendBodyBehindAppBar: true,
                             backgroundColor: Ember.bg,
                             appBar: AppBar(
                               backgroundColor: Colors.transparent,
@@ -417,7 +493,20 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
                               title: Text(l.region, style: Ember.heading),
                             ),
                             body: EmberBackground(
-                              child: PsiphonRegionsView(psiphon: psiphon),
+                              // Build 2138 (visual review V-26):
+                              // the body extends behind the
+                              // transparent bar; the regions view
+                              // is shared with the shell, so the
+                              // bar inset wraps it here instead
+                              // of padding inside the view.
+                              child: Padding(
+                                padding: EdgeInsets.only(
+                                  top:
+                                      MediaQuery.of(context).padding.top +
+                                      kToolbarHeight,
+                                ),
+                                child: PsiphonRegionsView(psiphon: psiphon),
+                              ),
                             ),
                           ),
                         ),
@@ -461,6 +550,7 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
             Text('Connection strategy', style: Ember.heading),
             const SizedBox(height: 10),
             MapGlass(
+        blur: false,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Column(
                 children: [
@@ -475,6 +565,65 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
                         ),
                       );
                       if (mounted) setState(() {});
+                    },
+                  ),
+                  const Divider(color: Ember.line, height: 1),
+                  // Bridge mode (build 2075, feature item 10):
+                  // the fronted-rung policy for the Auto ladder.
+                  _SettingsRow(
+                    icon: Icons.shield_rounded,
+                    label: 'Bridge mode',
+                    value: switch (settings.bridgeMode) {
+                      'on' => 'Bridges only',
+                      'off' => 'No bridges',
+                      _ => 'Auto',
+                    },
+                    onTap: () async {
+                      const modes = ['auto', 'on', 'off'];
+                      const labels = {
+                        'auto': 'Auto — fronted and plain rungs alternate',
+                        'on': 'Bridges only — no plain direct rung',
+                        'off': 'No bridges — direct and relayed only',
+                      };
+                      // Build 2092 (item 50): the shared
+                      // Ember form dialog replaces the stock
+                      // SimpleDialog; options are 48 dp rows.
+                      final picked = await showEmberFormDialog<String>(
+                        context,
+                        title: 'Bridge mode',
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (final m in modes)
+                              InkWell(
+                                onTap: () => Navigator.of(context).pop(m),
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                    minHeight: 48,
+                                  ),
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    labels[m]!,
+                                    style: Ember.body.copyWith(
+                                      color: settings.bridgeMode == m
+                                          ? Ember.orange
+                                          : Ember.text,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        actions: const [],
+                      );
+                      if (picked != null && picked != settings.bridgeMode) {
+                        final next = PsiphonSettings.fromJson(
+                          settings.toJson(),
+                        );
+                        next.bridgeMode = picked;
+                        await psiphon.updateSettings(next);
+                        if (mounted) setState(() {});
+                      }
                     },
                   ),
                   const Divider(color: Ember.line, height: 1),
@@ -507,6 +656,30 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
                     value: settings.disableTimeouts,
                     onChanged: (v) => _edit(v, (s, v) => s.disableTimeouts = v),
                   ),
+                  const Divider(color: Ember.line, height: 1),
+                  // Build 2129 (Leg 2): the Shiro bootstrap
+                  // (DEFAULT OFF) — the public Shirokhorshid
+                  // partner set as one unit: identity,
+                  // 2,434-entry list, fronting overrides.
+                  _SwitchRow(
+                    icon: Icons.public_rounded,
+                    label: 'Shiro bootstrap',
+                    hint:
+                        'Public Shirokhorshid server set instead of the built-in one',
+                    value: settings.shiroBootstrap,
+                    onChanged: (v) => _edit(v, (s, v) => s.shiroBootstrap = v),
+                  ),
+                  const Divider(color: Ember.line, height: 1),
+                  // Build 2129 (Leg 2): strong mode
+                  // (DEFAULT OFF) — AggressiveEstablishment,
+                  // in either bootstrap.
+                  _SwitchRow(
+                    icon: Icons.bolt_rounded,
+                    label: 'Strong mode',
+                    hint: 'Aggressive tunnel establishment attempts',
+                    value: settings.strongMode,
+                    onChanged: (v) => _edit(v, (s, v) => s.strongMode = v),
+                  ),
                 ],
               ),
             ),
@@ -517,28 +690,15 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
             const SizedBox(height: 10),
             TextField(
               controller: _upstream,
+              focusNode: _upstreamFocus,
               style: Ember.body,
               keyboardType: TextInputType.url,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: InputDecoration(
-                hintText: 'http://host:port',
-                hintStyle: Ember.caption,
-                filled: true,
-                fillColor: Ember.field,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Ember.line),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Ember.line),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Ember.orange),
-                ),
-              ),
+              // Build 2116 (AP-16): the shared field — this
+              // was a hand-rolled clone at radius 14 with
+              // the graphite fill.
+              decoration: emberField(context, 'http://host:port'),
               onSubmitted: (_) => _saveUpstream(),
             ),
             const SizedBox(height: 12),
@@ -608,7 +768,9 @@ class _SettingsRow extends StatelessWidget {
   Widget build(BuildContext context) => InkWell(
     onTap: onTap,
     child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 13),
+      // Build 2092 (item 50): 14 dp vertical padding puts
+      // the row at the 48 dp floor (was ~46).
+      padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(
         children: [
           Icon(icon, size: 20, color: Ember.orange),
@@ -654,6 +816,7 @@ class _PsiphonTransportsPageState extends State<PsiphonTransportsPage> {
     final l = AppLocalizations.of(context);
     final selected = widget.psiphon.settings.protocols;
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -663,7 +826,7 @@ class _PsiphonTransportsPageState extends State<PsiphonTransportsPage> {
       ),
       body: EmberBackground(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+          padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
           children: [
             Text(
               selected.isEmpty
@@ -674,6 +837,7 @@ class _PsiphonTransportsPageState extends State<PsiphonTransportsPage> {
             ),
             const SizedBox(height: 10),
             MapGlass(
+        blur: false,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Column(
                 children: [
@@ -692,7 +856,9 @@ class _PsiphonTransportsPageState extends State<PsiphonTransportsPage> {
                         if (mounted) setState(() {});
                       },
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 11),
+                        // Build 2092 (item 50): the transport
+                        // rows reach the 48 dp floor (was ~43).
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                         child: Row(
                           children: [
                             Expanded(
@@ -749,6 +915,7 @@ class _PsiphonLogsPageState extends State<PsiphonLogsPage> {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -760,8 +927,18 @@ class _PsiphonLogsPageState extends State<PsiphonLogsPage> {
             onPressed: () => setState(() => _logs = widget.psiphon.readLogs()),
             icon: const Icon(Icons.refresh_rounded, color: Ember.dim),
           ),
+          // Build 2092 (item 51): Clear carries a tooltip
+          // and confirms first, like the other log pages.
           IconButton(
+            tooltip: 'Clear logs',
             onPressed: () async {
+              final confirmed = await showEmberConfirm(
+                context,
+                title: 'Clear logs?',
+                message: 'Delete the saved Psiphon logs?',
+                confirmLabel: 'Clear',
+              );
+              if (!confirmed) return;
               await widget.psiphon.clearLogs();
               setState(() => _logs = widget.psiphon.readLogs());
             },
@@ -784,9 +961,10 @@ class _PsiphonLogsPageState extends State<PsiphonLogsPage> {
             }
             if (snap.hasError) {
               return ListView(
-                padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+                padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
                 children: [
                   MapGlass(
+        blur: false,
                     padding: const EdgeInsets.all(13),
                     child: Text(
                       'The logs could not be loaded.',
@@ -798,12 +976,16 @@ class _PsiphonLogsPageState extends State<PsiphonLogsPage> {
             }
             final text = snap.data ?? '';
             return ListView(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+              padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
               children: [
                 if (snap.hasData)
                   Align(
                     alignment: AlignmentDirectional.centerEnd,
                     child: TextButton.icon(
+                      // Build 2092 (item 51): 48 dp floor.
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
                       onPressed: () async {
                         await Clipboard.setData(ClipboardData(text: text));
                         if (context.mounted) {
@@ -821,6 +1003,7 @@ class _PsiphonLogsPageState extends State<PsiphonLogsPage> {
                     ),
                   ),
                 MapGlass(
+        blur: false,
                   padding: const EdgeInsets.all(13),
                   child: SelectableText(
                     text.isEmpty ? l.noLogs : text,
@@ -909,6 +1092,7 @@ class _PsiphonMethodPageState extends State<PsiphonMethodPage> {
     final settings = psiphon.settings;
     final winner = settings.winnerFor(settings.networkKey);
     return Scaffold(
+      extendBodyBehindAppBar: true,
       backgroundColor: Ember.bg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -918,7 +1102,7 @@ class _PsiphonMethodPageState extends State<PsiphonMethodPage> {
       ),
       body: EmberBackground(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+          padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
           children: [
             if (winner.isNotEmpty)
               Padding(
@@ -929,6 +1113,7 @@ class _PsiphonMethodPageState extends State<PsiphonMethodPage> {
                 ),
               ),
             MapGlass(
+        blur: false,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Column(
                 children: [
@@ -992,25 +1177,12 @@ class _PsiphonMethodPageState extends State<PsiphonMethodPage> {
                 style: Ember.body,
                 autocorrect: false,
                 enableSuggestions: false,
-                decoration: InputDecoration(
-                  hintText: 'psiphon://pair/…',
-                  hintStyle: Ember.caption,
-                  errorText: _pairingError,
-                  filled: true,
-                  fillColor: Ember.field,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(color: Ember.line),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(color: Ember.line),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(color: Ember.orange),
-                  ),
-                ),
+                // Build 2116 (AP-16): the shared field (the
+                // clone's error wiring rides copyWith).
+                decoration: emberField(
+                  context,
+                  'psiphon://pair/…',
+                ).copyWith(errorText: _pairingError),
                 onSubmitted: (_) => _savePairing(),
               ),
               const SizedBox(height: 10),
@@ -1036,8 +1208,13 @@ class _PsiphonMethodPageState extends State<PsiphonMethodPage> {
 /// Fastly candidates plus the owner's own IP+SNI entries. "Test
 /// all" runs a real TCP+TLS handshake per entry (apps cannot send
 /// ICMP; the number shown is handshake latency). The fastest
-/// reachable edges feed the core automatically; pinning one edge
-/// and turning auto-use off feeds exactly that one.
+/// reachable BUILT-IN edges feed the core automatically; pinning
+/// one built-in edge and turning auto-use off feeds exactly that
+/// one. Build 2095 (whole-app journey audit #18/#19): custom
+/// edges are a latency WATCHLIST — the core feed selects by
+/// provider (akamai/fastly), so a custom edge can be tested but
+/// never fed or pinned; the page says so instead of promising
+/// a capability it does not have.
 class PsiphonEdgesPage extends StatefulWidget {
   const PsiphonEdgesPage({super.key, required this.psiphon});
 
@@ -1060,45 +1237,45 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
   Future<void> _addCustom() async {
     final address = TextEditingController();
     final sni = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Add CDN edge', style: Ember.heading),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: address,
-              style: Ember.body,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: const InputDecoration(hintText: 'IP or hostname'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: sni,
-              style: Ember.body,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: const InputDecoration(hintText: 'SNI hostname'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+    // Build 2092 (items 50/61): the shared scrollable Ember
+    // form dialog and fields; the two controllers are
+    // disposed once their text is read.
+    final ok = await showEmberFormDialog<bool>(
+      context,
+      title: 'Add CDN edge',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: address,
+            style: Ember.body,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: emberField(context, 'IP or hostname'),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Add'),
+          const SizedBox(height: 10),
+          TextField(
+            controller: sni,
+            style: Ember.body,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: emberField(context, 'SNI hostname'),
           ),
         ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        EmberButton(label: 'Add', onTap: () => Navigator.of(context).pop(true)),
+      ],
     );
-    if (ok != true) return;
     final a = address.text.trim();
     final s = sni.text.trim();
+    address.dispose();
+    sni.dispose();
+    if (ok != true) return;
     if (a.isEmpty) return;
     await _edit((settings) {
       settings.cdnEdges.add(
@@ -1115,6 +1292,7 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
         final settings = psiphon.settings;
         final ranked = rankCdnEdges(settings.cdnEdges);
         return Scaffold(
+          extendBodyBehindAppBar: true,
           backgroundColor: Ember.bg,
           appBar: AppBar(
             backgroundColor: Colors.transparent,
@@ -1124,10 +1302,11 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
           ),
           body: EmberBackground(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+              padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
               children: [
                 Text(
-                  'Each entry is tested with a real TCP + TLS handshake; the number is that handshake\'s latency.',
+                  'Each entry is tested with a real TCP + TLS handshake; the number is that handshake\'s latency. '
+                  'Only built-in Akamai/Fastly edges feed the core — custom edges are a test-only watchlist.',
                   style: Ember.caption,
                 ),
                 const SizedBox(height: 10),
@@ -1148,6 +1327,7 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
                 ),
                 const SizedBox(height: 6),
                 MapGlass(
+        blur: false,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
                     vertical: 4,
@@ -1181,7 +1361,9 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     Text(
-                                      '${ranked[i].provider} · SNI ${ranked[i].sni}',
+                                      ranked[i].provider == 'custom'
+                                          ? 'custom · test only · SNI ${ranked[i].sni}'
+                                          : '${ranked[i].provider} · SNI ${ranked[i].sni}',
                                       style: Ember.caption,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -1199,7 +1381,9 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
                                     : Ember.caption,
                               ),
                               IconButton(
-                                tooltip: settings.pinnedEdgeId == ranked[i].id
+                                tooltip: ranked[i].provider == 'custom'
+                                    ? 'Custom edges are test-only'
+                                    : settings.pinnedEdgeId == ranked[i].id
                                     ? 'Pinned'
                                     : 'Pin this edge',
                                 icon: Icon(
@@ -1211,12 +1395,14 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
                                       ? Ember.orange
                                       : Ember.faint,
                                 ),
-                                onPressed: () => _edit((s) {
-                                  s.pinnedEdgeId =
-                                      s.pinnedEdgeId == ranked[i].id
-                                      ? ''
-                                      : ranked[i].id;
-                                }),
+                                onPressed: ranked[i].provider == 'custom'
+                                    ? null
+                                    : () => _edit((s) {
+                                        s.pinnedEdgeId =
+                                            s.pinnedEdgeId == ranked[i].id
+                                            ? ''
+                                            : ranked[i].id;
+                                      }),
                               ),
                               if (!ranked[i].builtin)
                                 IconButton(
@@ -1226,14 +1412,28 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
                                     size: 18,
                                     color: Ember.faint,
                                   ),
-                                  onPressed: () => _edit((s) {
-                                    s.cdnEdges.removeWhere(
-                                      (e) => e.id == ranked[i].id,
+                                  // Build 2092 (item 50):
+                                  // deleting a custom edge
+                                  // confirms first.
+                                  onPressed: () async {
+                                    final confirmed = await showEmberConfirm(
+                                      context,
+                                      title: 'Remove edge?',
+                                      message:
+                                          'Remove the custom edge '
+                                          '${ranked[i].address}?',
+                                      confirmLabel: 'Remove',
                                     );
-                                    if (s.pinnedEdgeId == ranked[i].id) {
-                                      s.pinnedEdgeId = '';
-                                    }
-                                  }),
+                                    if (!confirmed) return;
+                                    await _edit((s) {
+                                      s.cdnEdges.removeWhere(
+                                        (e) => e.id == ranked[i].id,
+                                      );
+                                      if (s.pinnedEdgeId == ranked[i].id) {
+                                        s.pinnedEdgeId = '';
+                                      }
+                                    });
+                                  },
                                 ),
                             ],
                           ),

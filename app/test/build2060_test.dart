@@ -96,26 +96,36 @@ void main() {
     });
   });
 
-  group('2049 wording vs _dnsSection gate (build 2060)', () {
-    test('default shape carries the built-in TCP fallback', () {
-      expect(dnsServers(XraySettings()), contains('tcp://9.9.9.9'));
+  group('2049 wording vs _dnsSection gate (build 2060; the gate '
+      'itself removed in build 2101)', () {
+    // Build 2101 (owner order 2026-11-18): the built-in
+    // fallback this group policed the wording of is REMOVED —
+    // the pins flip to the removal, in every shape the old
+    // gate used to cover.
+    test('default shape carries NO built-in TCP fallback (2101)', () {
+      expect(dnsServers(XraySettings()), isNot(contains('tcp://9.9.9.9')));
+      // Build 2113: the default list is the single Cloudflare
+      // DoH entry (the 2111 UDP-first pair is gone); the
+      // policed point stands — no tcp://9.9.9.9 anywhere.
+      expect(dnsServers(XraySettings()), [
+        'https://cloudflare-dns.com/dns-query',
+      ]);
     });
 
-    test('fakeDNS on does NOT opt out of the built-in fallback', () {
+    test('fakeDNS on changes nothing about that (2101)', () {
       final s = XraySettings()..fakeDns = true;
-      expect(dnsServers(s), contains('tcp://9.9.9.9'));
+      expect(dnsServers(s), isNot(contains('tcp://9.9.9.9')));
     });
 
-    test('DoQ transport does NOT opt out of the built-in fallback', () {
+    test('DoQ transport changes nothing about that (2101)', () {
       final s = XraySettings()..remoteDnsProto = 'doq';
-      expect(dnsServers(s), contains('tcp://9.9.9.9'));
+      expect(dnsServers(s), isNot(contains('tcp://9.9.9.9')));
     });
 
-    test('the comment states the real condition (no fakeDNS/transport opt-out)', () {
+    test('the comment records the removal and its order', () {
       final builder = dartSrc('xray/config_builder.dart');
-      expect(builder, contains('does NOT exclude'));
-      expect(builder, contains('fakeDNS'));
-      expect(builder, contains('DoQ/TCP'));
+      expect(builder, contains('REMOVED in build 2101'));
+      expect(builder, contains('disableFallbackIfMatch'));
     });
   });
 
@@ -133,7 +143,17 @@ void main() {
       final destroy = kt.indexOf('override fun onDestroy()');
       expect(destroy, isNot(-1));
       final block = kt.substring(destroy, kt.indexOf('super.onDestroy()', destroy));
-      expect(block, contains('stopTunnel()'));
+      // Build 2091: the stop goes through stopProcesses() —
+      // bridge first, then the core, then the TUN fd — and the
+      // ladder scheduler is shut down. stopTunnel() itself is
+      // the session teardown; onDestroy reaches the core stop
+      // through stopProcesses, not a bare process kill.
+      expect(block, contains('stopProcesses()'));
+      expect(block, contains('ladderScheduler.shutdownNow()'));
+      final stop = kt.substring(kt.indexOf('private fun stopProcesses()'));
+      expect(stop, contains('Tun2SocksManager.stop()'));
+      expect(stop, contains('stopPsiphonCore()'));
+      expect(stop, contains('tunPfd?.close()'));
     });
 
     test('OpenVpnService.stopTunnel guards the null session', () {

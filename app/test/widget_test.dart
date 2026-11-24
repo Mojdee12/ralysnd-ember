@@ -1297,17 +1297,25 @@ void main() {
     core.dispose();
   });
 
-  // QUARANTINED 2026-11-14 (build 2057, audit F-H10): written against
-  // the old MobileShell bottom-nav UI (Home/Settings/Logs tabs,
-  // desktop overview content); the phone shell is now EmberShell
-  // (pure map + bottom bar + engine chips). Needs a navigation rewrite
-  // re-deriving each step from the Ember UI — un-quarantine by
-  // removing `skip: true` once the rewrite lands.
+  // Rewritten for the Ember phone shell in build 2087 (analysis
+  // A3; quarantined 2026-11-14 in build 2057, audit F-H10, when
+  // the phone shell became EmberShell): the steps now follow
+  // the Ember UI — the map home with its engine chips, the
+  // Account tab, Ember Settings (whose Mozilla section gained
+  // its missing Core logs row in this build), and "All settings"
+  // into the legacy settings tree, whose pages keep their own
+  // back bar. The surface is 500 dp wide: under the test font's
+  // ~1 em glyph metrics the header's brand panel measures
+  // ~285 dp (vs ~190 dp in a real font, which fits a 386 dp
+  // phone), so at handset widths the header Row reports a
+  // phantom overflow. Layout fit itself is covered by 'the
+  // smallest windows keep everything inside'; these four tests
+  // pin behaviour, not fit.
   testWidgets('a phone gets Home and Settings, and pages with a back bar', (
     tester,
   ) async {
     stillMotion(tester);
-    tester.view.physicalSize = const Size(400, 860);
+    tester.view.physicalSize = const Size(624, 915);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -1319,59 +1327,130 @@ void main() {
     core.start();
     await tester.pumpAndSettle();
 
-    expect(find.text('Home'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
+    // The map home: the Settings chip and the Mozilla
+    // Locations/Account pills — and no top-level Logs tab.
+    // PIN UPDATED (fidelity repair, post-batch-3): the R1/R2
+    // home recomposition retired the legacy header's text
+    // pills and rail chips; on Home the Settings and
+    // Locations routes are now the slim control bar's round
+    // icon buttons, pinned here by the tooltip words they
+    // have always carried. The routes and their one-tap
+    // reach are unchanged; Account keeps its text route
+    // (restored in the home header, same repair).
+    expect(find.byTooltip('Settings'), findsOneWidget);
+    expect(find.byTooltip('Locations'), findsOneWidget);
+    expect(find.text('Account'), findsOneWidget);
     expect(find.text('Logs'), findsNothing);
 
-    await tester.tap(find.text('Settings'));
+    // The Account tab carries the accounts (loaded with the
+    // first refresh, as on a real start; the cards sit below
+    // the bootstrap card, so the list is dragged up to them,
+    // and the page masks the addresses — a•••@example.com is
+    // alice's card).
+    await core.refresh();
+    await tester.tap(find.text('Account'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Accounts'));
+    for (
+      var i = 0;
+      i < 6 && find.text('a•••@example.com').evaluate().isEmpty;
+      i++
+    ) {
+      await tester.drag(find.byType(ListView).first, const Offset(0, -350));
+      await tester.pumpAndSettle();
+    }
+    expect(find.text('a•••@example.com'), findsOneWidget);
+    // Home again via the Mozilla chip.
+    await tester.tap(find.text('Mozilla'));
     await tester.pumpAndSettle();
-    // The accounts page under its own top bar, with a back button.
+    // PIN UPDATED (fidelity repair): Locations on Home is
+    // the slim bar's shield button — see the note above.
+    expect(find.byTooltip('Locations'), findsOneWidget);
+
+    // The Mozilla core's log page, under the Ember back bar:
+    // cleared logs stay cleared when the page opens again.
+    // PIN UPDATED (fidelity repair): Settings from Home is
+    // the slim bar's gear button, tapped by its tooltip.
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    // Build 2095 harness repair: the Mozilla settings
+    // section grew (transport row, Guardian pass row) and
+    // the Core logs row now starts below the fold, under
+    // the shell's floating bar — scroll until it is
+    // VISIBLE (built-but-covered is not tappable) before
+    // tapping.
+    await tester.scrollUntilVisible(
+      find.text('Core logs'),
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView).first,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Core logs'));
+    await tester.pumpAndSettle();
     expect(find.byType(AppBar), findsOneWidget);
-    expect(find.text('alice@example.com'), findsOneWidget);
-    await tester.pageBack();
-    await tester.pumpAndSettle();
-    expect(find.text('Account switching'), findsOneWidget);
-
-    // Back on the Settings tab goes Home rather than out of the app.
-    final popped = await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(popped, isTrue);
-    expect(find.text('Account switching'), findsNothing);
-    expect(find.text('Data used'), findsOneWidget);
-
-    // Logs cleared stay cleared when the page opens again.
-    await tester.tap(find.text('Settings'));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Logs'), 200);
-    await tester.tap(find.text('Logs'));
-    await tester.pumpAndSettle();
     expect(find.textContaining('proxy started'), findsOneWidget);
     await tester.tap(find.byTooltip('Clear'));
     await tester.pumpAndSettle();
+    // Build 2092 (UI audit item 51): Clear confirms first —
+    // the destructive tap now opens the shared confirmation,
+    // and only the confirm button clears.
+    await tester.tap(find.widgetWithText(TextButton, 'Clear'));
+    await tester.pumpAndSettle();
     expect(find.textContaining('proxy started'), findsNothing);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Core logs'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('proxy started'), findsNothing);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+
+    // "All settings" opens the legacy tree under its own back
+    // bar; a section page backs out to the sections list, and
+    // the page backs out to Ember Settings.
+    await tester.scrollUntilVisible(find.text('All settings'), 200);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('All settings'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppBar), findsOneWidget);
+    await tester.tap(find.text('Account switching'));
+    await tester.pumpAndSettle();
+    expect(find.text('Switch account at'), findsOneWidget);
+    // Two Back tooltips coexist here: the settings page's own
+    // (first in the tree) and the pushed route's bar — the
+    // page's goes back to the sections list.
+    await tester.tap(find.byTooltip('Back').first);
+    await tester.pumpAndSettle();
+    expect(find.text('General'), findsOneWidget);
     await tester.pageBack();
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Logs'));
+    expect(find.text('Language'), findsOneWidget);
+
+    // The Settings chip (now the close chip) goes Home.
+    await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('proxy started'), findsNothing);
+    // PIN UPDATED (fidelity repair): Locations on Home is
+    // the slim bar's shield button — see the note above.
+    expect(find.byTooltip('Locations'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     core.dispose();
-  }, skip: true);
+  });
 
-  // QUARANTINED 2026-11-14 (build 2057, audit F-H10): written against
-  // the old MobileShell bottom-nav UI (Home/Settings/Logs tabs,
-  // desktop overview content); the phone shell is now EmberShell
-  // (pure map + bottom bar + engine chips). Needs a navigation rewrite
-  // re-deriving each step from the Ember UI — un-quarantine by
-  // removing `skip: true` once the rewrite lands.
+  // Rewritten for the Ember phone shell in build 2087 (analysis
+  // A3; quarantined 2026-11-14 in build 2057, audit F-H10): the
+  // path is the Settings chip, then "All settings" (همه تنظیمات)
+  // into the legacy settings tree, whose General page carries
+  // the rows whose geometry this test pins.
   testWidgets('a phone in Persian lays the settings out right to left', (
     tester,
   ) async {
     stillMotion(tester);
-    tester.view.physicalSize = const Size(400, 860);
+    tester.view.physicalSize = const Size(624, 915);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -1385,7 +1464,15 @@ void main() {
     core.start();
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('تنظیمات').last);
+    // PIN UPDATED (fidelity repair, post-batch-3): Settings
+    // from Home is the slim bar's gear button, tapped by its
+    // tooltip — see the note in 'a phone gets Home and
+    // Settings' above.
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('همه تنظیمات'), 200);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('همه تنظیمات'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('عمومی'));
     await tester.pumpAndSettle();
@@ -1396,30 +1483,37 @@ void main() {
     expect(label.right, greaterThan(300));
     expect(control.right, lessThan(label.left));
     expect((control.center.dy - label.center.dy).abs(), lessThan(24));
-    await tester.binding.handlePopRoute();
+    // Back to the sections list: the page's own back button,
+    // found by its icon — its tooltip is localized, and the
+    // route's AppBar back button shares the icon, so the
+    // page's (first in the tree) is the target.
+    await tester.tap(find.byType(BackButtonIcon).first);
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('تعویض خودکار حساب'), 200);
     await tester.tap(find.text('تعویض خودکار حساب'));
     await tester.pumpAndSettle();
-    // A text setting's Save goes under its field, which keeps the width.
+    // A text setting's editor is a row in RTL: the field keeps
+    // its width at the start (the right), its Save at the end
+    // side (the left), on the same row.
     final field = tester.getRect(find.byType(TextField).first);
     final save = tester.getRect(find.byType(FilledButton).first);
-    expect(save.top, greaterThan(field.bottom));
     expect(field.width, greaterThan(300));
+    expect(save.right, lessThan(field.left));
+    expect((save.center.dy - field.center.dy).abs(), lessThan(60));
 
     await tester.pumpWidget(const SizedBox());
     core.dispose();
-  }, skip: true);
+  });
 
-  // QUARANTINED 2026-11-14 (build 2057, audit F-H10): written against
-  // the old MobileShell bottom-nav UI (Home/Settings/Logs tabs,
-  // desktop overview content); the phone shell is now EmberShell
-  // (pure map + bottom bar + engine chips). Needs a navigation rewrite
-  // re-deriving each step from the Ember UI — un-quarantine by
-  // removing `skip: true` once the rewrite lands.
+  // Rewritten for the Ember phone shell in build 2087 (analysis
+  // A3; quarantined 2026-11-14 in build 2057, audit F-H10): the
+  // Mozilla state now reads from the Ember bottom bar (state
+  // word + LOCATION / EXIT IP cells), the account's data used
+  // from the Account tab, and the bar's power capsule is the
+  // on/off toggle.
   testWidgets('a phone turns the whole proxy on and off', (tester) async {
     stillMotion(tester);
-    tester.view.physicalSize = const Size(400, 860);
+    tester.view.physicalSize = const Size(624, 915);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -1431,46 +1525,62 @@ void main() {
       pollInterval: const Duration(hours: 1),
       turnOn: (on) async => api.on = on,
     );
-    await tester.pumpWidget(VpnApp(core: core, settings: AppSettings()));
+    // Build 2095 (whole-app journey audit #28): the exit
+    // IP is gated on the Show public IP setting now — the
+    // test opts in, as a user who wants it shown does.
+    await tester.pumpWidget(
+      VpnApp(core: core, settings: AppSettings()..showPublicIp = true),
+    );
     core.start();
+    await tester.pumpAndSettle();
+    await core.runTest();
     await tester.pumpAndSettle();
 
     // On, with no system proxy: connected, not "proxy only".
     expect(find.text('Connected'), findsOneWidget);
-    // Connected through the recommended location: the exit's country,
-    // without the city, under "Recommended location".
-    expect(find.text('Recommended location'), findsOneWidget);
-    expect(find.text('Belgium'), findsOneWidget);
-    expect(find.textContaining('Brussels'), findsNothing);
-    // No public IP on the phone's home.
-    expect(find.textContaining('192.0.2.7'), findsNothing);
-    // The data used, in the ring and in large type; the email is not on
-    // the phone's home.
-    expect(find.textContaining('40%'), findsOneWidget);
-    expect(find.text('Data used'), findsOneWidget);
-    expect(find.textContaining('20.0 GB'), findsOneWidget);
+    // Connected through the recommended location; the exit IP
+    // is the bar's EXIT IP cell.
+    expect(find.textContaining('Recomended Location'), findsWidgets);
+    expect(find.textContaining('192.0.2.7'), findsWidgets);
+    // The account email is not on the phone's home.
     expect(find.textContaining('@example.com'), findsNothing);
     // Apps in the VPN trying refused ports are no news on the phone.
     expect(find.textContaining('5228'), findsNothing);
-    // The local address is not shown unless shared with the LAN.
+    // The local proxy address is not shown on the home.
     expect(find.textContaining('10810'), findsNothing);
 
-    await tester.tap(find.byTooltip('Tap to disconnect'));
+    // The account's data lives on the Account tab: alice's
+    // card shows what is left of the 50 GB limit.
+    await tester.tap(find.text('Account'));
+    await tester.pumpAndSettle();
+    for (
+      var i = 0;
+      i < 6 && find.textContaining('GB remaining').evaluate().isEmpty;
+      i++
+    ) {
+      await tester.drag(find.byType(ListView).first, const Offset(0, -350));
+      await tester.pumpAndSettle();
+    }
+    expect(find.textContaining('30.0 GB remaining'), findsWidgets);
+    // Home again via the Mozilla chip (a tap on the current
+    // engine's chip returns to the map tab).
+    await tester.tap(find.text('Mozilla'));
+    await tester.pumpAndSettle();
+    expect(find.text('Connected'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.power_settings_new_rounded));
     await tester.pumpAndSettle();
     expect(api.on, isFalse);
-    expect(find.text('Disconnected'), findsOneWidget);
-    // Off: the chosen location, the recommended one by default.
-    expect(find.text('Location'), findsOneWidget);
-    expect(find.text('Recommended location'), findsOneWidget);
+    expect(find.text('Not connected'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Tap to connect'));
+    await tester.tap(find.byIcon(Icons.power_settings_new_rounded));
     await tester.pumpAndSettle();
     expect(api.on, isTrue);
     expect(find.text('Connected'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     core.dispose();
-  }, skip: true);
+  });
 
   test('the quota turns amber 10 points before the switch and red at it', () {
     expect(quotaColor(50, 95), StatusColors.good);
@@ -1485,15 +1595,16 @@ void main() {
     expect(quotaColor(90, 0), StatusColors.busy);
   });
 
-  // QUARANTINED 2026-11-14 (build 2057, audit F-H10): written against
-  // the old MobileShell bottom-nav UI (Home/Settings/Logs tabs,
-  // desktop overview content); the phone shell is now EmberShell
-  // (pure map + bottom bar + engine chips). Needs a navigation rewrite
-  // re-deriving each step from the Ember UI — un-quarantine by
-  // removing `skip: true` once the rewrite lands.
+  // Rewritten for the Ember phone shell in build 2087 (analysis
+  // A3; quarantined 2026-11-14 in build 2057, audit F-H10). The
+  // phone bar's Mozilla word is the core's phase (the settled
+  // 2057 semantics — the failure detail is a desktop-overview
+  // surface); what the bar claims only after a test passes is
+  // the latency microLine, and since build 2087 a device with
+  // no network at all says so in the state word itself.
   testWidgets('a phone says connecting until a test passes', (tester) async {
     stillMotion(tester);
-    tester.view.physicalSize = const Size(400, 860);
+    tester.view.physicalSize = const Size(624, 915);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -1509,19 +1620,25 @@ void main() {
     core.start();
     await tester.pumpAndSettle();
 
-    // No internet: the proxy runs, but the VPN does not claim to work.
+    // No internet: the proxy runs, but no test has passed, so
+    // the bar makes no latency claim for the session — and
+    // since build 2116 (B1-1) the word itself waits for a
+    // passing test too: 'Connected' is a confirmed claim,
+    // not the phase's.
     expect(find.text('Connecting…'), findsOneWidget);
-    expect(find.textContaining("Couldn't connect"), findsOneWidget);
     expect(find.text('Connected'), findsNothing);
+    expect(find.textContaining('LATENCY'), findsNothing);
 
-    // The internet is back: the next test confirms it.
+    // The internet is back: the next test passes, and the bar
+    // shows the measured latency.
     api.online = true;
     await core.runTest();
+    await core.refresh();
     await tester.pumpAndSettle();
-    expect(find.text('Connected'), findsOneWidget);
+    expect(find.textContaining('LATENCY 70ms'), findsOneWidget);
 
-    // Wi-Fi and mobile data off: Android says so, and the app at once,
-    // without a test.
+    // Wi-Fi and mobile data off: the app says so at once, in
+    // the state word, without a test.
     api.noNetwork = true;
     await core.refresh();
     await tester.pumpAndSettle();
@@ -1530,7 +1647,7 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
     core.dispose();
-  }, skip: true);
+  });
 
   testWidgets('a nearly used account suggests another one, for a minute', (
     tester,
@@ -1732,7 +1849,12 @@ void main() {
     // instead, so the phone half asserts that bar, not the desktop
     // text. The "nothing runs past the bottom" half is the test
     // passing at all: a 31 px shell overflow failed it before.
-    expect(find.text('Connected'), findsOneWidget);
+    // Build 2116 (B1-1): the running session's test FAILED
+    // (location refused), so the bar no longer claims
+    // 'Connected' for it — unconfirmed reads 'Connecting…'
+    // inside the grace window.
+    expect(find.text('Connecting…'), findsOneWidget);
+    expect(find.text('Connected'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
     core.dispose();
@@ -2246,7 +2368,10 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 
     testWidgets('a refused call offers to send it directly', (tester) async {
-      final settings = AppSettings();
+      // Build 2114: the UDP notice defaults OFF now
+      // (defaults reset) — this test grades the notice
+      // itself, so it turns the setting on.
+      final settings = AppSettings()..udpNotice = true;
       final (api, core, _) = await pumpTun(
         tester,
         mode: 'tun',

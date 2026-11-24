@@ -358,12 +358,16 @@ void main() {
       );
       expect(
         kt,
-        contains(
-          'private fun timeRequest(port: Int, user: String = "", pass: String = "")',
-        ),
+        contains('private fun timeRequest('),
       );
-      // The sandbox/test cores still call the noauth defaults.
-      expect(kt, contains('timeRequest(port)'));
+      // Build 2101 (S5): the request timeout became a parameter
+      // (the bulk pass caps it by its remaining budget); the
+      // default keeps the single-test behavior.
+      expect(kt, contains('timeoutMs: Int = 8000'));
+      // The sandbox/test cores still call the noauth defaults —
+      // no user/pass rides along — and (build 2109) their delay
+      // rounds wait the configured delay-test timeout.
+      expect(kt, contains('timeRequest(port, timeoutMs = timeoutMs)'));
       expect(kt, contains('exitInfo(port)'));
     });
 

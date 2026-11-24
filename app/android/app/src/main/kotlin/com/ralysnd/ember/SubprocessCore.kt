@@ -53,6 +53,12 @@ abstract class SubprocessCore(
     val tcpProbe: Boolean,
     /** Short human name for errors ("DNSTT client"). */
     val label: String,
+    /** How long the readiness probe waits for the TCP
+     *  listener (build 2134): 20 s for every helper except
+     *  OLCRTC, whose SOCKS listener opens only after its
+     *  WebRTC link is up — it passes 120 s. The default
+     *  keeps every existing helper's behaviour identical. */
+    val probeTimeoutMs: Long = 20_000,
 ) {
     @Volatile
     var running: Boolean = false
@@ -104,8 +110,13 @@ abstract class SubprocessCore(
         }
     }
 
-    /** Kills a recorded orphan from a previous process life. */
-    private fun reapOrphan(context: Context) {
+    /** Kills a recorded orphan from a previous process life.
+     *  Internal (build 2125, audit A25-18): EmberApplication
+     *  also calls it at process birth — up to 2124 it ran
+     *  only from start(), so a helper whose owner process
+     *  died kept its listener until that same helper was
+     *  next started, potentially never. */
+    internal fun reapOrphan(context: Context) {
         val file = pidFile(context)
         try {
             val pid = file.readText().trim().toIntOrNull() ?: return
@@ -136,6 +147,17 @@ abstract class SubprocessCore(
             lastError = "the $label is missing"
             return false
         }
+        // Build 2095 (third-pass audit 3-5): wait for the
+        // helper's port to be free BEFORE spawning (mirrors
+        // XrayVpnService's start) — reapOrphan's kill is
+        // fire-and-forget, and spawning onto a still-held
+        // port let the readiness probe bless a FOREIGN
+        // listener while our process died on bind.
+        if (tcpProbe && !ProcessKill.waitPortFree(port, 3000)) {
+            stage = "error"
+            lastError = "the $label's port $port is still in use"
+            return false
+        }
         val dir = workDir(context)
         synchronized(stderrTail) { stderrTail.clear() }
         try {
@@ -155,7 +177,7 @@ abstract class SubprocessCore(
             lastError = ""
             try {
                 val pid = p.javaClass.getMethod("pid").invoke(p) as? Long
-                if (pid != null) pidFile(context).writeText(pid.toString())
+                if (pid != null) AtomicFile.writeText(pidFile(context), pid.toString())
             } catch (_: Throwable) {
                 // Best-effort bookkeeping only.
             }
@@ -180,8 +202,14 @@ abstract class SubprocessCore(
             }
             val reader = BufferedReader(InputStreamReader(stream, Charsets.UTF_8))
             try {
-                val out = FileOutputStream(logFile, true).bufferedWriter()
+                var out = FileOutputStream(logFile, true).bufferedWriter()
                 try {
+                    // Build 2095 (third-pass audit 6-2): the
+                    // size check used to run only when the
+                    // drain thread started — a long session
+                    // outgrew it. Re-check every 200 lines
+                    // and rotate in place past 512 KB.
+                    var linesSinceCheck = 0
                     while (true) {
                         val line = reader.readLine() ?: break
                         if (isStderr) appendTail(line)
@@ -192,6 +220,15 @@ abstract class SubprocessCore(
                             // helpers are quiet, and start-phase
                             // evidence must reach disk.
                             out.flush()
+                            if (++linesSinceCheck >= 200) {
+                                linesSinceCheck = 0
+                                if (logFile.length() > 512 * 1024) {
+                                    out.close()
+                                    logFile.delete()
+                                    out = FileOutputStream(logFile, true)
+                                        .bufferedWriter()
+                                }
+                            }
                         } catch (_: Exception) {
                             // The log must never kill the drain.
                         }
@@ -230,13 +267,20 @@ abstract class SubprocessCore(
     private fun watchReadiness(p: Process) {
         readyThread = thread(isDaemon = true, name = "$dirName-ready") {
             if (tcpProbe) {
-                val deadline = System.currentTimeMillis() + 20_000
+                val deadline = System.currentTimeMillis() + probeTimeoutMs
                 while (System.currentTimeMillis() < deadline) {
                     if (!p.isAlive) return@thread // watchExit owns the error.
                     try {
                         Socket().use { s ->
                             s.connect(InetSocketAddress("127.0.0.1", port), 400)
                         }
+                        // Build 2095 (audit 3-5): the port
+                        // answering is not enough — the
+                        // spawned process must still be alive
+                        // (a stale listener satisfies the
+                        // probe too); watchExit owns the
+                        // error when it died.
+                        if (!p.isAlive) return@thread
                         markReady(p)
                         return@thread
                     } catch (_: Exception) {

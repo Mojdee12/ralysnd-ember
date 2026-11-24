@@ -109,7 +109,14 @@ class MozillaBootstrap extends ChangeNotifier {
   }) {
     if (busy) return busyLabel;
     if (connected) return 'Direct';
-    if (passExpiresAt * 1000 > now.millisecondsSinceEpoch) {
+    // Build 2098 (post-2097 audit L25): the SAME freshness
+    // threshold passReady enforces (expiry more than a
+    // minute out) — the line used to say 'Pass ready' for
+    // any not-yet-expired pass, including one with seconds
+    // left that the next connect would still bootstrap
+    // for. Below the threshold the line names the coming
+    // bootstrap, like the expired case.
+    if (passExpiresAt * 1000 > now.millisecondsSinceEpoch + 60000) {
       return 'Pass ready';
     }
     return switch (donor) {
@@ -123,6 +130,41 @@ class MozillaBootstrap extends ChangeNotifier {
   /// donor is stopped by the handoff's own cleanup.
   void cancel() {
     _generation++;
+  }
+
+  /// True while [prepareIfNeeded] is starting its donor engine.
+  bool _startingDonor = false;
+  bool get startingDonor => _startingDonor;
+
+  /// A stop cascade — an engine's stopOtherEngine hook, routed
+  /// through the shell's _stopMozilla — must not cancel a
+  /// prepare whose OWN donor start triggered the cascade: the
+  /// donor's connect stops "the other engines" first, and one
+  /// of those stops is Mozilla itself (build 2098 verification
+  /// V-1: with a plain cancel() on that path, every
+  /// engine-donor bootstrap aborted itself at the post-donor
+  /// generation check, the finally tore the donor down, and
+  /// Mozilla silently never connected — a path that worked in
+  /// 2097). Genuine user stops do not travel this path: the
+  /// chip switch, the mode disconnect and the shortcut/deep-
+  /// link handlers all call [cancel] directly.
+  ///
+  /// Build 2098 (verification, iteration 2): the exemption
+  /// is keyed to the SOURCE, because the first version —
+  /// "any cascade during the donor start is the donor's
+  /// own" — also swallowed genuine starts that reach
+  /// Mozilla only through a hook: an Xray auto-reconnect
+  /// firing during the donor start, or a page-direct connect
+  /// during a standalone Prepare. Those come from a
+  /// DIFFERENT engine than the donor and must cancel.
+  /// [fromEngine] is the connecting engine's key ('v2ray',
+  /// 'psiphon', 'warp', …), or null for a non-hook caller,
+  /// which always cancels.
+  void cancelFromCascade(String? fromEngine) {
+    if (_startingDonor && fromEngine != null && fromEngine == donor) {
+      return;
+    }
+    cancel();
   }
 
   /// Runs the handoff when the chosen bootstrap needs one.
@@ -139,6 +181,12 @@ class MozillaBootstrap extends ChangeNotifier {
     try {
       if (donor == 'relay') {
         await core.call((api) => api.prepareBootstrapRelay());
+        // Build 2098 (post-2097 audit M3): the donor branch
+        // below checks the generation after every await; the
+        // relay branch checked none, so a cancel/stop landing
+        // during relay preparation still reported proceed
+        // and the Mozilla connect continued.
+        if (gen != _generation) return const BootstrapVerdict.cancelled();
         return const BootstrapVerdict.proceed();
       }
       try {
@@ -179,6 +227,12 @@ class MozillaBootstrap extends ChangeNotifier {
   }
 
   Future<String?> _startDonor() async {
+    // Build 2098 verification V-1: the donor's connect fires
+    // the shell's stopOtherEngine cascades, which reach back
+    // into _stopMozilla; [startingDonor] is what lets
+    // [cancelFromCascade] tell that self-cascade apart from a
+    // genuine stop for the duration of the start.
+    _startingDonor = true;
     try {
       switch (donor) {
         case 'psiphon':
@@ -200,6 +254,8 @@ class MozillaBootstrap extends ChangeNotifier {
       // Build 2074 (audit item 6): a plain sentence, not the
       // raw exception.
       return 'Bootstrap via ${donorName(donor)} could not start.';
+    } finally {
+      _startingDonor = false;
     }
     return null;
   }
@@ -351,7 +407,7 @@ class _MozillaBootstrapCardState extends State<MozillaBootstrapCard> {
           MozillaBootstrap.donorName(choice),
           style: Ember.body.copyWith(
             color: on ? Ember.text : Ember.dim,
-            fontSize: 13,
+            fontSize: Ember.fontBody,
           ),
         ),
       ),
@@ -410,6 +466,45 @@ class _MozillaBootstrapCardState extends State<MozillaBootstrapCard> {
                   Expanded(child: Text(line, style: Ember.dimStyle)),
                 ],
               ),
+              // Build 2095 (whole-app journey audit #52): a
+              // real Prepare button — the handoff used to run
+              // only implicitly at connect time, while the
+              // home card told the user to "use Prepare in
+              // Account" where no such button existed.
+              if (_b.donor != 'off') ...[
+                const SizedBox(height: 12),
+                MapActionPill(
+                  icon: Icons.key_rounded,
+                  label: _b.busy ? 'Preparing\u2026' : 'Prepare now',
+                  busy: _b.busy,
+                  primary: true,
+                  onTap: _b.busy
+                      ? null
+                      : () async {
+                          final verdict = await _b.prepareIfNeeded();
+                          if (!context.mounted) return;
+                          if (verdict.proceed) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Pass ready \u2014 Mozilla can connect '
+                                  'directly now.',
+                                ),
+                              ),
+                            );
+                          } else if (!verdict.cancelled) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  verdict.message ?? 'Bootstrap failed.',
+                                ),
+                                duration: const Duration(seconds: 6),
+                              ),
+                            );
+                          }
+                        },
+                ),
+              ],
               if (_b.donor == 'relay') ...[
                 const SizedBox(height: 14),
                 Text('Control-plane relay', style: Ember.body),
@@ -428,7 +523,7 @@ class _MozillaBootstrapCardState extends State<MozillaBootstrapCard> {
                         labelText: 'Relay base URL',
                         labelStyle: const TextStyle(
                           color: Ember.faint,
-                          fontSize: 13,
+                          fontSize: Ember.fontBody,
                         ),
                         floatingLabelStyle: const TextStyle(
                           color: Ember.orange,
@@ -452,7 +547,7 @@ class _MozillaBootstrapCardState extends State<MozillaBootstrapCard> {
                         labelText: 'Relay key',
                         labelStyle: const TextStyle(
                           color: Ember.faint,
-                          fontSize: 13,
+                          fontSize: Ember.fontBody,
                         ),
                         floatingLabelStyle: const TextStyle(
                           color: Ember.orange,
