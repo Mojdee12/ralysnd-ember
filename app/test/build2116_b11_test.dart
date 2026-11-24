@@ -40,7 +40,13 @@ void main() {
       expect(File('assets/backdrop/map_backdrop.png').existsSync(),
           isFalse);
       final w = _src('lib/ui/ember/map_widgets.dart');
-      expect(w.contains('map_backdrop.webp'), isTrue);
+      // PIN UPDATED by build 2148 (FIX 4, owner device
+      // verdict on 2147): the painter now loads the FINE
+      // halftone bake on every surface — the coarse
+      // map_backdrop.webp is no longer the backdrop
+      // anywhere. Intent kept: a WebP asset, decoded
+      // capped, no PNG shipped.
+      expect(w.contains('map_backdrop_home.webp'), isTrue);
       // Build 2118 re-point: the 1440 cap was itself half of
       // the coarse-map root cause (portrait cover displays
       // ~9.4 px/unit; the cap fed it 4) — the decode is still
@@ -145,9 +151,13 @@ void main() {
     });
 
     test('AP-09/AP-10/AP-11/AP-12/AP-13/AP-17/AP-18/AP-19 pins', () {
+      // PIN UPDATED by build 2148 (FIX 7, class 6): the
+      // Lab's profile picker — the sheet whose Ember.surface
+      // this pinned — is a pushed full page now (Ember.bg
+      // ground, BACK header); the pin follows the page form.
       expect(
           _src('lib/ui/ember/dpi_lab_page.dart')
-              .contains('backgroundColor: Ember.surface'),
+              .contains('Choose a config'),
           isTrue);
       expect(_src('lib/ui/ember/qr_pages.dart').contains('alpha: 0.55'),
           isTrue);

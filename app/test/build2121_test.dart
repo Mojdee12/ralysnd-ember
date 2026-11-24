@@ -196,7 +196,7 @@ void main() {
   setUpAll(_loadRealFonts);
 
   test('pubspec is 2.2.0+2126', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2147'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2148'));
   });
 
   test('brand panel is back to the pre-2118 compact footprint', () {
@@ -224,18 +224,26 @@ void main() {
     // brand-panel pins above stand (the widget still exists
     // in map_widgets.dart), and the rail-order pin below
     // stands (same names, same order, same chips).
+    // PIN UPDATED by build 2148 (FIX 3, owner order
+    // 2026-11-24 on shipped 2147): the chip row is superseded
+    // in turn — the non-Home header is the brand line with a
+    // BACK control and no engine selector at all.
     final shell = _read('lib/ui/ember/ember_shell.dart');
     final header = _between(shell, 'Widget _header()', 'Widget build(');
     expect(header, isNot(contains('flex: 7')));
     expect(header, isNot(contains('Spacer(flex: 2)')));
     expect(header, isNot(contains('MapBrandPanel(')));
-    expect(header, contains('scrollDirection: Axis.horizontal'));
-    expect(header, contains('SingleChildScrollView'));
+    expect(header, contains('_homeHeader(backToHome: true)'));
+    expect(header, isNot(contains('SingleChildScrollView')));
   });
 
   test('engine rail order is unchanged in the header source', () {
+    // PIN UPDATED by build 2148 (FIX 3): the names no longer
+    // live in _header — they are the shell's _engineNames
+    // table (the Home switcher's set); same names, same
+    // order, pinned where they live now.
     final shell = _read('lib/ui/ember/ember_shell.dart');
-    final header = _between(shell, 'Widget _header()', 'Widget build(');
+    final header = _between(shell, '_engineNames = [', '];');
     const names = [
       'Mozilla',
       'V2Ray',

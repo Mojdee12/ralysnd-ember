@@ -1798,11 +1798,19 @@ class _DisconnectedHero extends StatelessWidget {
                   // R1 (pro5-off): the sample's ring spans
                   // roughly two-thirds of the width — 264 dp
                   // at the owner's 411 dp surface.
-                  width: 264,
-                  height: 264,
+                  // Build 2148 (FIX 7, class 2): at 264 the
+                  // block outgrew the first viewport — the
+                  // 'Disconnected' hero word was clipped at
+                  // the list's bottom edge, half-painted.
+                  // The ring steps to 224 and the gaps
+                  // tighten so the whole composition (ring,
+                  // CONNECT, hero word) fits above the fold;
+                  // same composition, same proportions.
+                  width: 224,
+                  height: 224,
                   child: CustomPaint(painter: _PowerRingPainter()),
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 12),
                 Text(
                   'CONNECT',
                   style: const TextStyle(
@@ -1816,7 +1824,7 @@ class _DisconnectedHero extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 26),
+        const SizedBox(height: 16),
         Text('Disconnected', style: Ember.hero),
       ],
     );

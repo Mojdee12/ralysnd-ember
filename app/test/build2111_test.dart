@@ -314,7 +314,7 @@ void main() {
   group('the version pin', () {
     test('pubspec is 2.2.0+2119', () {
       final pubspec = File('pubspec.yaml').readAsStringSync();
-      expect(pubspec, contains('version: 2.2.0+2147'));
+      expect(pubspec, contains('version: 2.2.0+2148'));
     });
   });
 }

@@ -3371,12 +3371,51 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
   /// the control bar (see _homeEngineSwitcher), wired to the
   /// same _chipTap as the rail; the rail itself is untouched
   /// on every other tab.
-  Widget _homeHeader() {
+  Widget _homeHeader({bool backToHome = false}) {
     final protectedNow = _runningMode != null;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
       child: Row(
         children: [
+          // Build 2148 (owner order 2026-11-24 — supersedes
+          // 2147's #23 chip row and the build-2092 rail
+          // constraint): on every non-Home tab the header
+          // leads with a BACK control returning to the main
+          // (Home) page. Engine choice lives on Home only;
+          // no engine selector rides the other pages. The
+          // control is a labelled pill (arrow + BACK in the
+          // header's own tracked-orange label), 48 dp tall,
+          // so the way back reads at a glance. Home itself
+          // (backToHome false) is byte-for-byte the R1
+          // header, unchanged.
+          if (backToHome) ...[
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => setState(() => _tab = 0),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 15,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.arrow_back_rounded,
+                        size: 18,
+                        color: Ember.orange,
+                      ),
+                      const SizedBox(width: 6),
+                      Text('BACK', style: Ember.microLabelOrange),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
           const Text(
             'EMBER',
             style: TextStyle(
@@ -3542,21 +3581,15 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
   }
 
   Widget _header() {
-    const names = [
-      'Mozilla',
-      'V2Ray',
-      'Psiphon',
-      'Lantern',
-      'OpenVPN',
-      'WireGuard',
-      'WARP',
-      'MASQUE',
-    ];
-    // The chips read every engine's live state, so the header
-    // rebuilds on every engine controller — not only Mozilla's
-    // (build 2025 fix: the shell's own rebuild used to be the
-    // only trigger, and a non-Mozilla chip could sit stale,
-    // missing its ACTIVE pill, until an incidental rebuild).
+    // The header's status line reads every engine's live
+    // state, so the header rebuilds on every engine
+    // controller — not only Mozilla's (build 2025 fix: the
+    // shell's own rebuild used to be the only trigger, and
+    // a non-Mozilla state could sit stale until an
+    // incidental rebuild). Build 2148: the chips that used
+    // to be built here are gone from the non-Home header
+    // (owner's navigation ruling — see the builder below);
+    // the merge stays for the status line.
     return ListenableBuilder(
       listenable: Listenable.merge([
         core,
@@ -3571,77 +3604,18 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         // R1 (2026-11-23): the Home tab wears the samples'
         // header (see _homeHeader).
         if (_tab == 0) return _homeHeader();
-        // Build 2147 (fix item #23, owner device verdict
-        // 2026-11-24 on shipped 2146, with screenshot): the
-        // 2075 rail stack — brand panel top-left, the nine
-        // chips stacked in a 128 dp column at the top-right,
-        // ~410 dp tall — sat on EVERY non-Home tab and pushed
-        // each engine page's own composition halfway down the
-        // screen («چرا هر موتور میزنم باز اینجوری میشه؟»). The
-        // approved pro6 engine-page samples have no such
-        // tower: a slim header, then the page itself. The
-        // non-Home header is now the Home-R1 language — the
-        // same brand line as Home, and under it ONE horizontal,
-        // scrollable row of the same nine chips: same order,
-        // same MapEngineChip, same tap behaviour, so one-tap
-        // engine switching stays reachable from every engine
-        // page and from Settings (build 2092 items 34/60), and
-        // the Settings chip keeps its close behaviour on the
-        // Settings tab. Header height drops from ~410 dp to
-        // ~95 dp and the page's composition starts at the top,
-        // like the samples.
-        final rail = <Widget>[
-          for (var i = 0; i < names.length; i++)
-            MapEngineChip(
-              name: names[i],
-              active: _engineActive(i),
-              connecting: _engineConnecting(i),
-              highlight: mode == i,
-              onTap: () => _chipTap(i),
-            ),
-          // Build 2092 (item 34): on the Settings tab this
-          // chip becomes the close control (close icon, no
-          // glow) and the rail stays visible — the tab used
-          // to replace the whole rail with one chip wearing
-          // the ACTIVE engine glow, and no engine switch was
-          // reachable until Settings was closed.
-          MapEngineChip(
-            name: 'Settings',
-            icon: _tab == 3
-                ? Icons.close_rounded
-                : Icons.settings_rounded,
-            active: false,
-            highlight: false,
-            onTap: () => setState(() => _tab = _tab == 3 ? 0 : 3),
-          ),
-        ];
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _homeHeader(),
-            const SizedBox(height: 10),
-            // The chip row: the rail's nine chips in ONE
-            // horizontal, scrollable line (6 dp apart, the
-            // rail's own spacing). The chips keep their
-            // 128 dp width and full state language (ACTIVE
-            // pill, glow, connecting half-state); the row
-            // scrolls sideways on phone widths instead of
-            // stacking down the screen.
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  for (var i = 0; i < rail.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 6),
-                    rail[i],
-                  ],
-                ],
-              ),
-            ),
-          ],
-        );
+        // Build 2147 (#23) put one horizontal chip row under
+        // the brand line here. Build 2148 (owner order
+        // 2026-11-24, on device with screenshots) SUPERSEDES
+        // it — and the build-2092 rail constraint with it:
+        // the engine pages must not carry an engine selector
+        // at all. Engine choice happens on the main (Home)
+        // page only (Home's own switcher, untouched below);
+        // every other tab's header is the same slim brand
+        // line, led by the BACK control that returns to
+        // Home (see _homeHeader). The Settings tab keeps its
+        // close-to-Home behaviour through that same control.
+        return _homeHeader(backToHome: true);
       },
     );
   }
@@ -4067,6 +4041,24 @@ class _ShellControlBar extends StatelessWidget {
   /// Every other tab keeps the full bar.
   final bool quiet;
 
+  /// Build 2148 (owner device verdict on 2147, 2026-11-24):
+  /// «دکمه کانکت دیسکانکت درست کن وصل میشه نارنجی شه الان
+  /// فرقی نداره اصلا» — the pill wore the SAME treatment in
+  /// both settled states (the full bar was filled orange
+  /// even for 'Not connected'; the slim bar was the same
+  /// hairline pill for CONNECT and DISCONNECT), so the
+  /// button showed no visible difference between states.
+  /// The ruling now, identical in both bar forms: a settled
+  /// CONNECTED word ('Connected', 'Connected via …',
+  /// 'Connected — not answering' — the session is up, the
+  /// word itself carries any caveat) fills the pill ORANGE
+  /// with dark text; every other settled state is the
+  /// neutral dark pill (near-black fill, hairline rim,
+  /// light text, orange glyph). Busy keeps the dark pill
+  /// with its spinner — transitional, confusable with
+  /// neither settled state.
+  bool get _pillConnected => stateWord.startsWith('Connected');
+
   Widget _roundButton({
     required IconData icon,
     required String tooltip,
@@ -4187,41 +4179,55 @@ class _ShellControlBar extends StatelessWidget {
               child: Container(
                 // Build 2147 (strict-audit F10): 46 -> 48,
                 // the sample's slim-pill height.
+                // Build 2148: the fill follows the state (see
+                // _pillConnected) — orange while a session is
+                // up, the hairline dark pill otherwise.
                 height: 48,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
+                  color: _pillConnected ? Ember.orange : null,
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: const Color(0x40FFFFFF)),
+                  border: Border.all(
+                    color: _pillConnected
+                        ? Ember.orange
+                        : const Color(0x40FFFFFF),
+                  ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (busy) ...[
-                      const SizedBox(
+                      SizedBox(
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          color: Ember.orange,
+                          color: _pillConnected
+                              ? const Color(0xFF1A1206)
+                              : Ember.orange,
                         ),
                       ),
                       const SizedBox(width: 10),
                     ] else ...[
-                      const Icon(
+                      Icon(
                         Icons.power_settings_new_rounded,
                         size: 16,
-                        color: Ember.orange,
+                        color: _pillConnected
+                            ? const Color(0xFF1A1206)
+                            : Ember.orange,
                       ),
                       const SizedBox(width: 10),
                     ],
                     Flexible(
                       child: Text(
                         _slimActionWord,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: Ember.fontBody,
                           fontWeight: FontWeight.w600,
                           letterSpacing: 2,
-                          color: MapUi.text,
+                          color: _pillConnected
+                              ? const Color(0xFF1A1206)
+                              : MapUi.text,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -4297,19 +4303,32 @@ class _ShellControlBar extends StatelessWidget {
                   height: 52,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: Ember.orange,
+                    // Build 2148 (see _pillConnected): the
+                    // pill used to be filled orange in EVERY
+                    // state — 'Not connected' rode the same
+                    // orange as 'Connected'. Now orange is
+                    // the connected state only; disconnected
+                    // and busy wear the neutral dark pill
+                    // (near-black fill, hairline rim), the
+                    // same treatment as the slim bar's.
+                    color: _pillConnected ? Ember.orange : MapUi.card,
                     borderRadius: BorderRadius.circular(999),
+                    border: _pillConnected
+                        ? null
+                        : Border.all(color: const Color(0x40FFFFFF)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (busy) ...[
-                        const SizedBox(
+                        SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Color(0xFF1A1206),
+                            color: _pillConnected
+                                ? const Color(0xFF1A1206)
+                                : Ember.orange,
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -4318,21 +4337,27 @@ class _ShellControlBar extends StatelessWidget {
                         // rides the pill beside the state word
                         // (pro5-off centres the whole state on
                         // this glyph); same icon the pre-reskin
-                        // power switch carried.
-                        const Icon(
+                        // power switch carried. Build 2148:
+                        // dark on the orange (connected) pill,
+                        // orange on the dark pill.
+                        Icon(
                           Icons.power_settings_new_rounded,
                           size: 18,
-                          color: Color(0xFF1A1206),
+                          color: _pillConnected
+                              ? const Color(0xFF1A1206)
+                              : Ember.orange,
                         ),
                         const SizedBox(width: 8),
                       ],
                       Flexible(
                         child: Text(
                           stateWord,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: Ember.fontTitle,
                             fontWeight: FontWeight.w600,
-                            color: Color(0xFF1A1206),
+                            color: _pillConnected
+                                ? const Color(0xFF1A1206)
+                                : MapUi.text,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

@@ -40,7 +40,7 @@ String _between(String text, String from, String to) {
 
 void main() {
   test('pubspec is 2.2.0+2119', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2147'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2148'));
   });
 
   test('backdrop asset is a 3200px WebP over 600 KB', () {
@@ -102,11 +102,16 @@ void main() {
     // brand panel, Spacer split and stacked rail — is
     // superseded by the slim non-Home header (Home brand line
     // + one horizontal chip row). The pins follow the change.
+    // PIN UPDATED by build 2148 (FIX 3, owner order
+    // 2026-11-24 on shipped 2147): the chip row is superseded
+    // in turn — the non-Home header is the brand line with a
+    // BACK control; no engine selector rides it.
     final shell = _read('lib/ui/ember/ember_shell.dart');
     final header = _between(shell, 'Widget _header()', 'Widget build(');
     expect(header, isNot(contains('Spacer(flex: 2)')));
     expect(header, isNot(contains('MapBrandPanel(')));
-    expect(header, contains('scrollDirection: Axis.horizontal'));
+    expect(header, contains('_homeHeader(backToHome: true)'));
+    expect(header, isNot(contains('SingleChildScrollView')));
   });
 
   test('server latency is bare text, not a bordered pill', () {

@@ -99,9 +99,18 @@ class MapBackdropVisual extends StatelessWidget {
               // [faint] is only ever true on the shell's Home
               // tab, so every other backdrop keeps the shared
               // asset byte-for-byte.
-              faint
-                  ? 'assets/backdrop/map_backdrop_home.webp'
-                  : 'assets/backdrop/map_backdrop.webp',
+              // Build 2148 (owner device verdict on 2147,
+              // 2026-11-24; strict-audit A5): «عکس نقشه پشت
+              // موتور ها هنوز مثل این قدیمه بعضیاش» — the
+              // shared bake's coarse grain still showed
+              // behind the engine pages. The fine halftone
+              // bake is now THE backdrop on every surface:
+              // same asset, same pitch, same strength
+              // everywhere; each caller's scrim behaviour
+              // (faint / banded / bandShort) is unchanged,
+              // and the shared projection keeps the live
+              // actors aligned on the dots.
+              'assets/backdrop/map_backdrop_home.webp',
               fit: BoxFit.fill,
               filterQuality: FilterQuality.medium,
               cacheWidth: 2880,

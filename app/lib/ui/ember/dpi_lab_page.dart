@@ -143,39 +143,71 @@ class _DpiLabPageState extends State<DpiLabPage> {
   }
 
   Future<void> _pickProfile() async {
-    final picked = await showModalBottomSheet<String>(
-      context: context,
-      // Build 2116 (AP-09): the sibling sheets' language —
-      // Ember.surface + the 26dp top shape. This picker was
-      // the one sheet still on Ember.card with no shape.
-      backgroundColor: Ember.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            for (final p in _eligible)
-              ListTile(
-                leading: Icon(
-                  p.id == _profileId
-                      ? Icons.radio_button_checked_rounded
-                      : Icons.radio_button_unchecked_rounded,
-                  color: Ember.orange,
-                  size: 19,
-                ),
-                title: Text(
-                  p.displayName,
-                  style: Ember.body.copyWith(color: Ember.text),
-                ),
-                subtitle: Text(
-                  '${p.protocol.label} · ${p.address}:${p.port}',
-                  style: Ember.caption,
-                ),
-                onTap: () => Navigator.of(sheetContext).pop(p.id),
+    // Build 2148 (FIX 7, class 6 — the owner's Mozilla
+    // Locations defect class): this config picker was a
+    // shrink-wrapped bottom sheet — a chooser opening at
+    // half height over the page. It is a pushed FULL page
+    // now, the same rows and the same result, with a BACK
+    // header in the 2148 navigation model.
+    final picked = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (pageContext) => Scaffold(
+          backgroundColor: Ember.bg,
+          body: EmberBackground(
+            banded: true,
+            child: SafeArea(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 10, 16, 4),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(
+                            Icons.arrow_back_rounded,
+                            color: Ember.orange,
+                          ),
+                          tooltip: 'Back',
+                          onPressed: () => Navigator.of(pageContext).pop(),
+                        ),
+                        Text(
+                          'Choose a config',
+                          style: Ember.title.copyWith(color: Ember.text),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        for (final p in _eligible)
+                          ListTile(
+                            leading: Icon(
+                              p.id == _profileId
+                                  ? Icons.radio_button_checked_rounded
+                                  : Icons.radio_button_unchecked_rounded,
+                              color: Ember.orange,
+                              size: 19,
+                            ),
+                            title: Text(
+                              p.displayName,
+                              style: Ember.body.copyWith(color: Ember.text),
+                            ),
+                            subtitle: Text(
+                              '${p.protocol.label} · ${p.address}:${p.port}',
+                              style: Ember.caption,
+                            ),
+                            onTap: () =>
+                                Navigator.of(pageContext).pop(p.id),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-          ],
+            ),
+          ),
         ),
       ),
     );
@@ -1615,7 +1647,10 @@ Widget build(BuildContext context) {
           ),
         ),
         // Build 2144 (reskin): the measured delay as the
-        // sample's big light numeral. Build 2145 (honesty
+        // sample's big light numeral. Build 2148: the
+        // numeral comes down to the normal row size (owner
+        // device verdict on 2147 — hero numerals belong to
+        // page heroes, not list rows). Build 2145 (honesty
         // comment, updated): the numeral is the measured
         // delay in ms, shown as delay and nothing else;
         // the bar under the row (above) is relative delay
@@ -1630,8 +1665,11 @@ Widget build(BuildContext context) {
               Text(
                 latDigits(shown.ms),
                 style: TextStyle(
-                  fontSize: Ember.fontHero,
-                  fontWeight: FontWeight.w200,
+                  // Build 2148 (owner device verdict on
+                  // 2147): a candidate ROW's delay wears the
+                  // normal row size, not the hero scale —
+                  // the same ruling as the config rows.
+                  fontSize: Ember.fontTitle,
                   // Build 2147 (#22): health colour, not white.
                   color: mapPingColor(shown.ms),
                   height: 1.0,

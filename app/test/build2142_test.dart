@@ -455,10 +455,10 @@ void main() {
       expect(page, contains('onStatusPhases = _journal.fetchPhases'));
     });
 
-    test('pubspec is 2.2.0+2147', () {
+    test('pubspec is 2.2.0+2148', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2147'),
+        contains('version: 2.2.0+2148'),
       );
     });
   });

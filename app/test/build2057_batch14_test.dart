@@ -144,8 +144,14 @@ void main() {
       // horizontal, scrollable chip row), so the pins below
       // follow the intentional change: the horizontal strip is
       // back by order, the Wrap stack and compactRail are gone.
+      // PIN UPDATED by build 2148 (FIX 3, owner order
+      // 2026-11-24 on shipped 2147): the chip row itself is
+      // superseded — engine pages carry NO engine selector;
+      // the header leads with a BACK control to Home and
+      // engine choice lives on Home only. The pins below
+      // follow the intentional change again.
       final src = _dart('ui/ember/ember_shell.dart');
-      expect(src.contains('scrollDirection: Axis.horizontal'), isTrue);
+      expect(src.contains('_homeHeader(backToHome: true)'), isTrue);
       expect(src.contains('_railController'), isFalse);
       expect(src.contains('compactRail'), isFalse);
       expect(

@@ -878,8 +878,12 @@ class RegionHopLocationTile extends StatelessWidget {
                           Text(
                             latDigits(p.latencyMs),
                             style: TextStyle(
-                              fontSize: Ember.fontHero,
-                              fontWeight: FontWeight.w200,
+                              // Build 2148 (owner device verdict
+                              // on 2147): a list row's probe
+                              // latency wears the normal row
+                              // size, not the hero scale — the
+                              // same ruling as the config rows.
+                              fontSize: Ember.fontTitle,
                               // Build 2147 (#22): health colour,
                               // not white.
                               color: mapPingColor(p.latencyMs),

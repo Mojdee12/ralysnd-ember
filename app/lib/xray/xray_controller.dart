@@ -516,6 +516,11 @@ class XrayController extends ChangeNotifier {
     // auto-update timer was never cancelled — a disposed
     // controller kept sweeping (and saving) forever.
     _subAutoTimer?.cancel();
+    // Build 2148: the 2147 housekeeping timer missed the
+    // cancellation its siblings got (2096 L17, 2125 A25-30)
+    // — a disposed controller kept a 5-minute periodic
+    // ticking into the disposed object.
+    _housekeepingTimer2147?.cancel();
     _poll?.cancel();
     _statsFlushTimer?.cancel();
     // Build 2125 (audit A25-30 / P-35): the reconnect

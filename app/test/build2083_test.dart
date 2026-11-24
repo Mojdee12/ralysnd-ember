@@ -145,9 +145,14 @@ void main() {
     // — the chips now sit in one horizontal Row inside a
     // SingleChildScrollView, 6 dp apart (the same gap the
     // Wrap's spacing carried). The pin follows the change.
+    // PIN UPDATED by build 2148 (owner navigation ruling,
+    // 2026-11-24): the chip row itself is superseded — the
+    // non-Home header carries NO engine selector; a BACK
+    // control returns to Home, where engine choice lives.
+    // The horizontal scroll row is gone with the chips.
     test('the rail is one horizontal row with 6 dp gaps (2147)', () {
       final shell = _dart('ui/ember/ember_shell.dart');
-      expect(shell, contains('scrollDirection: Axis.horizontal'));
+      expect(shell, isNot(contains('scrollDirection: Axis.horizontal')));
       expect(shell, isNot(contains('Wrap(spacing: 6, runSpacing: 0')));
     });
 

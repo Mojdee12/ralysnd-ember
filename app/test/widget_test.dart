@@ -1359,8 +1359,11 @@ void main() {
       await tester.pumpAndSettle();
     }
     expect(find.text('a•••@example.com'), findsOneWidget);
-    // Home again via the Mozilla chip.
-    await tester.tap(find.text('Mozilla'));
+    // Home again. PIN UPDATED (build 2148, FIX 3): engine
+    // pages carry no engine selector any more — the header's
+    // BACK control is the way home (the old text read "via
+    // the Mozilla chip").
+    await tester.tap(find.text('BACK'));
     await tester.pumpAndSettle();
     // PIN UPDATED (fidelity repair): Locations on Home is
     // the slim bar's shield button — see the note above.
@@ -1445,8 +1448,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Language'), findsOneWidget);
 
-    // The Settings chip (now the close chip) goes Home.
-    await tester.tap(find.text('Settings'));
+    // Home from Settings. PIN UPDATED (build 2148, FIX 3):
+    // the Settings tab's header BACK control is the way home
+    // (the old text tapped the Settings close chip).
+    await tester.tap(find.text('BACK'));
     await tester.pumpAndSettle();
     // PIN UPDATED (fidelity repair): Locations on Home is
     // the slim bar's shield button — see the note above.
@@ -1589,9 +1594,10 @@ void main() {
       await tester.pumpAndSettle();
     }
     expect(find.textContaining('30.0 GB remaining'), findsWidgets);
-    // Home again via the Mozilla chip (a tap on the current
-    // engine's chip returns to the map tab).
-    await tester.tap(find.text('Mozilla'));
+    // Home again. PIN UPDATED (build 2148, FIX 3): the
+    // header's BACK control returns to the map tab (the old
+    // text tapped the current engine's chip).
+    await tester.tap(find.text('BACK'));
     await tester.pumpAndSettle();
     expect(find.text('Connected'), findsOneWidget);
 

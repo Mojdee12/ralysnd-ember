@@ -1,23 +1,20 @@
 /// Build 2147 — fix item #23 (owner device verdict 2026-11-24
 /// on shipped 2146, with screenshot): the shell header's
-/// 9-chip engine rail tower (brand panel + a 128 dp column of
-/// stacked chips, ~410 dp tall) sat on EVERY engine page and
-/// pushed the page's own composition halfway down the screen.
-/// The approved pro6 engine-page samples use a slim header.
+/// 9-chip engine rail tower sat on EVERY engine page.
 ///
-/// The fix (appearance/layout only): on non-Home tabs the
-/// header is the Home-R1 language — the same brand line as
-/// Home, plus ONE horizontal, scrollable row of the same nine
-/// MapEngineChips (same order, same tap behaviour). One-tap
-/// engine switching stays reachable from every engine page
-/// and from Settings (build 2092 items 34/60), and the
-/// Settings chip keeps its close behaviour on the Settings
-/// tab. Home is unchanged.
+/// UPDATED by build 2148 (owner navigation ruling 2026-11-24,
+/// on device with screenshots — supersedes #23 and the
+/// build-2092 rail constraint): the engine pages must not
+/// carry an engine selector AT ALL. Engine choice happens on
+/// the main (Home) page only; every other tab's header is the
+/// slim brand line led by a BACK control that returns to
+/// Home. The Settings tab keeps its close-to-Home behaviour
+/// through that same control. Home is unchanged.
 ///
-/// This test renders an engine page (Lantern's servers tab)
-/// in the full shell and asserts: the header is slim (no
-/// 9-chip column, no brand panel), and all 8 engine chips +
-/// Settings are present and tappable.
+/// This test renders engine pages in the full shell and
+/// asserts the new model: no MapEngineChip anywhere off the
+/// Home tab, a BACK control (>= 44 dp) at the top of the
+/// header, and tapping it lands back on Home.
 library;
 
 import 'dart:io';
@@ -115,42 +112,33 @@ Future<CoreController> _pumpShell(WidgetTester tester) async {
   return core;
 }
 
-Finder _chip(String name) => find.widgetWithText(MapEngineChip, name);
-
-/// Drags the header's chip row until [name]'s chip centre is
-/// inside the 411 dp viewport. (scrollUntilVisible's implicit
-/// scrollable lookup trips over the shell's many Scrollables;
-/// the header's SingleChildScrollView is the first in the
-/// tree — the header sits above the pages' IndexedStack.)
-Future<void> _revealChip(WidgetTester tester, String name) async {
-  for (var i = 0; i < 12; i++) {
-    final rect = tester.getRect(_chip(name));
-    if (rect.center.dx >= 0 && rect.center.dx <= 411) return;
-    await tester.drag(
-      find.byType(SingleChildScrollView).first,
-      Offset(rect.center.dx > 411 ? -260 : 260, 0),
-    );
-    await tester.pumpAndSettle();
-  }
-}
-
 void main() {
   setUpAll(_loadRealFonts);
 
-  test('source: the non-Home header is the slim brand line + chip row', () {
+  test('source: the non-Home header is brand line + BACK, no chips', () {
     final shell = _read('lib/ui/ember/ember_shell.dart');
     final start = shell.indexOf('Widget _header()');
     final end = shell.indexOf('Widget build(', start);
     final header = shell.substring(start, end);
-    expect(header, contains('scrollDirection: Axis.horizontal'));
-    expect(header, contains('SingleChildScrollView'));
-    expect(header, contains('_homeHeader()'));
+    // The new model: non-Home tabs return the brand line
+    // with the back control; no chip construction remains
+    // in the header at all.
+    expect(header, contains('_homeHeader(backToHome: true)'));
+    expect(header, isNot(contains('MapEngineChip(')));
+    expect(header, isNot(contains('SingleChildScrollView')));
     expect(header, isNot(contains('MapBrandPanel(')));
-    expect(header, isNot(contains('Wrap(spacing: 6, runSpacing: 0')));
     expect(shell, isNot(contains('compactRail')));
+    // The back control itself: labelled, >= 48 dp tall,
+    // returns to tab 0.
+    final homeHeader = shell.substring(
+      shell.indexOf('Widget _homeHeader('),
+      shell.indexOf('Widget _header()'),
+    );
+    expect(homeHeader, contains("Text('BACK'"));
+    expect(homeHeader, contains('setState(() => _tab = 0)'));
   });
 
-  testWidgets('engine page (Lantern): slim header, all nine chips tappable', (
+  testWidgets('engine page (Lantern): BACK header, no chip selector', (
     tester,
   ) async {
     final core = await _pumpShell(tester);
@@ -162,88 +150,43 @@ void main() {
     await tester.tap(find.byTooltip('Locations'));
     await tester.pumpAndSettle();
 
-    // All nine chips are in the header: 8 engines + Settings.
-    expect(find.byType(MapEngineChip), findsNWidgets(9));
-    // The old tower's brand panel is gone from the header.
+    // No engine selector anywhere on the engine page.
+    expect(find.byType(MapEngineChip), findsNothing);
     expect(find.byType(MapBrandPanel), findsNothing);
 
-    // Slim: every chip shares one row (tops within 2 dp —
-    // no stacked column), and the whole header (brand line
-    // top to chip bottom) is a fraction of the old ~410 dp.
-    final wordmark = find.text('EMBER');
-    expect(wordmark, findsOneWidget);
-    final headerTop = tester.getTopLeft(wordmark).dy;
-    var minTop = double.infinity;
-    var maxTop = double.negativeInfinity;
-    var maxBottom = double.negativeInfinity;
-    for (final e in find.byType(MapEngineChip).evaluate()) {
-      final rect = tester.getRect(find.byWidget(e.widget));
-      minTop = rect.top < minTop ? rect.top : minTop;
-      maxTop = rect.top > maxTop ? rect.top : maxTop;
-      maxBottom = rect.bottom > maxBottom ? rect.bottom : maxBottom;
-    }
-    expect(
-      maxTop - minTop,
-      lessThan(2),
-      reason: 'the nine chips form ONE row, not a column',
+    // The BACK control is present, obvious and >= 44 dp.
+    final back = find.text('BACK');
+    expect(back, findsOneWidget);
+    final backRect = tester.getRect(
+      find.ancestor(of: back, matching: find.byType(InkWell)).first,
     );
-    expect(
-      maxBottom - headerTop,
-      lessThan(130),
-      reason: 'header height is slim (was ~410 dp with the tower)',
-    );
+    expect(backRect.height, greaterThanOrEqualTo(44));
+
+    // The header stays slim: brand line top to header
+    // bottom is a fraction of the old ~410 dp tower and of
+    // the 2147 chip-row header (~130 dp incl. the row).
+    final headerTop = tester.getTopLeft(find.text('EMBER')).dy;
+    expect(backRect.top - headerTop, lessThan(24));
     expect(tester.takeException(), isNull);
 
-    // Every engine chip is tappable and switches the mode
-    // (the tapped chip becomes the highlighted one). Each
-    // tap targets a non-current engine, so the shell stays
-    // on the servers tab under the same slim header.
-    const order = [
-      'V2Ray',
-      'Psiphon',
-      'OpenVPN',
-      'WireGuard',
-      'WARP',
-      'MASQUE',
-      'Mozilla',
-      'Lantern',
-    ];
-    for (final name in order) {
-      await _revealChip(tester, name);
-      await tester.pumpAndSettle();
-      await tester.tap(_chip(name));
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<MapEngineChip>(_chip(name)).highlight,
-        isTrue,
-        reason: 'tapping $name switches the engine mode',
-      );
-      expect(find.byType(MapEngineChip), findsNWidgets(9));
-    }
+    // Tapping BACK lands on the Home tab: the back control
+    // is gone and the Home engine switcher is on screen.
+    await tester.tap(back);
+    await tester.pumpAndSettle();
+    expect(find.text('BACK'), findsNothing);
+    expect(find.text('WireGuard'), findsWidgets);
+    expect(tester.takeException(), isNull);
 
-    // The Settings chip opens Settings; on the Settings tab
-    // it becomes the close chip and tapping it goes Home
-    // (build 2092 item 34 behaviour, preserved).
-    await _revealChip(tester, 'Settings');
+    // The Settings tab carries the same BACK control, and
+    // it keeps the close-to-Home behaviour (build 2092
+    // item 34's contract, new control).
+    await tester.tap(find.byTooltip('Settings'));
     await tester.pumpAndSettle();
-    await tester.tap(_chip('Settings'));
+    expect(find.text('BACK'), findsOneWidget);
+    expect(find.byType(MapEngineChip), findsNothing);
+    await tester.tap(find.text('BACK'));
     await tester.pumpAndSettle();
-    expect(find.byType(MapEngineChip), findsNWidgets(9));
-    expect(
-      find.descendant(
-        of: _chip('Settings'),
-        matching: find.byIcon(Icons.close_rounded),
-      ),
-      findsOneWidget,
-      reason: 'on the Settings tab the chip is the close control',
-    );
-    await tester.tap(_chip('Settings'));
-    await tester.pumpAndSettle();
-    expect(
-      find.byType(MapEngineChip),
-      findsNothing,
-      reason: 'the close chip returns to the Home tab (no rail there)',
-    );
+    expect(find.text('BACK'), findsNothing);
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox());

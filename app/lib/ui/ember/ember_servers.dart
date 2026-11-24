@@ -250,20 +250,30 @@ class _MozillaServersState extends State<_MozillaServers> {
 
     return ListenableBuilder(
       listenable: widget.core,
-      // Build 2055 (audit A-H4): slivers — the header panel
+      // Build 2055 (audit A-H4): slivers — the header block
       // (title, search, smart pick) on its own, the location
       // rows lazily built below it. The old form put every
       // country row in one giant blurred MapGlass, all built
-      // eagerly.
+      // eagerly. Build 2148: the header block itself is flat
+      // page content now (see the SliverToBoxAdapter below) —
+      // the whole picker is one page, not a card + spill.
       builder: (context, _) => CustomScrollView(
         slivers: [
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: MapGlass(
-                blur: false,
-                luminous: true,
-                padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              // Build 2148 (owner device verdict on 2147):
+              // the locations picker read as a floating glass
+              // card over the top half of the screen, with the
+              // location rows spilling beneath it onto the
+              // map. The header block is now FLAT page
+              // content — the title row, search, smart pick
+              // and recommended rows sit directly on the page
+              // ground at the rows' own inset, and the
+              // location list continues the same page. One
+              // full page, no card.
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(0, 2, 0, 6),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -3514,6 +3524,16 @@ class _ProfileRow extends StatelessWidget {
         // colour: one slot, one size (the failed label used
         // to be a tiny fontSmall pill next to a 54 dp
         // numeral — the owner's mismatched pair).
+        // Build 2148 (owner device verdict on 2147,
+        // 2026-11-24): the one-size slot was set at HERO
+        // size — on device the numeral dwarfed the row and
+        // the server name truncated to a few letters. The
+        // owner's order: NORMAL small rows. The slot is now
+        // the row's own text scale (fontTitle, the location
+        // rows' class), still one slot / one size for the
+        // numeral and Failed, still the health colour —
+        // and the compact slot returns the row's width to
+        // the name column, which flexes first.
         return Row(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -3522,8 +3542,7 @@ class _ProfileRow extends StatelessWidget {
             Text(
               latDigits(profile.delayMs),
               style: TextStyle(
-                fontSize: Ember.fontHero,
-                fontWeight: FontWeight.w300,
+                fontSize: Ember.fontTitle,
                 color: mapPingColor(profile.delayMs),
               ),
             ),
@@ -3540,16 +3559,16 @@ class _ProfileRow extends StatelessWidget {
       }
       if (profile.delayFailed) {
         // Build 2147 (owner defect report 2026-11-24): the
-        // failed state takes the ping slot's own size
-        // (fontHero, light) in the failure colour — one slot,
-        // one size; never the tiny pill label again.
+        // failed state takes the ping slot's own size in the
+        // failure colour — one slot, one size; never the
+        // tiny pill label again.
+        // Build 2148: that slot is now the normal row size
+        // (fontTitle — see the delay arm above), so Failed
+        // is small red text beside a readable name, exactly
+        // as the owner ordered.
         return const Text(
           'Failed',
-          style: TextStyle(
-            fontSize: Ember.fontHero,
-            fontWeight: FontWeight.w300,
-            color: Ember.red,
-          ),
+          style: TextStyle(fontSize: Ember.fontTitle, color: Ember.red),
         );
       }
       // Build 2075: the block icon means NO engine serves
@@ -3589,12 +3608,21 @@ class _ProfileRow extends StatelessWidget {
                   // is big and light, not small and bold.
                   // Build 2145: the sample's light weight
                   // (w300, the display tier's own weight).
+                  // Build 2148 (owner device verdict on 2147):
+                  // at display size a real provider name
+                  // (30+ chars) still ellipsised mid-word —
+                  // his order is the name FULLY visible in a
+                  // NORMAL row. The name steps down to
+                  // fontHeadline (still light, still the
+                  // display tier's w300) and may wrap to a
+                  // second line before it ever ellipsises.
                   profile.displayName,
                   style: const TextStyle(
-                    fontSize: Ember.fontDisplay,
+                    fontSize: Ember.fontHeadline,
                     fontWeight: FontWeight.w300,
                     color: MapUi.text,
                   ),
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
