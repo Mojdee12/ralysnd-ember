@@ -164,7 +164,12 @@ void main() {
       expect(dart, contains('l.allSettings,'));
       expect(dart, contains('l.languageRow,'));
       expect(dart, contains('title: Text(title, style: Ember.heading),'));
-      expect(dart, contains('body: EmberBackground(child: child),'));
+      // PIN UPDATED by build 2147 (strict-audit F1): the
+      // Settings scaffold now sits on the short band.
+      expect(
+        dart,
+        contains('body: EmberBackground(bandShort: true, child: child),'),
+      );
     });
   });
 

@@ -1347,7 +1347,13 @@ class _ConnectedHero extends StatelessWidget {
                           profile.delayMs >= 0
                               ? latDigits(profile.delayMs)
                               : '\u2014',
-                          style: Ember.numeral,
+                          // Build 2147 (#22): the connected delay
+                          // numeral wears the 2116 health colour
+                          // (no reading → faint, via pingColor's
+                          // ms < 0 arm), never plain white.
+                          style: Ember.numeral.copyWith(
+                            color: mapPingColor(profile.delayMs),
+                          ),
                           maxLines: 1,
                           softWrap: false,
                           overflow: TextOverflow.ellipsis,

@@ -96,7 +96,9 @@ void main() {
       // exemplar from build 2059.
       // Build 2139 re-point: the new RegionHopPage is one
       // more converted site (the same pattern) → 43.
-      expect(count, 43);
+      // Build 2147 re-point: the shared _pageShell of the
+      // three new Iran-feature pages is one more → 44.
+      expect(count, 44);
       expect(_src('ui/browser_signin_page.dart'),
           isNot(contains('extendBodyBehindAppBar')));
       expect(_src('ui/ember/qr_pages.dart'),
@@ -124,10 +126,10 @@ void main() {
       expect(padding.top, kToolbarHeight + 6);
     });
 
-    test('pubspec is 2.2.0+2146', () {
+    test('pubspec is 2.2.0+2147', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2146'),
+        contains('version: 2.2.0+2147'),
       );
     });
 

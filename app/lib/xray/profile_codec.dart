@@ -350,6 +350,15 @@ String profileToLink(Profile p) {
           ? '${_enc(p.username)}:${_enc(p.uuidOrPassword)}'
           : _enc(p.username);
       return 'openconnect://$cred@${_authorityOf(p)}#$name';
+    case Protocol.ssh:
+      // SSH (build 2147, feature #6): the link form the
+      // parser's _ssh reads back — user[:password] as
+      // userinfo. A private key cannot ride a link; it
+      // stays in the profile and the editor.
+      final ui = p.sshPassword.isNotEmpty
+          ? '${_enc(p.sshUser)}:${_enc(p.sshPassword)}'
+          : _enc(p.sshUser);
+      return 'ssh://$ui@${_authorityOf(p)}#$name';
     case Protocol.sudoku:
       // Sudoku (build 2127, H2): Ember's own round-trip
       // form — the key as userinfo, the tuning as query

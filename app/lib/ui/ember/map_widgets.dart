@@ -22,7 +22,19 @@ import 'world_map.dart';
 /// on the baked dots. Used as the shell's ground layer and by
 /// [EmberBackground] on pushed pages.
 class MapBackdropVisual extends StatelessWidget {
-  const MapBackdropVisual({super.key, this.banded = false, this.faint = false});
+  const MapBackdropVisual({
+    super.key,
+    this.banded = false,
+    this.faint = false,
+    this.bandShort = false,
+  });
+
+  /// Build 2147 (strict-audit F1): the Settings variant —
+  /// a shorter, fainter band than [banded]: the scrim
+  /// settles earlier and never quite reaches full opacity,
+  /// so the settings rows ground quickly under a whisper
+  /// of map.
+  final bool bandShort;
 
   /// Build 2145 (UI-review fix A3): on text-heavy surfaces the
   /// map reads only as a faint TOP BAND — a scrim settles the
@@ -125,6 +137,23 @@ class MapBackdropVisual extends StatelessWidget {
                     Color(0xFF050607),
                   ],
                   stops: [0, 0.20, 0.42, 0.60],
+                ),
+              ),
+            ),
+          // Build 2147 (strict-audit F1): the short band.
+          if (bandShort)
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0x00000000),
+                    Color(0x00000000),
+                    Color(0xD9050607),
+                    Color(0xE6050607),
+                  ],
+                  stops: [0, 0.10, 0.24, 0.38],
                 ),
               ),
             ),

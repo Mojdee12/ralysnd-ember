@@ -66,7 +66,13 @@ void main() {
         'lib/ui/ember/smart_groups_page.dart',
         'lib/ui/ember/traffic_history_page.dart',
       ]) {
-        expect(_src(f).contains('EmberBackground(child: ListView('),
+        // PIN UPDATED by build 2147 (strict-audit F1): the
+        // Lab page now sits on the BANDED background —
+        // its call carries banded: true before child:.
+        expect(
+            _src(f).contains('EmberBackground(child: ListView(') ||
+                _src(f).contains(
+                    'EmberBackground(banded: true, child: ListView('),
             isTrue,
             reason: f);
         expect(_src(f).contains('backgroundColor: Colors.transparent'),

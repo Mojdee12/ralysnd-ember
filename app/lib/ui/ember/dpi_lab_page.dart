@@ -819,7 +819,8 @@ Widget build(BuildContext context) {
       elevation: 0,
       foregroundColor: Ember.text,
     ),
-    body: EmberBackground(child: ListView(
+    // Build 2147 (strict-audit F1): the banded ground.
+    body: EmberBackground(banded: true, child: ListView(
       padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 16, 24),
       children: [
         // Build 2145 (composition rebuild, pro6-dpilab
@@ -856,26 +857,61 @@ Widget build(BuildContext context) {
         Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                // Build 2119 (audit F-17): trimmed from
-                // 399 chars — the card states the one idea
-                // (handshake shape decides; the Lab tests
-                // all and remembers any winner) without
-                // the second sentence of qualifications.
-                // Build 2120: the sweep is the ticked
-                // subset now — the copy names the tick
-                // instead of claiming every strategy.
-                'On a filtered network, a config\'s TLS '
-                'handshake shape can decide whether it '
-                'connects. The Lab tests the strategies '
-                'you tick with real requests on this '
-                'network — none of the ticked ones '
-                'skipped, even after one works — and any '
-                'that answered can be remembered for this '
-                'network. Without TLS, only Stock, TCP '
-                'noise and the Zapret engine\'s byte-level '
-                'modes apply.',
-                style: Ember.body,
+              // Build 2147 (strict-audit F8): the intro
+              // collapses to two lines; the full text rides
+              // the info affordance beside it.
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      'On a filtered network, the TLS handshake '
+                      'shape decides whether a config connects. '
+                      'The Lab tests your ticked strategies with '
+                      'real requests.',
+                      style: Ember.body,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'About the Lab',
+                    icon: const Icon(
+                      Icons.info_outline_rounded,
+                      size: 19,
+                      color: Ember.dim,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 48,
+                      minHeight: 48,
+                    ),
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('About the Lab'),
+                        content: const Text(
+                          'On a filtered network, a config\'s TLS '
+                          'handshake shape can decide whether it '
+                          'connects. The Lab tests the strategies '
+                          'you tick with real requests on this '
+                          'network — none of the ticked ones '
+                          'skipped, even after one works — and any '
+                          'that answered can be remembered for this '
+                          'network. Without TLS, only Stock, TCP '
+                          'noise and the Zapret engine\'s byte-level '
+                          'modes apply.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () =>
+                                Navigator.of(context).pop(),
+                            child: const Text('CLOSE'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 10),
               Row(
@@ -1593,10 +1629,11 @@ Widget build(BuildContext context) {
             children: [
               Text(
                 latDigits(shown.ms),
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: Ember.fontHero,
                   fontWeight: FontWeight.w200,
-                  color: Ember.text,
+                  // Build 2147 (#22): health colour, not white.
+                  color: mapPingColor(shown.ms),
                   height: 1.0,
                 ),
               ),

@@ -21,9 +21,9 @@ String _src(String rel) => File('lib/$rel').readAsStringSync();
 
 void main() {
   group('build 2144 — reskin tokens', () {
-    test('pubspec carries 2.2.0+2146', () {
+    test('pubspec carries 2.2.0+2147', () {
       expect(File('pubspec.yaml').readAsStringSync(),
-          contains('version: 2.2.0+2146'));
+          contains('version: 2.2.0+2147'));
     });
 
     test('ground is the samples near-black #050607', () {

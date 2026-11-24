@@ -45,6 +45,12 @@ enum Protocol {
   // binary built from that fork (libsudokubox.so), behind
   // the sudokuEnabled Settings switch.
   sudoku,
+  // SSH (build 2147, feature #6): the sing-box sidecar has a
+  // native ssh outbound (verified compiled into libsingbox.so,
+  // sing-box v1.14.4 option/ssh.go) — TCP-only, noted wherever
+  // the type is offered. Served only while the sidecarSshEnabled
+  // settings gate is on (see XrayController.sshServed).
+  ssh,
 }
 
 extension ProtocolLabel on Protocol {
@@ -65,6 +71,7 @@ extension ProtocolLabel on Protocol {
     Protocol.openconnect => 'OpenConnect',
     Protocol.mieru => 'Mieru',
     Protocol.sudoku => 'Sudoku',
+    Protocol.ssh => 'SSH',
   };
 
   /// Xray-core serves every protocol here except TUIC and AnyTLS,
@@ -110,6 +117,13 @@ extension ProtocolSidecar on Protocol {
   /// True when the Mieru sidecar client serves this protocol.
   bool get servedByMieru => this == Protocol.mieru;
 
+  /// True when the protocol is SSH (build 2147, feature #6):
+  /// the sing-box sidecar carries it, behind the
+  /// sidecarSshEnabled Settings switch — the Sudoku shape:
+  /// whether a given profile is ACTUALLY served is a settings
+  /// decision too — see XrayController.sshServed.
+  bool get servedBySsh => this == Protocol.ssh;
+
   /// True when the Sudoku sidecar (build 2127, H2: the
   /// Hiddify-fork binary) serves this protocol. Whether a
   /// given profile is ACTUALLY served is a settings
@@ -131,7 +145,7 @@ extension ProtocolSidecar on Protocol {
   /// being off is refused in plain words at connect, not
   /// by pretending the protocol is unknown.
   bool get connectable =>
-      supportedByCore || servedBySidecar || servedBySudokuBox;
+      supportedByCore || servedBySidecar || servedBySudokuBox || servedBySsh;
 }
 
 /// The Hysteria2 congestion-control values Ember stores and
@@ -435,6 +449,57 @@ class Profile {
   String tlsCertPin;
 
   bool get hasTlsCertPin => tlsCertPin.isNotEmpty;
+
+  /// SSH credentials (build 2147, feature #6 — Protocol.ssh
+  /// profiles only): the sidecar's ssh outbound authenticates
+  /// with [sshPassword] or [sshPrivateKey] (+ its passphrase);
+  /// [sshHostKeyPin] optionally pins the host key (the sing-box
+  /// `host_key` list — a full OpenSSH-format key line). All
+  /// empty = the profile cannot authenticate and the connect
+  /// path says so. [sshUser] defaults to 'root' at build time
+  /// when empty.
+  String sshUser;
+  String sshPassword;
+  String sshPrivateKey;
+  String sshPrivateKeyPassphrase;
+  String sshHostKeyPin;
+
+  /// XDNS FinalMask (build 2147, feature #7): when
+  /// [xdnsDomain] is set on an mKCP-carried profile, the
+  /// builder appends an xdns UDP finalmask — DNS-tunnelled
+  /// transport via [xdnsResolver] (udp://host:53; the carrier
+  /// default 8.8.8.8 at build time when empty). Empty domain =
+  /// no mask, byte-identical configs.
+  String xdnsDomain;
+  String xdnsResolver;
+
+  /// XICMP FinalMask (build 2147, feature #8): when on, the
+  /// builder appends an xicmp UDP finalmask (ICMP-echo proxied
+  /// transport, mKCP-carried profiles). [xicmpDgram] selects
+  /// the datagram form. Off = no mask. Device risk recorded in
+  /// build2147-design.md: the client core opening ICMP sockets
+  /// under Android's sandbox is device-provable only.
+  bool xicmpEnabled;
+  bool xicmpDgram;
+
+  /// WireGuard fallback endpoints (build 2147, feature #10):
+  /// a comma-separated ordered list of host:port endpoints
+  /// tried after the profile's own address:port when the WG
+  /// handshake times out. Empty = single-endpoint behaviour,
+  /// byte-identical.
+  String wgFallbackEndpoints;
+
+  /// Dead-config quarantine (build 2147, features #20 + #21a):
+  /// [quarantineStrikes] counts consecutive handshake failures
+  /// on [quarantineNetwork] (the network fingerprint at the
+  /// last failure); at the sweep/quarantine threshold the
+  /// profile is [quarantined] — disabled and listed in the
+  /// quarantine surface with [quarantineReason], restorable,
+  /// never deleted. All defaults = never counted, never cut.
+  int quarantineStrikes;
+  String quarantineNetwork;
+  String quarantineReason;
+  bool quarantined;
 
   /// Shadowsocks 2022 / plugin.
   String plugin;
@@ -1076,6 +1141,20 @@ class Profile {
     this.grpcAuthority = '',
     this.vlessEncryption = '',
     this.tlsCertPin = '',
+    this.sshUser = '',
+    this.sshPassword = '',
+    this.sshPrivateKey = '',
+    this.sshPrivateKeyPassphrase = '',
+    this.sshHostKeyPin = '',
+    this.xdnsDomain = '',
+    this.xdnsResolver = '',
+    this.xicmpEnabled = false,
+    this.xicmpDgram = false,
+    this.wgFallbackEndpoints = '',
+    this.quarantineStrikes = 0,
+    this.quarantineNetwork = '',
+    this.quarantineReason = '',
+    this.quarantined = false,
     this.plugin = '',
     this.secretKey = '',
     this.peerPublicKey = '',
@@ -1190,6 +1269,20 @@ class Profile {
     'grpcAuthority': grpcAuthority,
     'vlessEncryption': vlessEncryption,
     'tlsCertPin': tlsCertPin,
+    'sshUser': sshUser,
+    'sshPassword': sshPassword,
+    'sshPrivateKey': sshPrivateKey,
+    'sshPrivateKeyPassphrase': sshPrivateKeyPassphrase,
+    'sshHostKeyPin': sshHostKeyPin,
+    'xdnsDomain': xdnsDomain,
+    'xdnsResolver': xdnsResolver,
+    'xicmpEnabled': xicmpEnabled,
+    'xicmpDgram': xicmpDgram,
+    'wgFallbackEndpoints': wgFallbackEndpoints,
+    'quarantineStrikes': quarantineStrikes,
+    'quarantineNetwork': quarantineNetwork,
+    'quarantineReason': quarantineReason,
+    'quarantined': quarantined,
     'plugin': plugin,
     'secretKey': secretKey,
     'peerPublicKey': peerPublicKey,
@@ -1312,6 +1405,20 @@ class Profile {
     vlessEncryption: _storedStr(j, 'vlessEncryption', ''),
     // Build 2047: same `is`-check read for the certificate pin.
     tlsCertPin: _storedStr(j, 'tlsCertPin', ''),
+    sshUser: _storedStr(j, 'sshUser', ''),
+    sshPassword: _storedStr(j, 'sshPassword', ''),
+    sshPrivateKey: _storedStr(j, 'sshPrivateKey', ''),
+    sshPrivateKeyPassphrase: _storedStr(j, 'sshPrivateKeyPassphrase', ''),
+    sshHostKeyPin: _storedStr(j, 'sshHostKeyPin', ''),
+    xdnsDomain: _storedStr(j, 'xdnsDomain', ''),
+    xdnsResolver: _storedStr(j, 'xdnsResolver', ''),
+    xicmpEnabled: _storedBool(j, 'xicmpEnabled', false),
+    xicmpDgram: _storedBool(j, 'xicmpDgram', false),
+    wgFallbackEndpoints: _storedStr(j, 'wgFallbackEndpoints', ''),
+    quarantineStrikes: _storedInt(j, 'quarantineStrikes', 0),
+    quarantineNetwork: _storedStr(j, 'quarantineNetwork', ''),
+    quarantineReason: _storedStr(j, 'quarantineReason', ''),
+    quarantined: _storedBool(j, 'quarantined', false),
     plugin: _storedStr(j, 'plugin', ''),
     secretKey: _storedStr(j, 'secretKey', ''),
     peerPublicKey: _storedStr(j, 'peerPublicKey', ''),
@@ -1634,6 +1741,16 @@ class Subscription {
 
 /// Reads a stored string map tolerantly (build 2051): only
 /// String→String entries survive; anything else yields {}.
+/// Tolerant Map<String, int> reader (build 2147, the
+/// _stringMap shape): a wrong-typed value reads as empty.
+Map<String, int> _intMap(Object? v) {
+  if (v is! Map) return {};
+  return {
+    for (final e in v.entries)
+      if (e.value is num) e.key.toString(): (e.value as num).toInt(),
+  };
+}
+
 Map<String, String> _stringMap(Object? v) {
   if (v is! Map) return {};
   final out = <String, String>{};
@@ -2588,6 +2705,85 @@ class XraySettings {
   int subHealthIntervalHours = 12;
   int lastSubHealthAtMs = 0;
 
+  // ---- Build 2147 (Iran features) — EVERY gate below is
+  // DEFAULT OFF, per the standing law: a store that never
+  // sets them behaves byte-identically to build 2146, and
+  // the defaults stay v2rayNG's. See build2147-design.md.
+
+  /// Feature #1: subscription / updater / RegionHop fetches
+  /// route through the active session's local SOCKS inbound
+  /// instead of the direct path.
+  bool fetchViaTunnel = false;
+
+  /// Feature #2: PMTU black-hole walk before tunnel start;
+  /// the winning size feeds the session's tunnel MTU and is
+  /// kept in [autoMtuFound] (0 = nothing discovered yet).
+  bool autoMtu = false;
+  int autoMtuFound = 0;
+
+  /// Feature #3: the DPI Lab probes its top candidates
+  /// concurrently instead of sequentially (inside the Lab's
+  /// own dpiLabEnabled gate).
+  bool dpiLabRacing = false;
+
+  /// Feature #4: the SNI whitelist scan surface is offered.
+  bool sniScanEnabled = false;
+
+  /// Feature #5: subscription group ids whose connect mode is
+  /// the core Balancer (observatory + leastPing) instead of a
+  /// single picked profile. Per-group opt-in; empty = none.
+  List<String> balancerGroupIds = [];
+
+  /// Feature #6: SSH profiles (Protocol.ssh) are offered and
+  /// served by the sing-box sidecar.
+  bool sidecarSshEnabled = false;
+
+  /// Feature #12: a live session whose downlink bytes do not
+  /// move for [stallFailoverSeconds] runs the existing
+  /// reconnect / next-in-group sequence. (The 2025 stall
+  /// watchdog's own switch is [stallWatchdog]; this is the
+  /// failover action layer on top of it.)
+  bool stallFailover = false;
+  int stallFailoverSeconds = 30;
+
+  /// Feature #13: while connected, the exit is re-checked on
+  /// an interval and on network changes; changes are
+  /// journaled and badged.
+  bool exitMonitorEnabled = false;
+
+  /// Feature #17: periodic real delay tests over favourites
+  /// while the app runs; dead favourites are badged.
+  bool scheduledTests = false;
+  int scheduledTestIntervalMin = 60;
+  int lastScheduledTestAtMs = 0;
+
+  /// Feature #18: import-time safety warnings (loopback /
+  /// RFC1918 endpoints, DNS-carriage traps, unexpected link
+  /// payloads) listed in the import sheet — warn, never block.
+  bool importSafetyFilter = false;
+
+  /// Feature #20: per-network handshake-failure counting;
+  /// a profile failing 3x on one network is badged and
+  /// deprioritised (never deleted, never hidden).
+  bool quarantineEnabled = false;
+
+  /// Feature #21a: the ping sweep's auto-cut — a config not
+  /// answering across [pingSweepFailStrikes] consecutive
+  /// sweeps is disabled and moved to the quarantine list
+  /// (restorable, never hard-deleted).
+  bool pingSweepEnabled = false;
+  int pingSweepFailStrikes = 3;
+
+  /// Feature #21b: set once the two built-in default
+  /// subscriptions have been seeded (they stay removable
+  /// like any other subscription afterwards).
+  bool defaultSubsSeeded2147 = false;
+
+  /// Feature #21a: profile id → consecutive ping sweeps it
+  /// has not answered. Persisted so a restart does not reset
+  /// the auto-cut accounting.
+  Map<String, int> sweepMissByProfile = {};
+
   /// Seconds between an unexpected drop and the next reconnect
   /// try. Clamped 5..120 wherever it is read, so a corrupt
   /// stored value can never spin a tight retry loop or wait
@@ -2703,6 +2899,25 @@ class XraySettings {
     'subHealthEnabled': subHealthEnabled,
     'subHealthIntervalHours': subHealthIntervalHours,
     'lastSubHealthAtMs': lastSubHealthAtMs,
+    'fetchViaTunnel': fetchViaTunnel,
+    'autoMtu': autoMtu,
+    'autoMtuFound': autoMtuFound,
+    'dpiLabRacing': dpiLabRacing,
+    'sniScanEnabled': sniScanEnabled,
+    'balancerGroupIds': balancerGroupIds,
+    'sidecarSshEnabled': sidecarSshEnabled,
+    'stallFailover': stallFailover,
+    'stallFailoverSeconds': stallFailoverSeconds,
+    'exitMonitorEnabled': exitMonitorEnabled,
+    'scheduledTests': scheduledTests,
+    'scheduledTestIntervalMin': scheduledTestIntervalMin,
+    'lastScheduledTestAtMs': lastScheduledTestAtMs,
+    'importSafetyFilter': importSafetyFilter,
+    'quarantineEnabled': quarantineEnabled,
+    'pingSweepEnabled': pingSweepEnabled,
+    'pingSweepFailStrikes': pingSweepFailStrikes,
+    'defaultSubsSeeded2147': defaultSubsSeeded2147,
+    'sweepMissByProfile': sweepMissByProfile,
     'lanShareEnabled': lanShareEnabled,
     'lanShareAuth': lanShareAuth,
     'lanShareUser': lanShareUser,
@@ -3076,6 +3291,36 @@ class XraySettings {
     s.autoReconnect = _storedBool(j, 'autoReconnect', s.autoReconnect);
     s.killSwitch = _storedBool(j, 'killSwitch', s.killSwitch);
     s.stallWatchdog = _storedBool(j, 'stallWatchdog', s.stallWatchdog);
+    // Build 2147 (Iran features): field-defensive reads; an
+    // absent key keeps the DEFAULT OFF in-memory value.
+    s.fetchViaTunnel = _storedBool(j, 'fetchViaTunnel', s.fetchViaTunnel);
+    s.autoMtu = _storedBool(j, 'autoMtu', s.autoMtu);
+    s.autoMtuFound = _storedInt(j, 'autoMtuFound', s.autoMtuFound);
+    s.dpiLabRacing = _storedBool(j, 'dpiLabRacing', s.dpiLabRacing);
+    s.sniScanEnabled = _storedBool(j, 'sniScanEnabled', s.sniScanEnabled);
+    s.sidecarSshEnabled =
+        _storedBool(j, 'sidecarSshEnabled', s.sidecarSshEnabled);
+    s.stallFailover = _storedBool(j, 'stallFailover', s.stallFailover);
+    s.stallFailoverSeconds =
+        _storedInt(j, 'stallFailoverSeconds', s.stallFailoverSeconds);
+    s.exitMonitorEnabled =
+        _storedBool(j, 'exitMonitorEnabled', s.exitMonitorEnabled);
+    s.scheduledTests = _storedBool(j, 'scheduledTests', s.scheduledTests);
+    s.scheduledTestIntervalMin =
+        _storedInt(j, 'scheduledTestIntervalMin', s.scheduledTestIntervalMin);
+    s.lastScheduledTestAtMs =
+        _storedInt(j, 'lastScheduledTestAtMs', s.lastScheduledTestAtMs);
+    s.importSafetyFilter =
+        _storedBool(j, 'importSafetyFilter', s.importSafetyFilter);
+    s.quarantineEnabled =
+        _storedBool(j, 'quarantineEnabled', s.quarantineEnabled);
+    s.pingSweepEnabled =
+        _storedBool(j, 'pingSweepEnabled', s.pingSweepEnabled);
+    s.pingSweepFailStrikes =
+        _storedInt(j, 'pingSweepFailStrikes', s.pingSweepFailStrikes);
+    s.defaultSubsSeeded2147 =
+        _storedBool(j, 'defaultSubsSeeded2147', s.defaultSubsSeeded2147);
+
     // Build 2075 settings block: field-defensive reads like
     // the 2072 block above — one bad field never discards
     // the whole store.
@@ -3236,6 +3481,8 @@ class XraySettings {
       return v.map((e) => e.toString()).toList();
     }
 
+    s.balancerGroupIds = strings('balancerGroupIds', []);
+    s.sweepMissByProfile = _intMap(j['sweepMissByProfile']);
     s.customDirectDomains = strings('customDirectDomains', []);
     s.excludedCountries = strings(
       'excludedCountries',

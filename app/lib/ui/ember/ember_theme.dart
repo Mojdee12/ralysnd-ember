@@ -117,7 +117,11 @@ abstract final class Ember {
   // literals in their pages until this batch's full
   // gate run caught them; their values are unchanged.
   static const double fontStat = 44;
-  static const double fontCode = 82;
+  // Build 2147 (strict-audit F6 + the owner's display
+  // ruling): fontCode steps 82 -> 68, the sample's measured
+  // letter size — at 82 the pair overflowed its slot on the
+  // owner's width class.
+  static const double fontCode = 68;
   static const double fontHeroPing = 76;
   static const double fontRegion = 27;
 
@@ -308,12 +312,24 @@ class EmberBackground extends StatelessWidget {
   /// pass banded so their rows sit on plain near-black below
   /// a faint map band (see MapBackdropVisual.banded).
   final bool banded;
-  const EmberBackground({super.key, required this.child, this.banded = false});
+
+  /// Build 2147 (strict-audit F1): the shorter, fainter
+  /// band (Settings).
+  final bool bandShort;
+  const EmberBackground({
+    super.key,
+    required this.child,
+    this.banded = false,
+    this.bandShort = false,
+  });
 
   @override
   Widget build(BuildContext context) => Stack(
     fit: StackFit.expand,
-    children: [MapBackdropVisual(banded: banded), child],
+    children: [
+      MapBackdropVisual(banded: banded, bandShort: bandShort),
+      child,
+    ],
   );
 }
 

@@ -388,7 +388,7 @@ void main() {
 
   group('source pins', () {
     test('pubspec is build 2134', () {
-      expect(read('pubspec.yaml'), contains('version: 2.2.0+2146'));
+      expect(read('pubspec.yaml'), contains('version: 2.2.0+2147'));
     });
 
     test('the Kotlin helper is staged on the mirrored port', () {

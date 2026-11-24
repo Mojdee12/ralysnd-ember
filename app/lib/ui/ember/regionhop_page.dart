@@ -348,7 +348,9 @@ class _RegionHopPageState extends State<RegionHopPage> {
         elevation: 0,
         foregroundColor: Ember.text,
       ),
+      // Build 2147 (strict-audit F1): the banded ground.
       body: EmberBackground(
+        banded: true,
         child: ListenableBuilder(
           listenable: widget.xray,
           builder: (context, _) => ListView(
@@ -680,7 +682,7 @@ Widget regionHopConnectPill(
     onTap: onTap,
     borderRadius: BorderRadius.circular(999),
     child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
       decoration: BoxDecoration(
         color: filled
             ? (onTap == null ? Ember.cardSoft : Ember.orange)
@@ -875,10 +877,12 @@ class RegionHopLocationTile extends StatelessWidget {
                         children: [
                           Text(
                             latDigits(p.latencyMs),
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: Ember.fontHero,
                               fontWeight: FontWeight.w200,
-                              color: Ember.text,
+                              // Build 2147 (#22): health colour,
+                              // not white.
+                              color: mapPingColor(p.latencyMs),
                               height: 1.0,
                             ),
                           ),
@@ -1230,7 +1234,7 @@ class _TileChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final active = location.chipLabel == 'Active';
+    final active = location.chipLabel == 'Tunnel up';
     final connecting = location.chipLabel == 'Connecting';
     final color = active
         ? Ember.orange

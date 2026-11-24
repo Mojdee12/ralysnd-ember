@@ -13,7 +13,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show PlatformException;
 
 import '../../aether/aether_controller.dart';
-import '../../app_info.dart';
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
 import '../../core/core_controller.dart';
@@ -167,16 +166,10 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
   bool _defaultsApplied = false;
   bool _mozBusy = false;
 
-  // Build 2075 (owner order, reverting build 2074's audit
-  // item 1): the engine rail is the pre-2074 vertical stack at
-  // the header's top-right again — the owner disliked the
-  // horizontal scrolling strip 2074 introduced and ordered the
-  // previous build's layout back («چیدمان انتخاب موتور ها مثل
-  // بیلد قبل باشه»). The stack is one chip wide; on short
-  // windows it folds to two columns (the build 2057 compact
-  // mechanism) instead of overflowing.
-  bool _compactRail(BuildContext context) =>
-      MediaQuery.sizeOf(context).height < 700;
+  // Build 2147 (fix item #23): the build 2075 compact-rail
+  // mechanism is gone — the non-Home header no longer stacks
+  // the chips in a column at all (see _header), so there is
+  // no short-window fold left to compute.
 
   // Pause with auto-resume (build 2033): the mode whose
   // connection is paused, when it comes back, and the timers
@@ -454,6 +447,9 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         // Build 2093: the starred set becomes the shortcut set
         // once the profiles are loaded.
         unawaited(_xray.syncLauncherShortcuts());
+        // Build 2147 (feature #21b): the one-time seeding of
+        // the built-in default subscriptions.
+        unawaited(_xray.seedDefaultSubscriptions2147());
       }),
     );
     _psiphon.load();
@@ -874,8 +870,15 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         // off — say so plainly (Map Control copy is
         // literal English, the l10n precedent for the
         // engine-specific refusals).
+        'quarantined' =>
+          'This config is quarantined — restore it from the '
+              'quarantine list in Settings to connect it again.',
         'sudoku-off' =>
           'Sudoku is off — enable it in Settings to connect this profile.',
+        // Build 2147 (feature #6): the SSH engine switch is
+        // off — the same plain-words refusal.
+        'ssh-off' =>
+          'SSH is off — enable it in Settings to connect this profile.',
         // Build 2127 (H1): the session dials through the
         // Zapret desync proxy (a DPI Lab win) and the proxy
         // would not start — the connect failed loudly
@@ -3566,18 +3569,27 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       ]),
       builder: (context, _) {
         // R1 (2026-11-23): the Home tab wears the samples'
-        // header (see _homeHeader); the rail below serves
-        // every other tab exactly as before.
+        // header (see _homeHeader).
         if (_tab == 0) return _homeHeader();
-        // Build 2075 (owner-ordered revert of 2074's audit
-        // item 1): the rail is the pre-2074 stack at the
-        // header's top-right — brand panel top-left, the nine
-        // chips (8 engines + Settings, same order, same tap
-        // behaviour) stacked one per row in a Wrap, folding to
-        // two columns on short windows (compactRail, the build
-        // 2057 mechanism). Every other 2074 UI fix stands; only
-        // this selector's layout changed back.
-        final compactRail = _compactRail(context);
+        // Build 2147 (fix item #23, owner device verdict
+        // 2026-11-24 on shipped 2146, with screenshot): the
+        // 2075 rail stack — brand panel top-left, the nine
+        // chips stacked in a 128 dp column at the top-right,
+        // ~410 dp tall — sat on EVERY non-Home tab and pushed
+        // each engine page's own composition halfway down the
+        // screen («چرا هر موتور میزنم باز اینجوری میشه؟»). The
+        // approved pro6 engine-page samples have no such
+        // tower: a slim header, then the page itself. The
+        // non-Home header is now the Home-R1 language — the
+        // same brand line as Home, and under it ONE horizontal,
+        // scrollable row of the same nine chips: same order,
+        // same MapEngineChip, same tap behaviour, so one-tap
+        // engine switching stays reachable from every engine
+        // page and from Settings (build 2092 items 34/60), and
+        // the Settings chip keeps its close behaviour on the
+        // Settings tab. Header height drops from ~410 dp to
+        // ~95 dp and the page's composition starts at the top,
+        // like the samples.
         final rail = <Widget>[
           for (var i = 0; i < names.length; i++)
             MapEngineChip(
@@ -3603,102 +3615,32 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
             onTap: () => setState(() => _tab = _tab == 3 ? 0 : 3),
           ),
         ];
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _homeHeader(),
+            const SizedBox(height: 10),
+            // The chip row: the rail's nine chips in ONE
+            // horizontal, scrollable line (6 dp apart, the
+            // rail's own spacing). The chips keep their
+            // 128 dp width and full state language (ACTIVE
+            // pill, glow, connecting half-state); the row
+            // scrolls sideways on phone widths instead of
+            // stacking down the screen.
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
                 children: [
-                  // Build 2092 (item 36): the brand column
-                  // flexes — at 320 dp its fixed intrinsic
-                  // width plus the fixed rail overflowed the
-                  // Row; the panel's texts ellipsis inside.
-                  // Build 2118 (appearance fix round): the
-                  // Spacer that used to sit between this column
-                  // and the rail is GONE — as two flex children
-                  // they split the leftover width 50/50, capping
-                  // the brand column at ~115 dp on a 390 dp
-                  // surface, which is why the panel's title
-                  // ellipsized to "Ralysn..." and the version
-                  // line to "V2.2.0 • ..." in the renders. The
-                  // Flexible alone now takes the full leftover;
-                  // the 320 dp protection is unchanged.
-                  // Build 2121 (owner device verdict
-                  // 2026-11-19 21:57): the 2118 arrangement is
-                  // REVERTED — on his phone the stretched brand
-                  // read too big and reached into the middle of
-                  // the screen; the chips belong in the corner
-                  // like before. The Spacer is back, but the
-                  // split is weighted 7:2, not 2117's 50/50: at
-                  // 411 dp the 50/50 split caps this column at
-                  // ~125 dp, and the restored panel's version
-                  // line (117.6 dp of text inside 59 dp of
-                  // chrome) still ellipsized there. At 7:2 the
-                  // column caps at ~195 dp (411) / ~179 dp
-                  // (390), the panel renders at its full-text
-                  // width of ~177 dp hugging the top-left, and
-                  // the 320 dp protection is unchanged (the
-                  // texts ellipsis there, as in 2117, instead
-                  // of overflowing).
-                  Flexible(
-                    flex: 7,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        MapBrandPanel(
-                        versionLine: 'v$appVersion • BUILD $appBuildNumber',
-                      ),
-                      // Build 2095 (whole-app journey audit
-                      // #16): the Locations pill used to render
-                      // only for Mozilla/OpenVPN — Psiphon,
-                      // Lantern, WARP and MASQUE homes had no
-                      // way to jump to their server lists,
-                      // which live on the same tab.
-                      if (_tab == 0) ...[
-                        const SizedBox(height: 8),
-                        MapNavPill(
-                          icon: Icons.place_rounded,
-                          label: 'Locations',
-                          onTap: _openServersTab,
-                        ),
-                        // Build 2028: no Account pill in OpenVPN
-                        // mode — OpenVPN is a generic client with
-                        // per-profile credentials, no account page.
-                        if (mode == 0) ...[
-                          const SizedBox(height: 6),
-                          MapNavPill(
-                            icon: Icons.person_rounded,
-                            label: 'Account',
-                            onTap: () => setState(() => _tab = 2),
-                          ),
-                        ],
-                      ],
-                      ],
-                    ),
-                  ),
-                  const Spacer(flex: 2),
-                  // The restored stack: one chip (128 dp)
-                  // wide, two chips wide when compactRail
-                  // folds it on a short window. Build 2092
-                  // (items 34, 60): the stack now stays on the
-                  // Settings tab too (see the rail's Settings
-                  // chip), and runSpacing is 0 — the chip box
-                  // already carries 3+3 dp of slack, so the
-                  // glass-to-glass vertical gap is 6 dp,
-                  // matching the 6 dp horizontal spacing (it
-                  // was 9).
-                  SizedBox(
-                    width: compactRail ? 262 : 128,
-                    child: Wrap(spacing: 6, runSpacing: 0, children: rail),
-                  ),
+                  for (var i = 0; i < rail.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 6),
+                    rail[i],
+                  ],
                 ],
               ),
-            ],
-          ),
+            ),
+          ],
         );
       },
     );
@@ -4243,7 +4185,9 @@ class _ShellControlBar extends StatelessWidget {
               onTap: busy ? null : onToggle,
               borderRadius: BorderRadius.circular(999),
               child: Container(
-                height: 46,
+                // Build 2147 (strict-audit F10): 46 -> 48,
+                // the sample's slim-pill height.
+                height: 48,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(999),

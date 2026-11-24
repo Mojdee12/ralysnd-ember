@@ -14,6 +14,7 @@ import 'dart:io' show InternetAddress;
 
 import 'anti_filter.dart';
 import 'config_mixins.dart';
+import 'iran_features_2147.dart';
 import 'dns_hosts.dart';
 import 'dnstt_args.dart';
 import 'olcrtc_args.dart';
@@ -309,6 +310,28 @@ Map<String, dynamic> _streamSettings(
   // core honours it.
   if (p.dialMode.isNotEmpty) sock['dialMode'] = p.dialMode;
   stream['sockopt'] = sock;
+  // Build 2147 (features #7/#8): the typed FinalMask opt-ins
+  // (the profile's XDNS / XICMP fields) append their UDP masks
+  // after the raw finalMask merge above — mKCP-carried
+  // profiles only (upstream, both are UDP masks over KCP).
+  // A profile without the fields emits nothing here, so its
+  // config stays byte-identical to every earlier build.
+  if (p.network == 'kcp') {
+    final xdns = xdnsFinalMask(p);
+    final xicmp = xicmpFinalMask(p);
+    if (xdns != null || xicmp != null) {
+      final fm =
+          (stream['finalmask'] as Map?)?.cast<String, dynamic>() ??
+          <String, dynamic>{};
+      final udp = <dynamic>[
+        ...((fm['udp'] as List?) ?? const []),
+        if (xdns != null) xdns,
+        if (xicmp != null) xicmp,
+      ];
+      fm['udp'] = udp;
+      stream['finalmask'] = fm;
+    }
+  }
   // Stage A (2026): the profile's anti-filter shaping, if any —
   // a no-op unless the profile opted in AND its security is TLS.
   applyAntiFilter(stream, p);
@@ -640,6 +663,9 @@ Map<String, dynamic>? buildOutbound(
   }
 
   switch (p.protocol) {
+    case Protocol.ssh:
+      return null; // No SSH outbound exists in Xray-core
+    // (build 2147) — the sing-box sidecar serves it instead.
     case Protocol.tuic:
       return null; // No TUIC outbound exists in Xray-core.
     case Protocol.anytls:
@@ -2347,4 +2373,140 @@ String buildTestConfig(
     ],
     'outbounds': zapretTestOutbounds,
   });
+}
+
+/// Build 2147 (feature #5): the Balancer connect mode — one
+/// Xray instance whose routing carries a core balancer
+/// (observatory + leastPing) over a subscription group's
+/// outbounds, so the core shifts traffic to the fastest live
+/// member continuously, unlike the 2035 connect-time
+/// failover. Built ONLY for an opted-in group
+/// (XraySettings.balancerGroupIds) with at least two
+/// core-servable members; every other connect builds
+/// [buildTunnelConfig] exactly as before, so a store that
+/// never opts in is byte-identical. The DNS section is the
+/// selected member's — v2rayNG's DNS, verbatim, as everywhere.
+String buildBalancerTunnelConfig(
+  List<Profile> members,
+  XraySettings s, {
+  Map<String, List<String>> serverHostPins = const {},
+}) {
+  final outbounds = <Map<String, dynamic>>[];
+  for (var i = 0; i < members.length; i++) {
+    final m = members[i];
+    final o = buildOutbound(
+      m,
+      s,
+      fingerprintOverride: effectiveFingerprint(
+        m,
+        s,
+        rotationIndex: s.tlsFingerprintIndex,
+      ),
+    );
+    if (o == null) continue;
+    _stampServerNameResolve(o, m, serverHostPins);
+    o['tag'] = 'proxy-$i';
+    outbounds.add(o);
+  }
+  if (outbounds.length < 2) {
+    throw StateError('balancer needs at least two servable members');
+  }
+  final rules = <Map<String, dynamic>>[
+    {
+      'type': 'field',
+      'inboundTag': ['api'],
+      'outboundTag': 'api',
+    },
+    // Every preset/custom rule that named the single 'proxy'
+    // outbound now names the balancer; a catch-all at the end
+    // sends whatever is left to it as well.
+    for (final r in _routingRules(s))
+      if (r['outboundTag'] == 'proxy')
+        ({...r}..remove('outboundTag'))..['balancerTag'] = 'proxy-balancer'
+      else
+        r,
+    {
+      'type': 'field',
+      'network': 'tcp,udp',
+      'balancerTag': 'proxy-balancer',
+    },
+  ];
+  final config = <String, dynamic>{
+    'log': {'loglevel': s.logLevel},
+    'stats': <String, dynamic>{},
+    'api': {
+      'tag': 'api',
+      'services': ['StatsService'],
+    },
+    'dns': _dnsSection(s, members.first, serverHostPins: serverHostPins),
+    if (s.fakeDns)
+      'fakedns': [
+        {'ipPool': '198.18.0.0/15', 'poolSize': 65535},
+      ],
+    'inbounds': [
+      ..._inbounds(s),
+      {
+        'tag': 'api',
+        'listen': '127.0.0.1',
+        'port': statsApiPort(s),
+        'protocol': 'dokodemo-door',
+        'settings': {'address': '127.0.0.1'},
+      },
+    ],
+    'observatory': {
+      'subjectSelector': ['proxy-'],
+      'probeURL': 'https://www.google.com/generate_204',
+      'probeInterval': '30s',
+    },
+    'outbounds': [
+      ...outbounds,
+      _directOutbound(),
+      {
+        'tag': 'block',
+        'protocol': 'blackhole',
+        'settings': {
+          'response': {'type': 'http'},
+        },
+      },
+      if (s.fakeDns)
+        {
+          'tag': 'dns-out',
+          'protocol': 'dns',
+          'settings': {'nonIPQuery': 'skip'},
+        },
+    ],
+    'routing': {
+      'domainStrategy': s.domainStrategy,
+      'balancers': [
+        {
+          'tag': 'proxy-balancer',
+          'selector': ['proxy-'],
+          'strategy': {'type': 'leastPing'},
+        },
+      ],
+      'rules': rules,
+    },
+    'policy': {
+      'levels': {
+        '0': {
+          'statsUserUplink': false,
+          'statsUserDownlink': false,
+          'uplinkOnly': 0,
+          'downlinkOnly': 0,
+        },
+      },
+      'system': {
+        'statsInboundUplink': false,
+        'statsInboundDownlink': false,
+        'statsOutboundUplink': true,
+        'statsOutboundDownlink': true,
+      },
+    },
+  };
+  final mixins = mixinsFromStoredText(s.configMixins);
+  if (mixins != null) {
+    final merged = jsonDecode(jsonEncode(config)) as Map<String, dynamic>;
+    return compactJson(applyConfigMixins(merged, mixins));
+  }
+  return compactJson(config);
 }

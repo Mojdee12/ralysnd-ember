@@ -586,13 +586,16 @@ class WireGuardHomePage extends StatelessWidget {
                 // (the sample's huge light name); with no
                 // selection the hero carries the engine word, as
                 // the status row did before.
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    wgSelected != null ? wgSelected.displayName : 'WireGuard',
-                    style: Ember.hero,
-                  ),
+                // Build 2147 (strict-audit F11): no
+                // FittedBox shrink — the name ellipsises at
+                // the column's width instead. (A Flexible
+                // here broke layout: this column scrolls,
+                // so its height is unbounded.)
+                Text(
+                  wgSelected != null ? wgSelected.displayName : 'WireGuard',
+                  style: Ember.hero,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 6),
                 if (wgSelected != null)

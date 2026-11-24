@@ -168,7 +168,10 @@ void main() {
     });
 
     test('chip labels map the panel classes', () {
-      expect(regionHopChipLabel('active', 'active'), 'Active');
+      // PIN UPDATED by build 2147 (strict-audit F3): the
+      // chip reads 'Tunnel up', matching the Servers
+      // ACTIVE vocabulary's plain meaning.
+      expect(regionHopChipLabel('active', 'active'), 'Tunnel up');
       expect(regionHopChipLabel('connecting', 'connecting'), 'Connecting');
       expect(regionHopChipLabel('activating', 'connecting'), 'Connecting');
       expect(regionHopChipLabel('inactive', 'inactive'), 'Stopped');
@@ -469,7 +472,16 @@ void main() {
     });
 
     test('leg 1 touched neither the connect machinery nor the builder', () {
-      expect(_src('xray/xray_controller.dart').contains('regionHop'), isFalse);
+      // PIN UPDATED by build 2147 (feature #1): the
+      // controller now holds ONLY the fetch-via-tunnel
+      // proxy directive for the panel client — a settings
+      // seam, not connect machinery. The builder stays
+      // untouched, and no RegionHop connect/settings state
+      // enters the controller.
+      final controller = _src('xray/xray_controller.dart');
+      expect(controller, contains('regionHopProxyDirective'));
+      expect(controller.contains('regionHopEnabled'), isFalse);
+      expect(controller.contains('RegionHopLocation'), isFalse);
       expect(_src('xray/config_builder.dart').contains('regionHop'), isFalse);
     });
 
@@ -658,7 +670,9 @@ void main() {
       // text. Same fixture data, same tile.
       expect(find.text('DE'), findsOneWidget);
       expect(find.text('Germany'), findsOneWidget);
-      expect(find.text('Active'), findsWidgets);
+      // FINDER UPDATED by build 2147 (strict-audit F3):
+      // the status chip reads 'Tunnel up' now.
+      expect(find.text('Tunnel up'), findsWidgets);
       expect(find.text('Stopped'), findsOneWidget);
       expect(
         find.text('Exit DE - Germany · 203.0.113.7 · 812 ms'),

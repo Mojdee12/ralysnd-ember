@@ -4,7 +4,14 @@
 /// cannot measure on-device. The verdict rows are built by
 /// the pure [leakRows] so the wording is unit-tested.
 
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:pointycastle/export.dart' hide State, Padding;
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../aether/aether_controller.dart';
 import '../../core/core_controller.dart';
@@ -14,6 +21,7 @@ import '../../l10n/app_localizations.dart';
 import '../../openvpn/openvpn_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../xray/config_builder.dart' show primaryResolvers;
+import '../../xray/iran_features_2147.dart';
 import '../../xray/xray_controller.dart';
 import 'ember_format.dart';
 import 'ember_theme.dart';
@@ -152,6 +160,189 @@ class LeakTestPage extends StatefulWidget {
 }
 
 class _LeakTestPageState extends State<LeakTestPage> {
+  // Build 2147 (feature #14): RUN ALL state — the fresh
+  // exit read plus the in-app WebRTC probe's note ('' =
+  // not run yet).
+  bool _runningAll = false;
+  String _webrtcNote = '';
+  WebViewController? _iceWebView;
+
+  Future<void> _runAll() async {
+    if (_runningAll) return;
+    setState(() {
+      _runningAll = true;
+      _webrtcNote = '';
+    });
+    // A fresh exit read (the stored one may predate the
+    // session's current route).
+    widget.xray.refreshExitInfo();
+    final note = await _probeWebRtc();
+    if (mounted) {
+      setState(() {
+        _runningAll = false;
+        _webrtcNote = note;
+      });
+    }
+  }
+
+  /// The in-app WebRTC probe: a hidden WebView gathers ICE
+  /// candidates the way a web page would, and the host
+  /// candidates it exposes are reported verbatim — the
+  /// tunnel interface's address is expected among them; a
+  /// LAN address is what a leak looks like. Informational,
+  /// like every row on this page that is not a measurement
+  /// of the tunnel itself.
+  Future<String> _probeWebRtc() async {
+    final completer = Completer<String>();
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..addJavaScriptChannel(
+        'IceProbe',
+        onMessageReceived: (message) {
+          if (!completer.isCompleted) completer.complete(message.message);
+        },
+      );
+    _iceWebView = controller;
+    await controller.loadHtmlString('''
+<html><body><script>
+const pc = new RTCPeerConnection({iceServers: []});
+pc.createDataChannel('probe');
+const found = [];
+pc.onicecandidate = (e) => {
+  if (e.candidate) { found.push(e.candidate.candidate); }
+  else { IceProbe.postMessage(JSON.stringify(found)); }
+};
+pc.createOffer().then(o => pc.setLocalDescription(o));
+setTimeout(() => IceProbe.postMessage(JSON.stringify(found)), 6000);
+</script></body></html>''');
+    String raw;
+    try {
+      raw = await completer.future.timeout(
+        const Duration(seconds: 9),
+        onTimeout: () => '[]',
+      );
+    } catch (_) {
+      raw = '[]';
+    }
+    _iceWebView = null;
+    final ips = <String>{};
+    try {
+      final list = jsonDecode(raw) as List;
+      final ipPattern = RegExp(
+        r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|([0-9a-fA-F:]{2,}:[0-9a-fA-F:]+)',
+      );
+      for (final c in list) {
+        for (final m in ipPattern.allMatches('$c')) {
+          final ip = m.group(0)!;
+          if (!ip.startsWith('0.') && ip != '0.0.0.0') ips.add(ip);
+        }
+      }
+    } catch (_) {
+      // An unreadable probe result reads as no candidates.
+    }
+    if (ips.isEmpty) {
+      return 'The in-app WebRTC probe gathered no ICE host '
+          'candidates — WebRTC exposes no local address from '
+          'inside the app right now.';
+    }
+    return 'The in-app WebRTC probe saw ${ips.length} ICE '
+        'host candidate(s): ${ips.join(', ')}. The tunnel '
+        'interface\'s own address is expected here; an '
+        'address from your home or office LAN in this list '
+        'is what a WebRTC leak looks like to a page that asks.';
+  }
+
+  /// Build 2147 (feature #19): the encrypted diagnostics
+  /// export — the same log text as EXPORT LOG, sealed with
+  /// a password (AES-GCM, PBKDF2 key) before it touches
+  /// the clipboard.
+  Future<void> _exportEncrypted() async {
+    final password = await _askExportPassword();
+    if (password == null || !mounted) return;
+    final text = await widget.xray.readLogs();
+    final envelope = encryptDiagExport2147(text, password);
+    await copySensitive(envelope);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Encrypted diagnostics copied — the password is '
+            'the only way back in; Ember does not keep it.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<String?> _askExportPassword() async {
+    final first = TextEditingController();
+    final second = TextEditingController();
+    var error = '';
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Encrypt diagnostics'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: first,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Password',
+                ),
+              ),
+              TextField(
+                controller: second,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Repeat the password',
+                ),
+              ),
+              if (error.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    error,
+                    style: Ember.caption.copyWith(color: Ember.red),
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('CANCEL'),
+            ),
+            TextButton(
+              onPressed: () {
+                if (first.text.length < 8) {
+                  setDialogState(
+                    () => error = 'Use at least 8 characters.',
+                  );
+                  return;
+                }
+                if (first.text != second.text) {
+                  setDialogState(
+                    () => error = 'The passwords do not match.',
+                  );
+                  return;
+                }
+                Navigator.of(context).pop(first.text);
+              },
+              child: const Text('ENCRYPT & COPY'),
+            ),
+          ],
+        ),
+      ),
+    );
+    first.dispose();
+    second.dispose();
+    return result;
+  }
+
   LeakFacts _facts() {
     final xray = widget.xray;
     if (xray.state.running) {
@@ -374,6 +565,38 @@ class _LeakTestPageState extends State<LeakTestPage> {
               if (i < rows.length - 1)
                 const Divider(color: Ember.line, height: 1, thickness: 1),
             ],
+            if (_webrtcNote.isNotEmpty) ...[
+              const Divider(color: Ember.line, height: 1, thickness: 1),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 11),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.help_outline_rounded,
+                      size: 18,
+                      color: Ember.dim,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'WebRTC (in-app probe)',
+                            style: Ember.heading.copyWith(
+                              fontSize: Ember.fontBody,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(_webrtcNote, style: Ember.body),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 18),
             // The export: the same diagnostics bundle the
             // log viewer's Copy All carries (readLogs rides
@@ -396,7 +619,7 @@ class _LeakTestPageState extends State<LeakTestPage> {
                 },
                 borderRadius: BorderRadius.circular(999),
                 child: Container(
-                  height: 46,
+                  height: 48,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: MapUi.card,
@@ -415,6 +638,68 @@ class _LeakTestPageState extends State<LeakTestPage> {
                 ),
               ),
             ),
+            const SizedBox(height: 10),
+            // Build 2147 (feature #19): the encrypted
+            // export — same text, sealed with a password.
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => unawaited(_exportEncrypted()),
+                borderRadius: BorderRadius.circular(999),
+                child: Container(
+                  height: 48,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: MapUi.card,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: MapUi.lineStrong),
+                  ),
+                  child: const Text(
+                    'EXPORT ENCRYPTED',
+                    style: TextStyle(
+                      fontSize: Ember.fontBody,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 2,
+                      color: MapUi.text,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            // Build 2147 (feature #14): RUN ALL — a fresh
+            // exit read plus the in-app WebRTC probe.
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: _runningAll ? null : () => unawaited(_runAll()),
+                borderRadius: BorderRadius.circular(999),
+                child: Container(
+                  height: 48,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: MapUi.card,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: MapUi.lineStrong),
+                  ),
+                  child: Text(
+                    _runningAll ? 'RUNNING…' : 'RUN ALL CHECKS',
+                    style: const TextStyle(
+                      fontSize: Ember.fontBody,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 2,
+                      color: MapUi.text,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (_iceWebView != null)
+              SizedBox(
+                width: 1,
+                height: 1,
+                child: WebViewWidget(controller: _iceWebView!),
+              ),
         ],
       )),
     );
@@ -461,4 +746,36 @@ class _DiagStat extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Build 2147 (feature #19): seals [plaintext] with
+/// [password] — PBKDF2-HMAC-SHA256 ([kDiagKdfIterations]
+/// rounds, 16-byte salt) into an AES-256-GCM seal (12-byte
+/// nonce), wrapped in the diag-export envelope. The
+/// ciphertext is self-authenticating: a wrong password or
+/// a tampered file fails the GCM tag on open.
+String encryptDiagExport2147(String plaintext, String password) {
+  final random = FortunaRandom();
+  final seed = Uint8List(32);
+  final rng = Random.secure();
+  for (var i = 0; i < seed.length; i++) {
+    seed[i] = rng.nextInt(256);
+  }
+  random.seed(KeyParameter(seed));
+  final salt = random.nextBytes(16);
+  final nonce = random.nextBytes(12);
+  final derivator = PBKDF2KeyDerivator(HMac(SHA256Digest(), 64))
+    ..init(Pbkdf2Parameters(salt, kDiagKdfIterations, 32));
+  final key = derivator.process(Uint8List.fromList(utf8.encode(password)));
+  final cipher = GCMBlockCipher(AESEngine())
+    ..init(
+      true,
+      AEADParameters(KeyParameter(key), 128, nonce, Uint8List(0)),
+    );
+  final sealed = cipher.process(Uint8List.fromList(utf8.encode(plaintext)));
+  return diagExportEnvelope(
+    saltB64: base64.encode(salt),
+    nonceB64: base64.encode(nonce),
+    cipherB64: base64.encode(sealed),
+  );
 }

@@ -28,6 +28,11 @@
 /// entirely) — Ember never emits that key.
 library;
 
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:pointycastle/export.dart';
+
 /// True when [value] is a pinnedPeerCertSha256 string the bundled
 /// core accepts as a TLS settings value.
 bool isValidTlsCertPin(String value) {
@@ -55,3 +60,42 @@ int tlsCertPinCount(String value) {
       .length;
 }
 
+
+/// Build 2147 (feature #11 completion): captures the pin of
+/// the certificate [host]:[port] presents RIGHT NOW — a TLS
+/// handshake that accepts whatever is presented (the point
+/// is to READ the cert, not to trust it), then the SHA-256
+/// of its DER form, in the core's hex format. Null when the
+/// endpoint does not answer or presents no certificate.
+/// [serverName] overrides the SNI sent (defaults to [host]).
+Future<String?> fetchCurrentTlsCertPin(
+  String host,
+  int port, {
+  String serverName = '',
+  Duration timeout = const Duration(seconds: 8),
+}) async {
+  X509Certificate? presented;
+  SecureSocket? socket;
+  try {
+    socket = await SecureSocket.connect(
+      host,
+      port,
+      onBadCertificate: (cert) {
+        presented = cert;
+        return true;
+      },
+      timeout: timeout,
+    );
+    presented ??= socket.peerCertificate;
+    final cert = presented;
+    if (cert == null) return null;
+    final digest = SHA256Digest().process(Uint8List.fromList(cert.der));
+    return digest
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+  } catch (_) {
+    return null;
+  } finally {
+    socket?.destroy();
+  }
+}

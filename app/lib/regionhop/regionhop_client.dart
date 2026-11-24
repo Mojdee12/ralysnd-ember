@@ -196,9 +196,23 @@ SecurityContext? regionHopSecurityContextFor(String baseUrl) {
 /// The HTTP client factory every panel request goes
 /// through (build 2143): pinned for the baked https
 /// endpoint, the plain default for everything else.
+/// Build 2147 (feature #1): the active session's local
+/// proxy directive for panel fetches ('SOCKS
+/// 127.0.0.1:<port>'), maintained while a session is up and
+/// the fetchViaTunnel gate is on — the direct path is
+/// DPI-visible for panel traffic (the 2141–2143 saga), which
+/// is exactly what this feature exists to avoid. '' =
+/// direct, as in every earlier build.
+String regionHopProxyDirective = '';
+
 HttpClient regionHopHttpClientFor(String baseUrl) {
   final context = regionHopSecurityContextFor(baseUrl);
-  return context == null ? HttpClient() : HttpClient(context: context);
+  final client =
+      context == null ? HttpClient() : HttpClient(context: context);
+  if (regionHopProxyDirective.isNotEmpty) {
+    client.findProxy = (_) => regionHopProxyDirective;
+  }
+  return client;
 }
 
 /// The status fetch's phase timings (build 2142): how
@@ -378,7 +392,7 @@ String regionHopExitCode(String exitRegion) {
 
 /// The status chip's label for a status pair.
 String regionHopChipLabel(String status, String statusClass) {
-  if (statusClass == 'active' || status == 'active') return 'Active';
+  if (statusClass == 'active' || status == 'active') return 'Tunnel up';
   if (statusClass == 'connecting' || status == 'activating') {
     return 'Connecting';
   }

@@ -140,9 +140,15 @@ void main() {
     // box carries 3+3 dp of slack, so the glass-to-glass gap
     // stays 6 dp. This pin follows the audit fix; the 2083
     // owner's-order spacing history stands above.
-    test('the rail wraps with 0 px run spacing (2092)', () {
+    // PIN UPDATED by build 2147 (fix item #23): the stacked
+    // Wrap rail is superseded by the owner's 2026-11-24 order
+    // — the chips now sit in one horizontal Row inside a
+    // SingleChildScrollView, 6 dp apart (the same gap the
+    // Wrap's spacing carried). The pin follows the change.
+    test('the rail is one horizontal row with 6 dp gaps (2147)', () {
       final shell = _dart('ui/ember/ember_shell.dart');
-      expect(shell, contains('Wrap(spacing: 6, runSpacing: 0'));
+      expect(shell, contains('scrollDirection: Axis.horizontal'));
+      expect(shell, isNot(contains('Wrap(spacing: 6, runSpacing: 0')));
     });
 
     testWidgets('the bottom bar state word is 10 px', (tester) async {

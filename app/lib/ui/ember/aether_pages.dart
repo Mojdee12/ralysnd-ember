@@ -193,10 +193,18 @@ class _AetherStatusCard extends StatelessWidget {
       children: [
         Center(child: Text(tracked, style: Ember.microLabelOrange)),
         const SizedBox(height: 10),
-        Center(
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(_aetherHeroWord(controller), style: Ember.hero),
+        // Build 2147 (strict-audit F11): no FittedBox —
+        // the hero word ellipsises at extreme scales
+        // instead of shrinking off-token. (No Flexible:
+        // this column's height is unbounded.)
+        SizedBox(
+          width: double.infinity,
+          child: Text(
+            _aetherHeroWord(controller),
+            style: Ember.hero,
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ),
         const SizedBox(height: 10),
@@ -330,7 +338,9 @@ class _AetherExitCard extends StatelessWidget {
           // status card's hero word (WARP+), not this row.
           _aetherMono(
             warp == 'off' ? 'OFF' : 'ON',
-            color: warp == 'off' ? Ember.red : Ember.orange,
+            // Build 2147 (strict-audit F2): ON reads green —
+            // the status colour, not the accent.
+            color: warp == 'off' ? Ember.red : Ember.green,
           ),
         ),
       if (colo.isNotEmpty)

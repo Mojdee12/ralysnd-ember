@@ -69,8 +69,17 @@ void main() {
     });
 
     test('both V2Ray entry points route through _openServersTab', () {
-      expect(shell, contains('onTap: _openServersTab,'));
+      // PIN UPDATED by build 2147 (fix item #23): the
+      // 'onTap: _openServersTab,' instance this pin counted
+      // was the old header tower's Locations pill — dead code
+      // (it sat behind an if (_tab == 0) guard inside the
+      // non-Home branch, so it never rendered) — and the
+      // tower is deleted by #23. The LIVE entry points stand:
+      // the slim control bar's Locations route
+      // (onOpenServers:) and the control bar's servers action
+      // (onServers:), both still wired to _openServersTab.
       expect(shell, contains('onOpenServers: _openServersTab,'));
+      expect(shell, contains('onServers: _openServersTab,'));
     });
 
     test('the page header is the sample anatomy', () {
@@ -140,7 +149,10 @@ void main() {
         // Window widened by build 2144 (reskin): the
         // block grew by the subscription traffic hero;
         // every pin below is unchanged.
-        final body = servers.substring(at, at + 3400);
+        // Widened again by build 2147: the card head grew
+        // the balancer opt-in (feature #5) and the F4
+        // warning-state fields.
+        final body = servers.substring(at, at + 4300);
         expect(body, contains('_ServersCardHeadItem('));
         expect(body, contains('_subCardSubtitle(sub, members.length)'));
         expect(body, contains('members: members,'));
@@ -253,6 +265,6 @@ void main() {
   });
 
   test('pubspec is build 2133', () {
-    expect(pubspec, contains('version: 2.2.0+2146'));
+    expect(pubspec, contains('version: 2.2.0+2147'));
   });
 }

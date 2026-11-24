@@ -1327,8 +1327,42 @@ Future<List<DpiLabResult>> runDpiLabDiscovery({
   // leaves the sweep exactly as it was.
   Future<bool> Function(String candidateId)? prepareCandidate,
   Future<void> Function(String candidateId)? releaseCandidate,
+  // Build 2147 (feature #3): parallel candidate racing —
+  // DEFAULT OFF (the sequential sweep above is the historic
+  // behaviour; throwaway cores were never raced). When on,
+  // candidates probe in chunks of four; the full-sweep rule
+  // still holds — every candidate ends with its own result.
+  bool race = false,
 }) async {
   final results = <DpiLabResult>[];
+  if (race) {
+    if (!dpiLabEligible(profile)) return results;
+    final candidates = dpiLabCandidatesFor(
+      profile,
+    ).where((c) => !excludeIds.contains(c.id)).toList();
+    for (var i = 0; i < candidates.length; i += 4) {
+      if (isCancelled?.call() ?? false) break;
+      final chunk = candidates.skip(i).take(4).toList();
+      final chunkResults = await Future.wait([
+        for (final candidate in chunk)
+          _probeCandidate(
+            profile,
+            settings,
+            candidate,
+            measure,
+            endure,
+            serverHostPins: serverHostPins,
+            prepareCandidate: prepareCandidate,
+            releaseCandidate: releaseCandidate,
+          ),
+      ]);
+      for (final r in chunkResults) {
+        results.add(r);
+        onResult?.call(r);
+      }
+    }
+    return results;
+  }
   // The runner itself refuses a profile the Lab cannot
   // honestly grade (build 2107, verification iteration 1):
   // shipped callers gate elsewhere, but this pure surface

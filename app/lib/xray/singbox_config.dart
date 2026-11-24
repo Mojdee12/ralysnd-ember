@@ -133,6 +133,16 @@ String? singBoxConfigError(Profile p) {
         return 'This OpenConnect config has no username.';
       }
       return null;
+    case Protocol.ssh:
+      // Build 2147 (feature #6): the ssh outbound needs a
+      // server and SOME credential — a password or a
+      // private key (sing-box v1.14.4 option/ssh.go).
+      if (p.address.isEmpty) return 'This SSH config has no server.';
+      if (p.sshPassword.isEmpty && p.sshPrivateKey.isEmpty) {
+        return 'This SSH config has no credential. Add a password '
+            'or a private key in the editor.';
+      }
+      return null;
     default:
       return '${p.protocol.label} is not a sing-box protocol.';
   }
@@ -312,6 +322,25 @@ Map<String, dynamic> buildSingBoxConfig(
       if (p.obfs.isNotEmpty) 'obfs_mode': p.obfs,
       if (p.obfs.isNotEmpty && p.obfsPassword.isNotEmpty)
         'obfs_host': p.obfsPassword,
+    },
+    // SSH (build 2147, feature #6): sing-box 1.14.4's ssh
+    // outbound (option/ssh.go) — TCP-only (the outbound has
+    // no ListenPacket), which the editor states. The user
+    // defaults to root when the profile names none; the
+    // host-key pin rides as the `host_key` list verbatim
+    // (an OpenSSH-format key line from the editor).
+    Protocol.ssh => <String, dynamic>{
+      'type': 'ssh',
+      'tag': 'proxy',
+      'server': p.address,
+      'server_port': p.port,
+      'user': p.sshUser.isNotEmpty ? p.sshUser : 'root',
+      if (p.sshPassword.isNotEmpty) 'password': p.sshPassword,
+      if (p.sshPrivateKey.isNotEmpty)
+        'private_key': [p.sshPrivateKey],
+      if (p.sshPrivateKey.isNotEmpty && p.sshPrivateKeyPassphrase.isNotEmpty)
+        'private_key_passphrase': p.sshPrivateKeyPassphrase,
+      if (p.sshHostKeyPin.isNotEmpty) 'host_key': [p.sshHostKeyPin],
     },
     Protocol.naive => <String, dynamic>{
       'type': 'naive',

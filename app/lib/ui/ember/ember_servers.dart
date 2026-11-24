@@ -593,12 +593,16 @@ class _LocationRow extends StatelessWidget {
             ],
           ),
         ),
+        // Build 2147 (#22 + the picker steer): one slot, one
+        // size — the ping in its health colour, and a failed
+        // ping as 'Failed' in the failure colour at the SAME
+        // size (the pre-2147 row showed nothing for a failed
+        // location and a bold numeral for an answered one).
         if (ms > 0) ...[
           Text(
             '${latDigits(ms)} ${l.msUnit}',
             style: TextStyle(
               fontSize: Ember.fontBody,
-              fontWeight: FontWeight.w700,
               // Build 2074 (audit item 17): stale pings dim.
               color: stale ? MapUi.faint : mapPingColor(ms),
             ),
@@ -607,22 +611,17 @@ class _LocationRow extends StatelessWidget {
             const SizedBox(width: 5),
             Text('stale', style: Ember.caption.copyWith(color: MapUi.faint)),
           ],
+        ] else if (location.pingError.isNotEmpty) ...[
+          Text(
+            'Failed',
+            style: TextStyle(fontSize: Ember.fontBody, color: Ember.red),
+          ),
         ],
         if (selected) ...[
           const SizedBox(width: 8),
-          Container(
-            width: 20,
-            height: 20,
-            decoration: const BoxDecoration(
-              gradient: Ember.gradient,
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.check_rounded,
-              color: Color(0xFF1A1206),
-              size: 13,
-            ),
-          ),
+          // Build 2147 (#24 sweep): the sample's plain
+          // orange check replaces the gradient medallion.
+          const Icon(Icons.check_rounded, size: 18, color: Ember.orange),
         ],
       ],
     );
@@ -742,6 +741,10 @@ class _V2rayPageLead extends StatelessWidget {
     required this.onScan,
     required this.onAdd,
     this.onClose,
+    // Build 2147 (feature #21a): the manual ping-sweep
+    // trigger on the V2Ray page.
+    this.onPingSweep,
+    this.sweeping = false,
   });
 
   final Profile profile;
@@ -752,6 +755,8 @@ class _V2rayPageLead extends StatelessWidget {
   final VoidCallback onScan;
   final VoidCallback onAdd;
   final VoidCallback? onClose;
+  final VoidCallback? onPingSweep;
+  final bool sweeping;
 
   @override
   Widget build(BuildContext context) {
@@ -799,7 +804,18 @@ class _V2rayPageLead extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 6),
-            Text('V2RAY ENGINE', style: Ember.microLabel),
+            // Build 2147 (strict-audit F12): the status
+            // label flexes — at 360dp x 1.3 the tracked
+            // wordmark + status + close row overflowed by
+            // 19px; the label ellipsises instead.
+            Flexible(
+              child: Text(
+                'V2RAY ENGINE',
+                style: Ember.microLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
             if (onClose != null)
               IconButton(
                 tooltip: 'Close',
@@ -844,10 +860,13 @@ class _V2rayPageLead extends StatelessWidget {
         Text(
           profile.name,
           style: Ember.hero.copyWith(
+            // Build 2147 (strict-audit F7): the steps come
+            // down to the sample's measured name size —
+            // 44/36/30 (was 54/38/30).
             fontSize: profile.name.length <= 13
-                ? 54
+                ? 44
                 : profile.name.length <= 20
-                ? 38
+                ? 36
                 : 30,
           ),
           maxLines: 1,
@@ -885,6 +904,9 @@ class _V2rayPageLead extends StatelessWidget {
                         latDigits(delay),
                         style: Ember.numeral.copyWith(
                           fontSize: Ember.fontHeroPing,
+                          // Build 2147 (#22): the hero ping wears
+                          // the 2116 health colour, not white.
+                          color: mapPingColor(delay),
                         ),
                       ),
                       Padding(
@@ -962,8 +984,17 @@ class _V2rayPageLead extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     child: Row(
                       children: [
-                        Text('Ping this subscription', style: Ember.body),
-                        const Spacer(),
+                        // Build 2147 (strict-audit F12): the
+                        // label flexes — at 360dp x 2.0 this
+                        // row overflowed by 54px.
+                        Expanded(
+                          child: Text(
+                            'Ping this subscription',
+                            style: Ember.body,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                         Text(
                           pinging ? 'STOP' : 'RUN',
                           style: Ember.microLabelOrange,
@@ -972,6 +1003,36 @@ class _V2rayPageLead extends StatelessWidget {
                     ),
                   ),
                 ),
+                // Build 2147 (feature #21a): the manual sweep
+                // over EVERY config — the strike accounting
+                // and the auto-cut ride the same run while
+                // their gates are on in Settings.
+                if (onPingSweep != null)
+                  InkWell(
+                    onTap: sweeping ? null : onPingSweep,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Row(
+                        children: [
+                          // Build 2147 (strict-audit F12):
+                          // the label flexes, like the row
+                          // above (91px at 2.0x otherwise).
+                          Expanded(
+                            child: Text(
+                              'Ping sweep — all configs',
+                              style: Ember.body,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Text(
+                            sweeping ? 'SWEEPING' : 'RUN',
+                            style: Ember.microLabelOrange,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1220,6 +1281,10 @@ class _V2rayServersState extends State<_V2rayServers> {
           onRefresh: () => unawaited(_refreshSub(sub.id)),
           refreshing: _refreshingSubs.contains(sub.id),
           onPrune: () => unawaited(_pruneSub(sub.id, sub.name)),
+          // Build 2147 (feature #5).
+          balancerOn: xray.settings.balancerGroupIds.contains(sub.id),
+          onToggleBalancer: () =>
+              unawaited(_toggleBalancerGroup2147(sub.id)),
           subtitle: members.isEmpty
               ? 'No configs match'
               : _updatedAgo(sub.lastUpdatedMs),
@@ -1617,6 +1682,10 @@ class _V2rayServersState extends State<_V2rayServers> {
           onRefresh: () => unawaited(_refreshSub(sub.id)),
           refreshing: _refreshingSubs.contains(sub.id),
           onPrune: () => unawaited(_pruneSub(sub.id, sub.name)),
+          // Build 2147 (feature #5).
+          balancerOn: xray.settings.balancerGroupIds.contains(sub.id),
+          onToggleBalancer: () =>
+              unawaited(_toggleBalancerGroup2147(sub.id)),
           trafficUsedBytes: sub.usedBytes,
           trafficTotalBytes: sub.totalBytes,
           // Build 2145: the head's expires micro line —
@@ -1630,6 +1699,13 @@ class _V2rayServersState extends State<_V2rayServers> {
                     ? l.daysLeft(latDigits(sub.remainingDays))
                     : 'Expires today')
               : '',
+          // Build 2147 (strict-audit F4): the warning
+          // states, for the head's red treatment.
+          trafficExpired:
+              sub.expireEpochSec > 0 &&
+              sub.expireEpochSec <=
+                  DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          trafficLow: sub.quotaLow,
           trafficRemainingBytes: sub.totalBytes > 0
               ? (sub.totalBytes - sub.usedBytes).clamp(0, sub.totalBytes)
               : -1,
@@ -1833,6 +1909,10 @@ class _V2rayServersState extends State<_V2rayServers> {
                           onAdd: () =>
                               showAddSubscriptionSheet(context, xray),
                           onClose: widget.onClose,
+                          // Build 2147 (feature #21a).
+                          onPingSweep: () =>
+                              unawaited(_runPingSweep2147()),
+                          sweeping: _sweeping2147,
                         )
                       else
                         Row(
@@ -2361,6 +2441,44 @@ class _V2rayServersState extends State<_V2rayServers> {
   /// a success is confirmed, not silent.
   final Set<String> _refreshingSubs = {};
 
+  /// Build 2147 (feature #21a): the V2Ray page's manual
+  /// ping sweep — every config delay-tested once; the
+  /// tallies land in a snackbar.
+  bool _sweeping2147 = false;
+
+  Future<void> _runPingSweep2147() async {
+    if (_sweeping2147) return;
+    setState(() => _sweeping2147 = true);
+    try {
+      final r = await xray.runPingSweep();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Ping sweep: ${r.tested} tested · ${r.answered} '
+              'answered · ${r.cut} cut to quarantine',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sweeping2147 = false);
+    }
+  }
+
+  /// Build 2147 (feature #5): the per-group balancer opt-in.
+  Future<void> _toggleBalancerGroup2147(String subId) async {
+    final ids = xray.settings.balancerGroupIds;
+    if (ids.contains(subId)) {
+      ids.remove(subId);
+    } else {
+      ids.add(subId);
+    }
+    await xray.save();
+    xray.notifySettingsChanged();
+    if (mounted) setState(() {});
+  }
+
   Future<void> _refreshSub(String id) async {
     final sub = xray.subscriptions.where((s) => s.id == id).firstOrNull;
     if (sub == null || _refreshingSubs.contains(id)) return;
@@ -2690,6 +2808,9 @@ class _ServersGroupHeaderItem extends _ServersItem {
     this.onRefresh,
     this.onPrune,
     this.refreshing = false,
+    // Build 2147 (feature #5): the balancer opt-in state.
+    this.balancerOn,
+    this.onToggleBalancer,
   });
   final String title;
 
@@ -2707,6 +2828,11 @@ class _ServersGroupHeaderItem extends _ServersItem {
   /// Build 2065 (item 12): keep-only-fastest-N for this
   /// subscription group; null on non-subscription groups.
   final VoidCallback? onPrune;
+
+  /// Build 2147 (feature #5): whether this subscription
+  /// group rides the balancer; null hides the menu entry.
+  final bool? balancerOn;
+  final VoidCallback? onToggleBalancer;
 }
 
 class _ServersProfileItem extends _ServersItem {
@@ -2752,11 +2878,16 @@ class _ServersCardHeadItem extends _ServersItem {
     this.onRefresh,
     this.refreshing = false,
     this.onPrune,
+    this.balancerOn,
+    this.onToggleBalancer,
     this.trafficRemainingBytes = -1,
     this.trafficFraction = 0,
     this.trafficUsedBytes = 0,
     this.trafficTotalBytes = 0,
     this.trafficExpiresLine = '',
+    // Build 2147 (strict-audit F4).
+    this.trafficExpired = false,
+    this.trafficLow = false,
   });
   final String title;
   final String subtitle;
@@ -2788,6 +2919,17 @@ class _ServersCardHeadItem extends _ServersItem {
   final VoidCallback? onRefresh;
   final bool refreshing;
   final VoidCallback? onPrune;
+
+  /// Build 2147 (feature #5): see _ServersGroupHeaderItem.
+  final bool? balancerOn;
+  final VoidCallback? onToggleBalancer;
+
+  /// Build 2147 (strict-audit F4): the subscription is
+  /// expired / running low — the head's remaining and
+  /// expires lines turn red, as the Subscriptions page's
+  /// already do.
+  final bool trafficExpired;
+  final bool trafficLow;
 }
 
 /// Build 2133: one server row inside an expanded group
@@ -2845,6 +2987,14 @@ class _GroupCardHead extends StatelessWidget {
   final bool refreshing;
   final VoidCallback? onPrune;
 
+  /// Build 2147 (feature #5): see _ServersGroupHeaderItem.
+  final bool? balancerOn;
+  final VoidCallback? onToggleBalancer;
+
+  /// Build 2147 (strict-audit F4): see _ServersCardHeadItem.
+  final bool trafficExpired;
+  final bool trafficLow;
+
   /// Build 2144 (reskin): see [_ServersCardHeadItem] — the
   /// stored remaining traffic as hero numeral + progress.
   /// Build 2145: plus the used/total pair and expiry line
@@ -2871,11 +3021,16 @@ class _GroupCardHead extends StatelessWidget {
     this.onRefresh,
     this.refreshing = false,
     this.onPrune,
+    this.balancerOn,
+    this.onToggleBalancer,
     this.trafficRemainingBytes = -1,
     this.trafficFraction = 0,
     this.trafficUsedBytes = 0,
     this.trafficTotalBytes = 0,
     this.trafficExpiresLine = '',
+    // Build 2147 (strict-audit F4).
+    this.trafficExpired = false,
+    this.trafficLow = false,
   });
 
   @override
@@ -2920,7 +3075,7 @@ class _GroupCardHead extends StatelessWidget {
               // into a head overflow menu — the title column
               // gains its 48dp back; Refresh, Ping and the
               // chevron stay visible.
-              if (onPrune != null)
+              if (onPrune != null || onToggleBalancer != null)
                 PopupMenuButton<String>(
                   tooltip: 'More actions',
                   icon: const Icon(
@@ -2934,12 +3089,23 @@ class _GroupCardHead extends StatelessWidget {
                   ),
                   onSelected: (v) {
                     if (v == 'prune') onPrune!();
+                    if (v == 'balancer') onToggleBalancer!();
                   },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'prune',
-                      child: Text('Keep only fastest'),
-                    ),
+                  itemBuilder: (_) => [
+                    if (onPrune != null)
+                      const PopupMenuItem(
+                        value: 'prune',
+                        child: Text('Keep only fastest'),
+                      ),
+                    if (onToggleBalancer != null)
+                      PopupMenuItem(
+                        value: 'balancer',
+                        child: Text(
+                          balancerOn == true
+                              ? 'Balancer mode: on'
+                              : 'Balancer mode: off',
+                        ),
+                      ),
                   ],
                 ),
               if (onRefresh != null)
@@ -3011,7 +3177,12 @@ class _GroupCardHead extends StatelessWidget {
                     Flexible(
                       child: Text(
                         parts.first,
-                        style: Ember.numeral,
+                        // Build 2147 (strict-audit F4): a
+                        // low/expired subscription's
+                        // remaining figure turns red.
+                        style: trafficLow || trafficExpired
+                            ? Ember.numeral.copyWith(color: Ember.red)
+                            : Ember.numeral,
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
@@ -3021,10 +3192,12 @@ class _GroupCardHead extends StatelessWidget {
                       const SizedBox(width: 8),
                       Text(
                         parts.sublist(1).join(' '),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: Ember.fontDisplay,
                           fontWeight: FontWeight.w300,
-                          color: MapUi.text,
+                          color: trafficLow || trafficExpired
+                              ? Ember.red
+                              : MapUi.text,
                         ),
                       ),
                     ],
@@ -3036,7 +3209,10 @@ class _GroupCardHead extends StatelessWidget {
             LinearProgressIndicator(
               value: trafficFraction,
               minHeight: 2,
-              color: Ember.orange,
+              // Build 2147 (strict-audit F4).
+              color: trafficLow || trafficExpired
+                  ? Ember.red
+                  : Ember.orange,
               backgroundColor: MapUi.line,
             ),
             if (trafficTotalBytes > 0) ...[
@@ -3049,7 +3225,12 @@ class _GroupCardHead extends StatelessWidget {
             ],
             if (trafficExpiresLine.isNotEmpty) ...[
               const SizedBox(height: 4),
-              Text(trafficExpiresLine, style: Ember.microLabel),
+              Text(
+                trafficExpiresLine,
+                style: trafficExpired || trafficLow
+                    ? Ember.microLabel.copyWith(color: Ember.red)
+                    : Ember.microLabel,
+              ),
             ],
           ],
           const SizedBox(height: 4),
@@ -3118,6 +3299,9 @@ class _GroupHeader extends StatelessWidget {
     this.onRefresh,
     this.onPrune,
     this.refreshing = false,
+    // Build 2147 (feature #5).
+    this.balancerOn,
+    this.onToggleBalancer,
   });
 
   /// Build 2092 (item 28): see _ServersGroupHeaderItem.
@@ -3134,6 +3318,10 @@ class _GroupHeader extends StatelessWidget {
   final String subtitle;
   final VoidCallback? onRefresh;
   final VoidCallback? onPrune;
+
+  /// Build 2147 (feature #5): see _ServersGroupHeaderItem.
+  final bool? balancerOn;
+  final VoidCallback? onToggleBalancer;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -3177,6 +3365,21 @@ class _GroupHeader extends StatelessWidget {
       // Build 2074 (audit item 4): prune / refresh get the
       // full 48 dp hit area — icons unchanged, the compact
       // density that shrank them is gone.
+      // Build 2147 (feature #5): the balancer opt-in for
+      // this subscription group — orange while on.
+      if (onToggleBalancer != null)
+        IconButton(
+          onPressed: onToggleBalancer,
+          tooltip: balancerOn == true
+              ? 'Balancer mode: on'
+              : 'Balancer mode: off',
+          icon: Icon(
+            Icons.hub_rounded,
+            color: balancerOn == true ? Ember.orange : Ember.dim,
+            size: 18,
+          ),
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        ),
       if (onPrune != null)
         IconButton(
           onPressed: onPrune,
@@ -3304,6 +3507,13 @@ class _ProfileRow extends StatelessWidget {
         // pill text — the value is the same stored delay.
         // Build 2145 (composition rebuild): the numeral
         // moves to the sample's hero scale (fontHero).
+        // Build 2147 (#22 + owner defect report 2026-11-24):
+        // the numeral wears the 2116 health colour
+        // (mapPingColor), never white — and the Failed state
+        // below renders at THIS SAME size in the failure
+        // colour: one slot, one size (the failed label used
+        // to be a tiny fontSmall pill next to a 54 dp
+        // numeral — the owner's mismatched pair).
         return Row(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -3311,10 +3521,10 @@ class _ProfileRow extends StatelessWidget {
           children: [
             Text(
               latDigits(profile.delayMs),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: Ember.fontHero,
                 fontWeight: FontWeight.w300,
-                color: MapUi.text,
+                color: mapPingColor(profile.delayMs),
               ),
             ),
             const SizedBox(width: 3),
@@ -3329,7 +3539,18 @@ class _ProfileRow extends StatelessWidget {
         return const _PingPill(text: 'Sidecar busy', color: Ember.orange);
       }
       if (profile.delayFailed) {
-        return const _PingPill(text: 'Failed', color: Ember.red);
+        // Build 2147 (owner defect report 2026-11-24): the
+        // failed state takes the ping slot's own size
+        // (fontHero, light) in the failure colour — one slot,
+        // one size; never the tiny pill label again.
+        return const Text(
+          'Failed',
+          style: TextStyle(
+            fontSize: Ember.fontHero,
+            fontWeight: FontWeight.w300,
+            color: Ember.red,
+          ),
+        );
       }
       // Build 2075: the block icon means NO engine serves
       // the protocol — sidecar-served protocols (TUIC,
@@ -4170,6 +4391,8 @@ Widget build(BuildContext context) {
         onRefresh: item.onRefresh,
         refreshing: item.refreshing,
         onPrune: item.onPrune,
+        balancerOn: item.balancerOn,
+        onToggleBalancer: item.onToggleBalancer,
         count: item.count,
       ),
     );
@@ -4208,6 +4431,10 @@ Widget build(BuildContext context) {
         onRefresh: item.onRefresh,
         refreshing: item.refreshing,
         onPrune: item.onPrune,
+        balancerOn: item.balancerOn,
+        onToggleBalancer: item.onToggleBalancer,
+        trafficExpired: item.trafficExpired,
+        trafficLow: item.trafficLow,
         trafficRemainingBytes: item.trafficRemainingBytes,
         trafficFraction: item.trafficFraction,
         trafficUsedBytes: item.trafficUsedBytes,

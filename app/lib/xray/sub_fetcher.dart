@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
 
+import 'iran_features_2147.dart';
 import 'link_parser.dart';
 import 'profile_validation.dart';
 import 'sha256.dart';
@@ -22,6 +23,12 @@ class SubResult {
   /// True when the primary URL failed and the subscription's
   /// fallback URL served the body instead (build 2050).
   final bool usedFallback;
+
+  /// Build 2147 (features #18/#21b): the distinct link
+  /// schemes in the body that NO engine in Ember serves —
+  /// they were skipped at parse, and the refresh journals
+  /// them by name instead of dropping them in silence.
+  final List<String> unsupportedSchemes;
   const SubResult({
     required this.profiles,
     this.uploadBytes = 0,
@@ -30,6 +37,7 @@ class SubResult {
     this.expireEpochSec = 0,
     this.suggestedName,
     this.usedFallback = false,
+    this.unsupportedSchemes = const [],
   });
 }
 
@@ -365,6 +373,13 @@ const v2goPresets = <SubPreset>[
 ///   DNS-poisoned name still fetches.
 /// - [fallbackUrl]: tried once when the primary fails with a
 ///   network error, a timeout, a DNS failure, or a 5xx.
+/// Build 2147 (feature #1): the active session's local
+/// proxy directive for subscription fetches ('SOCKS
+/// 127.0.0.1:<port>'), maintained by XrayController while a
+/// session is up and the fetchViaTunnel gate is on. '' =
+/// direct fetches, as in every earlier build.
+String subFetchProxyDirective = '';
+
 Future<SubResult> fetchSubscription(
   String url, {
   String certPin = '',
@@ -410,6 +425,7 @@ Future<SubResult> fetchSubscription(
       expireEpochSec: result.expireEpochSec,
       suggestedName: result.suggestedName,
       usedFallback: true,
+      unsupportedSchemes: result.unsupportedSchemes,
     );
   }
 }
@@ -475,6 +491,13 @@ Future<SubResult> _fetchOnce(
   }
 
   final client = HttpClient();
+  // Build 2147 (feature #1): the fetch-via-tunnel seam — the
+  // controller sets [subFetchProxyDirective] while a session
+  // is up and the gate is on; '' keeps every fetch direct,
+  // byte-identical to every earlier build.
+  if (subFetchProxyDirective.isNotEmpty) {
+    client.findProxy = (_) => subFetchProxyDirective;
+  }
   client.connectionTimeout = const Duration(seconds: 20);
   client.userAgent = 'v2rayNG/1.9.5 RalysndEmber/2.0';
   client.badCertificateCallback = certDecision;
@@ -583,6 +606,7 @@ Future<SubResult> _fetchOnce(
       totalBytes: info.$3,
       expireEpochSec: info.$4,
       suggestedName: _decodeTitle(title),
+      unsupportedSchemes: unsupportedSchemesInBody(body),
     );
   } on SubFetchException {
     rethrow;

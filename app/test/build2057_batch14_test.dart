@@ -137,20 +137,20 @@ void main() {
       // folding to two columns on short windows (compactRail,
       // the build 2057 mechanism). 2074's scroller machinery is
       // gone; every other 2074 UI fix stands.
+      // PIN UPDATED by build 2147 (fix item #23, owner device
+      // verdict 2026-11-24 on shipped 2146): the stacked tower
+      // is superseded by the owner's newer order — on non-Home
+      // tabs the header is now slim (the Home brand line + ONE
+      // horizontal, scrollable chip row), so the pins below
+      // follow the intentional change: the horizontal strip is
+      // back by order, the Wrap stack and compactRail are gone.
       final src = _dart('ui/ember/ember_shell.dart');
-      expect(src.contains('scrollDirection: Axis.horizontal'), isFalse);
+      expect(src.contains('scrollDirection: Axis.horizontal'), isTrue);
       expect(src.contains('_railController'), isFalse);
-      expect(src.contains('compactRail'), isTrue);
-      // Build 2083 (owner's device report on 2079): the rail's
-      // run spacing tightened 5 → 3 (with the 36 px chip box)
-      // — this pin follows the intentional change.
-      // Build 2092 (items 34/60): run spacing 3 → 0 — the chip
-      // box already carries 3+3 dp of slack, so the
-      // glass-to-glass gap is 6 dp, matching the horizontal
-      // spacing. This pin follows that change too.
+      expect(src.contains('compactRail'), isFalse);
       expect(
         src.contains('Wrap(spacing: 6, runSpacing: 0, children: rail)'),
-        isTrue,
+        isFalse,
       );
     });
   });

@@ -20,6 +20,7 @@ import '../../lantern/lantern_controller.dart';
 import '../../l10n/app_localizations.dart';
 import '../../openvpn/openvpn_controller.dart';
 import 'automation_pages.dart';
+import 'iran_pages_2147.dart';
 import '../../platform.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../xray/config_builder.dart'
@@ -139,6 +140,12 @@ class EmberSettings extends StatelessWidget {
           _WarpSection(xray: xray, name: 'MASQUE', controller: masque)
         else
           _MozillaSection(core: core, bootstrap: bootstrap),
+        // Build 2147: the Iran-features panel — every gate
+        // DEFAULT OFF; off means the 2146 behaviour exactly.
+        if (v2ray) ...[
+          const SizedBox(height: 14),
+          _IranFeatures2147Panel(xray: xray),
+        ],
         const SizedBox(height: 14),
         // Build 2065: the automation surface — the cross-engine
         // fallback chain (item 5), the auto-connect triggers
@@ -608,7 +615,8 @@ Route<T> _emberPageRoute<T>(String title, Widget child) => MaterialPageRoute<T>(
       foregroundColor: Ember.text,
       title: Text(title, style: Ember.heading),
     ),
-    body: EmberBackground(child: child),
+    // Build 2147 (strict-audit F1): the short, faint band.
+    body: EmberBackground(bandShort: true, child: child),
   ),
 );
 
@@ -4748,6 +4756,279 @@ class _AppUpdatesPanelState extends State<_AppUpdatesPanel> {
           ],
         );
       },
+    );
+  }
+}
+
+/// Build 2147: the Iran-features panel. Every toggle is a
+/// DEFAULT-OFF gate on XraySettings; the panel is the one
+/// place they are all reachable from. Saving goes through
+/// the controller's public save + notify, like every other
+/// section.
+class _IranFeatures2147Panel extends StatefulWidget {
+  const _IranFeatures2147Panel({required this.xray});
+  final XrayController xray;
+  @override
+  State<_IranFeatures2147Panel> createState() =>
+      _IranFeatures2147PanelState();
+}
+
+class _IranFeatures2147PanelState
+    extends State<_IranFeatures2147Panel> {
+  bool _sweeping = false;
+  String _sweepNote = '';
+
+  XraySettings get s => widget.xray.settings;
+
+  Future<void> _save() async {
+    await widget.xray.save();
+    widget.xray.notifySettingsChanged();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _editInt(
+    String title,
+    int current,
+    void Function(int) apply,
+  ) async {
+    final controller = TextEditingController(text: '$current');
+    final value = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Number'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(
+              context,
+            ).pop(int.tryParse(controller.text.trim())),
+            child: const Text('SAVE'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value != null) {
+      apply(value);
+      await _save();
+    }
+  }
+
+  MapSettingRow _toggle(
+    String label,
+    String subtitle,
+    bool value,
+    void Function(bool) apply,
+  ) {
+    return MapSettingRow(
+      label: label,
+      subtitle: subtitle,
+      trailing: MapToggle(
+        value: value,
+        onChanged: (v) async {
+          apply(v);
+          await _save();
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final xray = widget.xray;
+    return MapSettingsPanel(
+      title: 'Iran features (2147)',
+      children: [
+        _toggle(
+          'Fetch via tunnel',
+          'Subscription refreshes, the app update check and '
+              'RegionHop panel calls ride the running tunnel '
+              'instead of the open network',
+          s.fetchViaTunnel,
+          (v) => s.fetchViaTunnel = v,
+        ),
+        _toggle(
+          'Auto MTU discovery',
+          s.autoMtuFound > 0
+              ? 'Probes the path before connecting and uses '
+                    'the largest MTU that answers — last found '
+                    '${s.autoMtuFound}'
+              : 'Probes the path before connecting and uses '
+                    'the largest MTU that answers',
+          s.autoMtu,
+          (v) => s.autoMtu = v,
+        ),
+        _toggle(
+          'DPI Lab racing',
+          'Probes Lab candidates four at a time instead of '
+              'one by one — faster, and the cores contend',
+          s.dpiLabRacing,
+          (v) => s.dpiLabRacing = v,
+        ),
+        _toggle(
+          'SSH engine',
+          'Serves ssh:// configs through the sidecar (TCP '
+              'only). Off: an SSH config refuses in plain words',
+          s.sidecarSshEnabled,
+          (v) => s.sidecarSshEnabled = v,
+        ),
+        _toggle(
+          'Stall failover',
+          'When the downlink stops moving, move the session '
+              'to the next config in its group instead of only '
+              'changing shape',
+          s.stallFailover,
+          (v) => s.stallFailover = v,
+        ),
+        MapSettingRow(
+          label: 'Stall failover window',
+          subtitle: '${s.stallFailoverSeconds} seconds without '
+              'downlink before the move',
+          trailing: _navChevron,
+          onTap: () => _editInt(
+            'Stall failover window (seconds)',
+            s.stallFailoverSeconds,
+            (v) => s.stallFailoverSeconds = v < 5 ? 5 : v,
+          ),
+        ),
+        _toggle(
+          'Exit monitor',
+          'Re-checks the exit every minute while connected '
+              'and journals a mid-session exit move',
+          s.exitMonitorEnabled,
+          (v) => s.exitMonitorEnabled = v,
+        ),
+        _toggle(
+          'Scheduled tests',
+          'Delay-tests the starred configs on an interval '
+              'so dead favourites are visible before you need '
+              'them',
+          s.scheduledTests,
+          (v) => s.scheduledTests = v,
+        ),
+        MapSettingRow(
+          label: 'Scheduled test interval',
+          subtitle: 'Every ${s.scheduledTestIntervalMin} minutes',
+          trailing: _navChevron,
+          onTap: () => _editInt(
+            'Scheduled test interval (minutes)',
+            s.scheduledTestIntervalMin,
+            (v) => s.scheduledTestIntervalMin = v < 5 ? 5 : v,
+          ),
+        ),
+        _toggle(
+          'Import safety filter',
+          'Names unsupported protocols at import and warns '
+              'about local endpoints and tracker-shaped link '
+              'payloads. Warns — never blocks',
+          s.importSafetyFilter,
+          (v) => s.importSafetyFilter = v,
+        ),
+        _toggle(
+          'Quarantine',
+          'A config that fails 3 times on this network is '
+              'badged and skipped by automatic picks until '
+              'restored',
+          s.quarantineEnabled,
+          (v) => s.quarantineEnabled = v,
+        ),
+        MapSettingRow(
+          label: 'Quarantine list',
+          subtitle: xray.quarantinedProfiles.isEmpty
+              ? 'Nothing quarantined'
+              : '${xray.quarantinedProfiles.length} config(s) cut — '
+                    'restore them here',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => QuarantinePage2147(xray: xray),
+            ),
+          ),
+        ),
+        _toggle(
+          'Ping sweep & auto-cut',
+          'Sweeps a delay test over every config (hourly '
+              'while on); configs that keep not answering are '
+              'cut to the quarantine list — restorable, never '
+              'deleted',
+          s.pingSweepEnabled,
+          (v) => s.pingSweepEnabled = v,
+        ),
+        MapSettingRow(
+          label: 'Sweep cut threshold',
+          subtitle: 'Cut after ${s.pingSweepFailStrikes} '
+              'consecutive unanswered sweeps',
+          trailing: _navChevron,
+          onTap: () => _editInt(
+            'Sweep cut threshold (sweeps)',
+            s.pingSweepFailStrikes,
+            (v) => s.pingSweepFailStrikes = v < 1 ? 1 : v,
+          ),
+        ),
+        MapSettingRow(
+          label: 'Run ping sweep now',
+          subtitle: _sweeping
+              ? 'Sweeping…'
+              : _sweepNote.isEmpty
+              ? 'Delay-tests every config once, right now'
+              : _sweepNote,
+          trailing: _navChevron,
+          onTap: _sweeping
+              ? null
+              : () async {
+                  setState(() => _sweeping = true);
+                  final r = await xray.runPingSweep();
+                  if (mounted) {
+                    setState(() {
+                      _sweeping = false;
+                      _sweepNote =
+                          '${r.tested} tested · ${r.answered} '
+                          'answered · ${r.cut} cut';
+                    });
+                  }
+                },
+        ),
+        _toggle(
+          'Whitelist SNI scan',
+          'Enables the scan page: real TLS handshakes to '
+              'candidate fronts, ranked by answer time',
+          s.sniScanEnabled,
+          (v) => s.sniScanEnabled = v,
+        ),
+        if (s.sniScanEnabled)
+          MapSettingRow(
+            label: 'Run SNI scan',
+            subtitle: 'Finds which fronts this network lets '
+                'through',
+            trailing: _navChevron,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const SniScanPage2147(),
+              ),
+            ),
+          ),
+        MapSettingRow(
+          label: 'Guided diagnosis',
+          subtitle: 'DNS → TCP → TLS → first request, with '
+              'the remedy for the first failed rung',
+          divider: false,
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => DiagnosisPage2147(xray: xray),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

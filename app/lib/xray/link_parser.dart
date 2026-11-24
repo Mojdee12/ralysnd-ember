@@ -175,6 +175,10 @@ Profile? _parseLinkRaw(String rawLink) {
   if (link.startsWith('tailscale://')) return _tailscale(link);
   if (link.startsWith('openconnect://')) return _openconnect(link);
   if (link.startsWith('sudoku://')) return _sudoku(link);
+  // Build 2147 (feature #6): ssh://user:password@host:port#name
+  // — the sing-box sidecar's ssh outbound, behind the
+  // sidecarSshEnabled settings gate at connect time.
+  if (link.startsWith('ssh://')) return _ssh(link);
   if (link.startsWith('anytls://')) return _anytls(link);
   if (link.startsWith('socks://') || link.startsWith('socks5://')) {
     return _socks(link);
@@ -1224,6 +1228,47 @@ Profile? _http(String link) {
 ///   socks://host:port#name                     (no auth)
 /// Parsed by hand like ss:// — _authority insists on a userinfo part,
 /// which the no-auth form does not have.
+/// Build 2147 (feature #6): an ssh:// link — userinfo is
+/// user[:password]; the port defaults to 22 when the link
+/// carries none (the shared _authority parser requires an
+/// explicit port, so the no-port shape is retried with the
+/// default appended). A private key cannot ride a link; it
+/// is added in the editor.
+Profile? _ssh(String link) {
+  var a = _authority(link, 'ssh');
+  if (a == null) {
+    // No userinfo and/or no port: rebuild the authority with
+    // the default port and retry once.
+    final rest = link.substring('ssh://'.length);
+    final hash = rest.indexOf('#');
+    final frag = hash >= 0 ? rest.substring(hash) : '';
+    var main = hash >= 0 ? rest.substring(0, hash) : rest;
+    final q = main.indexOf('?');
+    final query = q >= 0 ? main.substring(q) : '';
+    if (q >= 0) main = main.substring(0, q);
+    final at = main.lastIndexOf('@');
+    final hostPart = at >= 0 ? main.substring(at + 1) : main;
+    if (!hostPart.contains(':') && !hostPart.startsWith('[')) {
+      final rebuilt =
+          'ssh://${at >= 0 ? '${main.substring(0, at + 1)}' : ''}'
+          '$hostPart:22$query$frag';
+      a = _authority(rebuilt, 'ssh');
+    }
+  }
+  if (a == null || a.host.isEmpty) return null;
+  final ui = a.userInfo;
+  final cut = ui.indexOf(':');
+  return Profile(
+    id: newProfileId(),
+    name: a.name,
+    protocol: Protocol.ssh,
+    address: a.host,
+    port: a.port,
+    sshUser: cut >= 0 ? ui.substring(0, cut) : ui,
+    sshPassword: cut >= 0 ? ui.substring(cut + 1) : '',
+  );
+}
+
 Profile? _socks(String link) {
   final scheme = link.startsWith('socks5://') ? 'socks5' : 'socks';
   var main = link.substring(scheme.length + 3);

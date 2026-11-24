@@ -196,7 +196,7 @@ void main() {
   setUpAll(_loadRealFonts);
 
   test('pubspec is 2.2.0+2126', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2146'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2147'));
   });
 
   test('brand panel is back to the pre-2118 compact footprint', () {
@@ -215,12 +215,22 @@ void main() {
   });
 
   test('shell header: Spacer back, weighted 7:2; stretch gone', () {
+    // PIN UPDATED by build 2147 (fix item #23, owner device
+    // verdict 2026-11-24 on shipped 2146): the 2121 header
+    // arrangement (brand panel + 7:2 Spacer + stacked corner
+    // rail) is superseded on non-Home tabs by the slim header
+    // — the Home brand line plus ONE horizontal, scrollable
+    // chip row. The pins follow the intentional change; the
+    // brand-panel pins above stand (the widget still exists
+    // in map_widgets.dart), and the rail-order pin below
+    // stands (same names, same order, same chips).
     final shell = _read('lib/ui/ember/ember_shell.dart');
     final header = _between(shell, 'Widget _header()', 'Widget build(');
-    expect(header, contains('flex: 7'));
-    expect(header, contains('Spacer(flex: 2)'));
-    expect(header, isNot(contains('SizedBox(width: 12)')));
-    expect(header, contains('MapBrandPanel('));
+    expect(header, isNot(contains('flex: 7')));
+    expect(header, isNot(contains('Spacer(flex: 2)')));
+    expect(header, isNot(contains('MapBrandPanel(')));
+    expect(header, contains('scrollDirection: Axis.horizontal'));
+    expect(header, contains('SingleChildScrollView'));
   });
 
   test('engine rail order is unchanged in the header source', () {

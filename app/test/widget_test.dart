@@ -1412,7 +1412,22 @@ void main() {
     // "All settings" opens the legacy tree under its own back
     // bar; a section page backs out to the sections list, and
     // the page backs out to Ember Settings.
-    await tester.scrollUntilVisible(find.text('All settings'), 200);
+    // Build 2147 (fix item #23 harness note): the slim
+    // header's chip row added a second on-screen Scrollable,
+    // so the implicit single-Scrollable lookup in
+    // scrollUntilVisible now fails — pass the settings list's
+    // own Scrollable explicitly, as the Core logs step above
+    // already does.
+    await tester.scrollUntilVisible(
+      find.text('All settings'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView).first,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('All settings'));
     await tester.pumpAndSettle();
@@ -1470,7 +1485,19 @@ void main() {
     // Settings' above.
     await tester.tap(find.byTooltip('Settings'));
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('همه تنظیمات'), 200);
+    // Build 2147 (fix item #23 harness note): explicit
+    // Scrollable, as in the English journey above — the slim
+    // header's chip row is a second on-screen Scrollable now.
+    await tester.scrollUntilVisible(
+      find.text('همه تنظیمات'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView).first,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('همه تنظیمات'));
     await tester.pumpAndSettle();

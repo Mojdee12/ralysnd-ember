@@ -40,7 +40,7 @@ String _between(String text, String from, String to) {
 
 void main() {
   test('pubspec is 2.2.0+2119', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2146'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2147'));
   });
 
   test('backdrop asset is a 3200px WebP over 600 KB', () {
@@ -97,10 +97,16 @@ void main() {
     // the Spacer is back (weighted 7:2, not 50/50) so the
     // brand hugs the top-left at its compact width and the
     // engine rail stays in the corner like before.
+    // PIN UPDATED by build 2147 (fix item #23, owner device
+    // verdict 2026-11-24 on shipped 2146): the whole tower —
+    // brand panel, Spacer split and stacked rail — is
+    // superseded by the slim non-Home header (Home brand line
+    // + one horizontal chip row). The pins follow the change.
     final shell = _read('lib/ui/ember/ember_shell.dart');
     final header = _between(shell, 'Widget _header()', 'Widget build(');
-    expect(header, contains('Spacer(flex: 2)'));
-    expect(header, contains('MapBrandPanel('));
+    expect(header, isNot(contains('Spacer(flex: 2)')));
+    expect(header, isNot(contains('MapBrandPanel(')));
+    expect(header, contains('scrollDirection: Axis.horizontal'));
   });
 
   test('server latency is bare text, not a bordered pill', () {

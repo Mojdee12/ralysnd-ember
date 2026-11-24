@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -44,6 +45,8 @@ import 'sidecar_platform.dart';
 import 'singbox_config.dart';
 import 'sudoku_config.dart';
 import 'hwid.dart';
+import '../regionhop/regionhop_client.dart';
+import 'iran_features_2147.dart';
 import 'sub_fetcher.dart';
 import 'traffic_history.dart';
 import 'warp_args.dart';
@@ -959,6 +962,30 @@ class XrayController extends ChangeNotifier {
   void markFallbackFailed(String profileId) {
     _hydrateCooldowns();
     final now = DateTime.now();
+    // Build 2147 (feature #20): the quarantine strike count —
+    // per-network handshake-failure accounting on the same
+    // failure point the cooldown uses. Gate DEFAULT OFF: a
+    // store that never enables it counts nothing.
+    if (settings.quarantineEnabled) {
+      final p = _profileById(profileId);
+      if (p != null && !p.quarantined) {
+        final next = nextQuarantineStrikes(p, networkFp);
+        p.quarantineStrikes = next.strikes;
+        p.quarantineNetwork = next.network;
+        if (next.strikes >= 3) {
+          p.quarantined = true;
+          p.quarantineReason =
+              'Failed 3 times on this network (build 2147 quarantine)';
+          diagnostics.add(
+            'quarantine',
+            '${p.name} was quarantined after 3 failed attempts '
+                'on this network. It stays in the list and can '
+                'be restored from the quarantine surface.',
+            ok: false,
+          );
+        }
+      }
+    }
     _fallbackFailedAt[profileId] = now;
     // Build 2060: the cooldown survives a restart — the epoch
     // goes into the persisted settings alongside the memory map.
@@ -977,12 +1004,15 @@ class XrayController extends ChangeNotifier {
   /// the connect-time fallback in [connect]. The country
   /// exclusion list (build 2075, item 16) applies here, so
   /// every automatic pick honours it.
-  List<Profile> fallbackCandidates(Profile p) => fallbackOrder(
-    all: profiles,
-    current: p,
-    coolingDownIds: _coolingDownIds,
-    excludedCountryCodes: settings.excludedCountries.toSet(),
-  );
+  List<Profile> fallbackCandidates(Profile p) =>
+      // Build 2147 (features #20/#21a): automatic picks never
+      // land on a quarantined profile.
+      fallbackOrder(
+        all: profiles,
+        current: p,
+        coolingDownIds: _coolingDownIds,
+        excludedCountryCodes: settings.excludedCountries.toSet(),
+      ).where((c) => !c.quarantined).toList();
 
   /// Cloudflare edge IPs the in-app scanner found answering on
   /// this network; they are probed first on the next scan.
@@ -1846,6 +1876,14 @@ class XrayController extends ChangeNotifier {
     // toggle and the chips controlled nothing at all. The
     // staleness check itself still honours each
     // subscription's own toggle and the hours threshold.
+    // Build 2147 (features #17/#21a): the housekeeping
+    // timer — scheduled profile tests and the scheduled
+    // ping sweep ride it. Both gates DEFAULT OFF; with both
+    // off the tick is a no-op and the timer costs nothing.
+    _housekeepingTimer2147 ??= Timer.periodic(
+      const Duration(minutes: 5),
+      (_) => unawaited(_housekeepingTick2147()),
+    );
     _subAutoTimer ??= Timer.periodic(const Duration(minutes: 30), (_) {
       unawaited(_autoUpdateStale());
     });
@@ -2720,6 +2758,33 @@ class XrayController extends ChangeNotifier {
         }
       }
     }
+    // Build 2147 (feature #18): import safety — while the
+    // gate is on, unsupported schemes among the skipped
+    // lines are NAMED in the import report, and the parsed
+    // profiles' safety warnings + tracker-shaped link
+    // payloads ride the same report. Warn, never block.
+    if (settings.importSafetyFilter) {
+      final unsupported = <String>{};
+      for (final l in detailed.skipped) {
+        if (isUnsupportedSchemeLink(l)) {
+          unsupported.add(linkSchemeOf(l)!);
+        }
+      }
+      if (unsupported.isNotEmpty) {
+        errors.add(
+          'Unsupported protocol '
+              '${unsupported.length == 1 ? 'scheme' : 'schemes'} '
+              'skipped: ${unsupported.join(', ')} — no engine in '
+              'Ember serves them.',
+        );
+      }
+      for (final p in detailed.profiles) {
+        errors.addAll(importSafetyWarnings(p));
+      }
+      for (final l in text.split('\n')) {
+        errors.addAll(linkPayloadWarnings(l));
+      }
+    }
     // Build 2101: the duplicate accounting is reported once,
     // here — every branch above (links and both body
     // fall-throughs) counts into the same total.
@@ -2922,6 +2987,105 @@ class XrayController extends ChangeNotifier {
     return sub;
   }
 
+  /// Build 2147 (feature #21b): seed the two built-in
+  /// default subscriptions ONCE (the shell calls this after
+  /// load). They are added WITHOUT a fetch — the existing
+  /// auto-update machinery refreshes them on its cadence
+  /// (seeded with auto-update ENABLED, the Subscription
+  /// default) — and they stay removable like any other
+  /// subscription; the seeded flag is what keeps a deletion
+  /// permanent. A URL already present (added by hand) is
+  /// not duplicated; the flag is set either way.
+  Future<void> seedDefaultSubscriptions2147() async {
+    if (settings.defaultSubsSeeded2147) return;
+    settings.defaultSubsSeeded2147 = true;
+    var changed = false;
+    for (final def in kDefaultSubscriptions2147) {
+      if (subscriptions.any((s) => s.url == def.url)) continue;
+      subscriptions.add(
+        Subscription(
+          id: 's-default-2147-${def.url.hashCode}',
+          name: def.name,
+          url: def.url,
+        ),
+      );
+      changed = true;
+    }
+    await _save();
+    if (changed) notifyListeners();
+  }
+
+  /// Build 2147 (features #20/#21a): the quarantined
+  /// profiles, for the quarantine surface.
+  List<Profile> get quarantinedProfiles =>
+      profiles.where((p) => p.quarantined).toList();
+
+  /// Restores a quarantined profile: clears the cut and the
+  /// strike accounting (the sweep's too). Never deletes.
+  Future<void> restoreFromQuarantine(String profileId) async {
+    final p = _profileById(profileId);
+    if (p == null) return;
+    p.quarantined = false;
+    p.quarantineStrikes = 0;
+    p.quarantineReason = '';
+    settings.sweepMissByProfile.remove(profileId);
+    await _save();
+    notifyListeners();
+  }
+
+  /// Build 2147 (feature #21a): the ping sweep — a real
+  /// delay test over EVERY non-quarantined config (the
+  /// V2Ray page's manual trigger; a scheduled run rides the
+  /// 2147 housekeeping timer). A config that answers clears
+  /// its miss count; one that does not increments it, and at
+  /// the configured strike threshold (default 3, and only
+  /// while the sweep gate is on) it is AUTO-CUT into the
+  /// quarantine list — disabled, restorable, never deleted.
+  /// Returns (tested, answered, cut).
+  Future<({int tested, int answered, int cut})> runPingSweep() async {
+    var answered = 0;
+    var cut = 0;
+    final targets = profiles.where((p) => !p.quarantined).toList();
+    for (var i = 0; i < targets.length; i += 4) {
+      final chunk = targets.skip(i).take(4).toList();
+      await Future.wait([
+        for (final p in chunk)
+          () async {
+            final ms = await testDelay(p);
+            if (ms >= 0) {
+              answered++;
+              if (settings.sweepMissByProfile.remove(p.id) != null) {}
+              if (settings.quarantineEnabled && p.quarantineStrikes > 0) {
+                p.quarantineStrikes = 0;
+              }
+            } else if (settings.pingSweepEnabled) {
+              final misses = (settings.sweepMissByProfile[p.id] ?? 0) + 1;
+              settings.sweepMissByProfile[p.id] = misses;
+              if (sweepShouldCut(
+                consecutiveMisses: misses,
+                threshold: settings.pingSweepFailStrikes,
+              )) {
+                p.quarantined = true;
+                p.quarantineReason =
+                    'Ping sweep: no answer in $misses consecutive sweeps';
+                cut++;
+                diagnostics.add(
+                  'quarantine',
+                  '${p.name} was cut by the ping sweep after '
+                      '$misses unanswered sweeps. Restore it '
+                      'from the quarantine surface.',
+                  ok: false,
+                );
+              }
+            }
+          }(),
+      ]);
+    }
+    await _save();
+    notifyListeners();
+    return (tested: targets.length, answered: answered, cut: cut);
+  }
+
   /// Build 2134 (leg 2): the headers a subscription fetch
   /// sends — the subscription's own custom headers plus,
   /// when the automatic device HWID is enabled, the device
@@ -2960,6 +3124,11 @@ class XrayController extends ChangeNotifier {
       settings.deviceHwid = generateDeviceHwid();
       await _save();
     }
+    // Build 2147 (features #18/#21b): after a successful
+    // fetch, unsupported schemes in the body are journaled
+    // BY NAME (they were skipped at parse), and — while the
+    // import-safety gate is on — the fetched profiles'
+    // safety warnings are journaled too. Warn, never block.
     final SubResult result;
     try {
       result = await subscriptionFetcher(
@@ -3221,6 +3390,27 @@ class XrayController extends ChangeNotifier {
       // Build 2095 (audit 8-5a): the count is what the
       // subscription actually owns after the merge.
       ..profileCount = profilesOf(sub).length;
+    // Build 2147 (features #18/#21b): the refresh-side
+    // accounting — unsupported schemes named in the journal,
+    // and (gate on) the fetched profiles' safety warnings.
+    if (result.unsupportedSchemes.isNotEmpty) {
+      diagnostics.add(
+        'subscription',
+        '${sub.name}: ${result.unsupportedSchemes.length} '
+            'unsupported protocol '
+            '${result.unsupportedSchemes.length == 1 ? 'scheme was' : 'schemes were'} '
+            'skipped (${result.unsupportedSchemes.join(', ')}) — '
+            'no engine in Ember serves them.',
+        ok: false,
+      );
+    }
+    if (settings.importSafetyFilter) {
+      for (final p in result.profiles) {
+        for (final w in importSafetyWarnings(p)) {
+          diagnostics.add('import', w, ok: false);
+        }
+      }
+    }
     if (sub.name.isEmpty && result.suggestedName != null) {
       sub.name = result.suggestedName!;
     }
@@ -4413,6 +4603,18 @@ class XrayController extends ChangeNotifier {
   /// Fires the exit-IP lookup (once at a time, never awaited by the
   /// connection path): fills [exitInfo] when the tunnel answers and
   /// silently leaves it null when it does not.
+  /// Build 2147 (feature #14): a forced fresh exit read
+  /// for the leak test's RUN ALL — clears the stored exit
+  /// and the failure backoff, then fetches again. The
+  /// result lands in [exitInfo] through the usual path.
+  void refreshExitInfo() {
+    exitInfo = null;
+    _exitFailures = 0;
+    _exitNextTryAt = null;
+    _fetchExitInfo();
+    notifyListeners();
+  }
+
   void _fetchExitInfo() {
     if (_exitFetching || exitInfo != null || !state.running) return;
     // A new session starts with a clean backoff schedule.
@@ -4587,6 +4789,15 @@ class XrayController extends ChangeNotifier {
         unawaited(_pollStats());
       }
       unawaited(_watchdogTick(sample));
+      // Build 2147 (feature #12): the stall failover's own
+      // tick — gated separately from the watchdog, it MOVES
+      // the session instead of only changing its shape.
+      unawaited(_stallFailoverTick(sample));
+      // Build 2147 (features #1/#13): session-scoped upkeep —
+      // the fetch proxy directives follow the session, and
+      // the exit monitor re-checks the exit on its cadence.
+      _syncFetchDirectives2147(sample);
+      _exitMonitorTick2147(sample);
     }
     if (!sample.running && sample.paused) {
       // Build 2081 (verification V-8): the tunnel is PAUSED
@@ -5138,6 +5349,219 @@ class XrayController extends ChangeNotifier {
   /// the session: with Psiphon below, rotating Xray's own
   /// shapes treats the wrong layer — the ChainSupervisor owns
   /// that failure mode.
+  // ---------------------------------------------------------------
+  // Build 2147 session machinery (#1/#2/#12/#13/#17/#21a)
+  // ---------------------------------------------------------------
+
+  /// Feature #2: this session's discovered MTU (0 = none).
+  int _sessionMtuOverride = 0;
+
+  /// Features #17/#21a: the housekeeping timer (see load()).
+  Timer? _housekeepingTimer2147;
+
+  /// Feature #21a state: the scheduled sweep's last run
+  /// (in-memory cadence guard).
+  int _sweepLastRunMs = 0;
+
+  /// Feature #12 state: the last downlink total seen moving
+  /// and when the current stall began.
+  int _stallLastDown = -1;
+  DateTime? _stallSince;
+
+  /// Feature #13 state: the last exit re-check and the last
+  /// exit identity journaled.
+  DateTime _exitCheckedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String _exitLastKey = '';
+  bool _exitOutageNoted = false;
+
+  /// Feature #2's probe: open a TCP connection to the dial
+  /// endpoint and push a payload of [size] bytes; ANY answer
+  /// (data, reset, close) within the timeout proves the path
+  /// carries that size. A silent timeout is the black hole.
+  Future<bool> _probeMtuSize2147(String host, int port, int size) async {
+    Socket? socket;
+    StreamSubscription<Uint8List>? sub;
+    try {
+      socket = await Socket.connect(
+        host,
+        port,
+        timeout: const Duration(milliseconds: 2500),
+      );
+      final answered = Completer<bool>();
+      sub = socket.listen(
+        (_) {
+          if (!answered.isCompleted) answered.complete(true);
+        },
+        onError: (_) {
+          if (!answered.isCompleted) answered.complete(true);
+        },
+        onDone: () {
+          if (!answered.isCompleted) answered.complete(true);
+        },
+      );
+      socket.add(Uint8List(size));
+      await socket.flush();
+      return await answered.future.timeout(
+        const Duration(milliseconds: 2500),
+        onTimeout: () => false,
+      );
+    } catch (_) {
+      return false;
+    } finally {
+      await sub?.cancel();
+      socket?.destroy();
+    }
+  }
+
+  /// Feature #2's walk: candidates descending; the first
+  /// size that answers is the largest that fits.
+  Future<int?> _discoverMtu2147(String host, int port) async {
+    final answered = <bool>[];
+    for (final size in kMtuWalkCandidates) {
+      final ok = await _probeMtuSize2147(host, port, size);
+      answered.add(ok);
+      if (ok) break;
+    }
+    return pickMtuFromWalk(answered);
+  }
+
+  /// Feature #12: the stall failover — independent of the
+  /// shape watchdog (its own gate, DEFAULT OFF). While the
+  /// session runs, if the downlink does not move for the
+  /// configured window, the session MOVES: the next member
+  /// of the fallback group, or a reconnect when the group
+  /// has nothing else.
+  Future<void> _stallFailoverTick(XrayState sample) async {
+    if (!settings.stallFailover) {
+      _stallSince = null;
+      _stallLastDown = -1;
+      return;
+    }
+    if (!sample.running || connecting || _switchBusy) return;
+    if (_stallLastDown < 0 || sample.downBytes != _stallLastDown) {
+      _stallLastDown = sample.downBytes;
+      _stallSince = null;
+      return;
+    }
+    _stallSince ??= DateTime.now();
+    final window = Duration(
+      seconds: settings.stallFailoverSeconds < 5
+          ? 5
+          : settings.stallFailoverSeconds,
+    );
+    if (DateTime.now().difference(_stallSince!) < window) return;
+    _stallSince = null;
+    _stallLastDown = -1;
+    final current = sessionProfile;
+    if (current == null) return;
+    diagnostics.add(
+      'stall',
+      'No downlink for ${window.inSeconds}s — the stall '
+          'failover is moving the session.',
+      ok: false,
+    );
+    final next = fallbackGroupMembers(current)
+        .where((m) => m.id != current.id && !m.quarantined)
+        .firstOrNull;
+    if (next != null) {
+      await switchServer(next);
+    } else {
+      _scheduleReconnect();
+    }
+  }
+
+  /// Feature #1: keep the fetch proxy directives in step
+  /// with the session — set while a session runs and the
+  /// gate is on, cleared otherwise.
+  void _syncFetchDirectives2147(XrayState sample) {
+    final want = sample.running && settings.fetchViaTunnel
+        ? 'SOCKS 127.0.0.1:${settings.socksPort}'
+        : '';
+    if (subFetchProxyDirective != want) subFetchProxyDirective = want;
+    if (regionHopProxyDirective != want) regionHopProxyDirective = want;
+  }
+
+  /// Feature #13: the exit monitor — while a session runs
+  /// and the gate is on, the exit identity is re-checked
+  /// every minute and changes are journaled (a mid-session
+  /// exit move is exactly the silent reroute this feature
+  /// exists to surface). The exit machinery only fetches
+  /// while [exitInfo] is null, so a re-check forces a fresh
+  /// lookup by clearing it; the comparison happens when the
+  /// fresh answer lands.
+  void _exitMonitorTick2147(XrayState sample) {
+    if (!settings.exitMonitorEnabled || !sample.running) return;
+    final info = exitInfo;
+    if (info == null) {
+      // A known exit that stops answering is a change too —
+      // journaled once per outage.
+      if (_exitLastKey.isNotEmpty && !_exitOutageNoted) {
+        _exitOutageNoted = true;
+        diagnostics.add(
+          'exit',
+          'Exit monitor: the exit check no longer answers '
+              'mid-session (last known exit: '
+              '${_exitLastKey.replaceAll('|', ', ')}).',
+          ok: false,
+        );
+      }
+      return;
+    }
+    _exitOutageNoted = false;
+    final key = '${info.ip}|${info.countryEn}';
+    if (_exitLastKey.isEmpty) {
+      _exitLastKey = key;
+      _exitCheckedAt = DateTime.now();
+      return;
+    }
+    if (key != _exitLastKey) {
+      diagnostics.add(
+        'exit',
+        'Exit monitor: the exit moved mid-session — '
+            '${_exitLastKey.replaceAll('|', ' (')}) → '
+            '${info.ip} (${info.countryEn}).',
+        ok: true,
+      );
+      _exitLastKey = key;
+      _exitCheckedAt = DateTime.now();
+      return;
+    }
+    if (DateTime.now().difference(_exitCheckedAt) <
+        const Duration(seconds: 60)) {
+      return;
+    }
+    _exitCheckedAt = DateTime.now();
+    exitInfo = null;
+    _fetchExitInfo();
+  }
+
+  /// Features #17/#21a: the housekeeping tick — scheduled
+  /// profile tests (the starred set) and the scheduled ping
+  /// sweep, each on its own gate and cadence.
+  Future<void> _housekeepingTick2147() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (settings.scheduledTests &&
+        now - settings.lastScheduledTestAtMs >=
+            settings.scheduledTestIntervalMin * 60000) {
+      settings.lastScheduledTestAtMs = now;
+      final starred = profiles.where((p) => p.starred).toList();
+      for (final p in starred) {
+        await testDelay(p);
+      }
+      await _save();
+      notifyListeners();
+    }
+    // The scheduled sweep runs at most hourly — a full
+    // delay test of every config is heavy, and the strike
+    // accounting (3 consecutive MISSES) is meaningless if
+    // the sweeps land minutes apart.
+    if (settings.pingSweepEnabled &&
+        now - _sweepLastRunMs >= 3600000) {
+      _sweepLastRunMs = now;
+      await runPingSweep();
+    }
+  }
+
   Future<void> _watchdogTick(XrayState sample) async {
     // Build 2095 (feature 2): the user's master switch.
     if (!settings.stallWatchdog) return;
@@ -6271,7 +6695,17 @@ class XrayController extends ChangeNotifier {
               wgGroupKey(p) == wgGroupKey(first),
         )
         .toList();
-    final ordered = [first, ...group.where((p) => p.id != first.id)];
+    // Build 2147 (feature #10): the profile's own fallback
+    // endpoints walk right after the primary — the same
+    // profile with a rewritten endpoint (copies, the stored
+    // profile is untouched), before the group's other
+    // members. An empty list adds nothing: the walk is
+    // exactly every earlier build's.
+    final ordered = [
+      first,
+      ...wgConnectCandidates(first).skip(1),
+      ...group.where((p) => p.id != first.id && !p.quarantined),
+    ];
     Object? lastFailure;
     // Build 2050 (audit C-1): the name of a candidate whose
     // AmneziaWG attempt failed, so a plain-WireGuard success
@@ -7626,6 +8060,8 @@ class XrayController extends ChangeNotifier {
     final results = await runDpiLabDiscovery(
       profile: p,
       settings: settings,
+      // Build 2147 (feature #3): candidate racing, DEFAULT OFF.
+      race: settings.dpiLabRacing,
       excludeIds: dpiLabSweepExcluded,
       // Build 2110: the Lab's probe configs resolve the
       // server name like every other config (C1).
@@ -8185,6 +8621,15 @@ class XrayController extends ChangeNotifier {
   bool sudokuServed(Profile p) =>
       settings.sudokuEnabled && p.protocol == Protocol.sudoku;
 
+  /// Build 2147 (feature #6): true when the sing-box sidecar
+  /// serves [p] as an SSH outbound — an SSH profile while the
+  /// SSH engine setting is on. The third settings-gated
+  /// diversion, the Sudoku shape: with the setting off the
+  /// profile is NOT sidecar-served (and connect refuses it
+  /// in plain words — see _connectSelected).
+  bool sshServed(Profile p) =>
+      settings.sidecarSshEnabled && p.protocol == Protocol.ssh;
+
   /// The effective sidecar truth for [p] (build 2126): the
   /// profile's own sidecar routing ([Profile.servedBySidecar])
   /// or the settings-gated ShadowTLS diversion above. Every
@@ -8195,7 +8640,10 @@ class XrayController extends ChangeNotifier {
   /// chaining skipped, tests start the sidecar first.
   /// Build 2127 adds the Sudoku diversion the same way.
   bool servedViaSidecar(Profile p) =>
-      p.servedBySidecar || shadowTlsServed(p) || sudokuServed(p);
+      p.servedBySidecar ||
+      shadowTlsServed(p) ||
+      sudokuServed(p) ||
+      sshServed(p);
 
   /// The supervision label for the session's sidecar
   /// engine kind (build 2127: a third kind joined).
@@ -8654,6 +9102,16 @@ class XrayController extends ChangeNotifier {
     if (p.protocol == Protocol.sudoku && !settings.sudokuEnabled) {
       throw StateError('sudoku-off');
     }
+    // Build 2147 (feature #6): the SSH diversion's gate, the
+    // Sudoku shape — plain words, never an Xray config for a
+    // protocol the Xray core cannot speak.
+    if (p.protocol == Protocol.ssh && !settings.sidecarSshEnabled) {
+      throw StateError('ssh-off');
+    }
+    // Build 2147 (features #20/#21a): a quarantined profile
+    // refuses in plain words — it was cut for failing, and
+    // only an explicit restore connects it again.
+    if (p.quarantined) throw StateError('quarantined');
     // A Shadowsocks plugin is stored but never applied (build
     // 2057, audit F-M11): the core has no plugin support, so say
     // so in the diagnostics at connect time — the home card
@@ -9050,10 +9508,90 @@ class XrayController extends ChangeNotifier {
       // failures, exactly as when load awaited it).
       await _ensureGeoInstalled();
       checkAlive();
-      final config = buildTunnelConfig(
-        dialProfile,
-        settings,
-        psiphonUnderlay: chained,
+      // Build 2147 (feature #2): Auto MTU discovery — the
+      // PMTU black-hole walk against the dial endpoint,
+      // before the core starts. The winner becomes this
+      // session's MTU override and is remembered in
+      // settings.autoMtuFound for display; no answer keeps
+      // the manual value. Gate DEFAULT OFF.
+      _sessionMtuOverride = 0;
+      if (settings.autoMtu && !sidecarServed) {
+        final found = await _discoverMtu2147(
+          dialProfile.address,
+          dialProfile.port,
+        );
+        if (found != null) {
+          _sessionMtuOverride = found;
+          if (settings.autoMtuFound != found) {
+            settings.autoMtuFound = found;
+            unawaited(_save());
+          }
+          diagnostics.add(
+            'mtu',
+            'Auto MTU: $found answers on this path — used for '
+                'this session.',
+            ok: true,
+          );
+        } else {
+          diagnostics.add(
+            'mtu',
+            'Auto MTU: no size answered — the manual MTU '
+                '(${settings.tunnelMtu}) rules.',
+            ok: false,
+          );
+        }
+        checkAlive();
+      }
+      // Build 2147 (feature #5): Balancer mode — for an
+      // opted-in subscription group on the plain path (no
+      // underlay chain, no sidecar, no Lab zapret win), one
+      // core carries the whole group behind an observatory +
+      // leastPing balancer. Any failure to build it falls
+      // back to the plain single-profile config below.
+      String? balancerConfig;
+      if (p.subscriptionId.isNotEmpty &&
+          settings.balancerGroupIds.contains(p.subscriptionId) &&
+          !sidecarServed &&
+          !chained &&
+          !warpChained &&
+          !dnsttChained &&
+          !olcrtcChained &&
+          dialProfile.zapretStrategy.isEmpty) {
+        final members = profiles
+            .where(
+              (m) => m.subscriptionId == p.subscriptionId && !m.quarantined,
+            )
+            .toList();
+        if (members.length > 1) {
+          try {
+            balancerConfig = buildBalancerTunnelConfig(
+              members,
+              settings,
+              serverHostPins: _mergedServerPins(
+                _sessionServerPins = await _serverNamePins(
+                  dialProfile,
+                  journal: true,
+                ),
+                _sessionProviderPins = await _providerDnsPins(dialProfile),
+              ),
+            );
+            diagnostics.add(
+              'connect',
+              'Balancer mode: ${members.length} configs of this '
+                  'group share one core (observatory + leastPing).',
+              ok: true,
+            );
+          } catch (_) {
+            balancerConfig = null;
+          }
+        }
+      }
+      final config =
+          balancerConfig ??
+          buildTunnelConfig(
+            dialProfile,
+            settings,
+            psiphonUnderlay: chained,
         warpUnderlay: warpChained,
         warp: warpProfile,
         dnsttUnderlay: dnsttChained,
@@ -9117,7 +9655,12 @@ class XrayController extends ChangeNotifier {
         socksPort: settings.socksPort,
         dns: tunDns,
         ipv6: settings.ipv6Route,
-        mtu: settings.tunnelMtu,
+        // Build 2147 (feature #2): the session's discovered
+        // MTU wins while Auto MTU is on; otherwise the stored
+        // manual value, untouched.
+        mtu: _sessionMtuOverride > 0
+            ? _sessionMtuOverride
+            : settings.tunnelMtu,
         socksUser: _lanUser,
         socksPass: _lanPass,
         killSwitch: settings.killSwitch,
@@ -9471,6 +10014,10 @@ class XrayController extends ChangeNotifier {
     // the same plain word as the connect path.
     if (p.protocol == Protocol.sudoku && !settings.sudokuEnabled) {
       throw StateError('sudoku-off');
+    }
+    // Build 2147 (feature #6): the test path's SSH gate.
+    if (p.protocol == Protocol.ssh && !settings.sidecarSshEnabled) {
+      throw StateError('ssh-off');
     }
     if (!servedViaSidecar(p)) {
       // Build 2110 (fugui-hostname diagnosis C1): a test

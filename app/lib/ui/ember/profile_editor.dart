@@ -75,6 +75,40 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
   /// re-entry guard.
   bool _connecting = false;
 
+  /// Build 2147 (feature #11): a pin-capture read is in
+  /// flight.
+  bool _pinning = false;
+
+  /// Reads the certificate the profile's endpoint presents
+  /// right now and fills the pin field with its SHA-256.
+  /// The address/port/SNI are read from the fields as they
+  /// stand (unsaved edits included).
+  Future<void> _pinCurrent() async {
+    setState(() => _pinning = true);
+    try {
+      final pin = await fetchCurrentTlsCertPin(
+        _v('address'),
+        _int('port', 443),
+        serverName: _v('sni'),
+      );
+      if (!mounted) return;
+      if (pin == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'The server did not present a certificate — '
+              'check the address and port.',
+            ),
+          ),
+        );
+      } else {
+        setState(() => _fields['tlsCertPin']?.text = pin);
+      }
+    } finally {
+      if (mounted) setState(() => _pinning = false);
+    }
+  }
+
   /// Build 2127 (H2): the Sudoku section's dropdown state,
   /// seeded from the profile's stored options in initState
   /// and composed back into Profile.sudokuOptions at
@@ -82,6 +116,9 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
   String _sudokuAead = '';
   String _sudokuTable = '';
   String _sudokuPure = '';
+  // Build 2147 (feature #8): the XICMP dropdown states.
+  String _xicmpMode = 'off';
+  String _xicmpDgramMode = 'off';
   String _sudokuMask = '';
   String _sudokuMaskMode = '';
 
@@ -279,6 +316,18 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     // accepts 4; 5 is refused by the core, so the editor
     // says so at the field).
     _field('tsAuthKey', _p.tailscaleAuthKey);
+    // Build 2147: the SSH fields (#6), the XDNS resolver
+    // (#7) and the WireGuard fallback endpoints (#10).
+    _field('sshUser', _p.sshUser);
+    _field('sshPassword', _p.sshPassword);
+    _field('sshPrivateKey', _p.sshPrivateKey);
+    _field('sshPrivateKeyPassphrase', _p.sshPrivateKeyPassphrase);
+    _field('sshHostKeyPin', _p.sshHostKeyPin);
+    _field('xdnsDomain', _p.xdnsDomain);
+    _field('xdnsResolver', _p.xdnsResolver);
+    _field('wgFallbackEndpoints', _p.wgFallbackEndpoints);
+    _xicmpMode = _p.xicmpEnabled ? 'on' : 'off';
+    _xicmpDgramMode = _p.xicmpDgram ? 'on' : 'off';
     _field('snellVersion', '${_p.snellVersion}');
     _field('mieruTransport', _p.network == 'udp' ? 'udp' : 'tcp');
     // Build 2127 (H2): the Sudoku options, decoded from
@@ -381,6 +430,16 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       ..tlsCertPin = _v('tlsCertPin')
       ..plugin = _v('plugin')
       ..secretKey = _v('secretKey')
+      ..sshUser = _v('sshUser')
+      ..sshPassword = _v('sshPassword')
+      ..sshPrivateKey = _v('sshPrivateKey')
+      ..sshPrivateKeyPassphrase = _v('sshPrivateKeyPassphrase')
+      ..sshHostKeyPin = _v('sshHostKeyPin')
+      ..xdnsDomain = _v('xdnsDomain')
+      ..xdnsResolver = _v('xdnsResolver')
+      ..wgFallbackEndpoints = _v('wgFallbackEndpoints')
+      ..xicmpEnabled = _xicmpMode == 'on'
+      ..xicmpDgram = _xicmpDgramMode == 'on'
       ..wgAllowedIPs = _v('wgAllowedIPs')
       ..wgDns = _v('wgDns')
       ..peerPublicKey = _v('peerPublicKey')
@@ -1231,6 +1290,15 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                 _text('reserved', l.fieldReserved),
                 _text('mtu', 'MTU', numeric: true),
                 _text('keepAlive', l.fieldKeepAlive, numeric: true),
+                // Build 2147 (feature #10): fallback endpoints
+                // for this peer — tried in order when the
+                // primary endpoint does not answer.
+                _text(
+                  'wgFallbackEndpoints',
+                  'Fallback endpoints (host:port, comma-separated)',
+                  multiline: true,
+                  mono: true,
+                ),
                 // Build 2095 (whole-app journey audit
                 // #31/#32): the .conf's split-tunnel list and
                 // DNS are EDITABLE. AllowedIPs is applied to
@@ -1572,6 +1640,19 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                     hint: '64 hex characters per pin, comma-separated for several — the server cert must match one',
                     multiline: true,
                     mono: true,
+                  ),
+                  // Build 2147 (feature #11): capture the pin
+                  // of the certificate the server presents
+                  // right now, so the field can be filled
+                  // without a desktop tool.
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _pinning ? null : () => unawaited(_pinCurrent()),
+                      child: Text(
+                        _pinning ? 'READING…' : 'PIN CURRENT CERTIFICATE',
+                      ),
+                    ),
                   ),
                   // TlsSettingsCheck findings (build 2029A),
                   // computed from the fields as they stand.
@@ -1960,6 +2041,65 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                   'The server and port are in the basic section '
                   'above, with the username and password. AnyConnect / '
                   'ocserv servers are the usual targets.',
+                  style: Ember.caption,
+                ),
+              ]),
+            // Build 2147 (feature #6): the SSH section —
+            // served by the sing-box sidecar while the SSH
+            // engine gate is on in Settings.
+            if (proto == Protocol.ssh)
+              _section('SSH (via sing-box)', [
+                _text('sshUser', 'User'),
+                _text('sshPassword', 'Password'),
+                _text(
+                  'sshPrivateKey',
+                  'Private key (PEM)',
+                  multiline: true,
+                  mono: true,
+                ),
+                _text('sshPrivateKeyPassphrase', 'Key passphrase'),
+                _text(
+                  'sshHostKeyPin',
+                  'Host key pin (SHA256:…)',
+                  mono: true,
+                ),
+                Text(
+                  'SSH tunnels TCP only — UDP traffic is not '
+                  'carried. A password or a private key is '
+                  'required; the host key pin is optional but '
+                  'recommended.',
+                  style: Ember.caption,
+                ),
+              ]),
+            // Build 2147 (features #7/#8): the typed
+            // FinalMask transports on mKCP — the tunnel's
+            // UDP rides DNS queries (XDNS) or ICMP echoes
+            // (XICMP) instead of plain UDP.
+            if (streamProtocols && _p.network == 'kcp')
+              _section('FinalMask transports (mKCP)', [
+                _text('xdnsDomain', 'XDNS tunnel domain'),
+                _text(
+                  'xdnsResolver',
+                  'XDNS resolver (host or host:port)',
+                ),
+                _dropdown<String>('XICMP', _xicmpMode, const [
+                  ('off', 'Off'),
+                  ('on', 'On'),
+                ], (v) => setState(() => _xicmpMode = v)),
+                if (_xicmpMode == 'on')
+                  _dropdown<String>(
+                    'XICMP datagram mode',
+                    _xicmpDgramMode,
+                    const [('off', 'Off'), ('on', 'On')],
+                    (v) => setState(() => _xicmpDgramMode = v),
+                  ),
+                Text(
+                  'XDNS needs a domain whose NS records point '
+                  'at an XDNS-capable server. XICMP is '
+                  'experimental: many kernels and carriers '
+                  'drop echo payloads, so a profile can pass '
+                  'every check and still carry nothing — if '
+                  'it connects but nothing loads, turn it off.',
                   style: Ember.caption,
                 ),
               ]),

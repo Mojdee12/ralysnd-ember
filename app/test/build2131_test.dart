@@ -69,7 +69,9 @@ void main() {
     });
 
     test('private rows are marked in the picker caption', () {
-      expect(pages, contains("'Private · \${server.tag}'"));
+      // PIN UPDATED by build 2147 (#24 sweep): the private
+      // mark is the sample's micro-label caption now.
+      expect(pages, contains("'PRIVATE SERVER'"));
       expect(pages, contains('server.isLantern'));
     });
   });
@@ -156,6 +158,6 @@ void main() {
   });
 
   test('pubspec is build 2131', () {
-    expect(pubspec, contains('version: 2.2.0+2146'));
+    expect(pubspec, contains('version: 2.2.0+2147'));
   });
 }

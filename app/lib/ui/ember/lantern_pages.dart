@@ -309,8 +309,7 @@ class LanternServersView extends StatelessWidget {
                   for (final server in privateServers)
                     _ServerPickerRow(
                       label: labelsByTag[server.tag] ?? server.label,
-                      caption: 'Private · ${server.tag}',
-                      flagCode: server.countryCode,
+                      caption: 'PRIVATE SERVER',
                       isPrivate: true,
                       selected: state.running
                           ? state.selectedTag == server.tag
@@ -352,14 +351,13 @@ class LanternServersView extends StatelessWidget {
                   for (final server in publicServers)
                     _ServerPickerRow(
                       label: labelsByTag[server.tag] ?? server.label,
-                      // Build 2131: private entries (the
-                      // owner's own server — isLantern=false
-                      // in the core's list) are marked in
-                      // the caption and select like any row.
+                      // Build 2147 (#24 sweep): public rows
+                      // carry no caption (the sample's clean
+                      // rows); a private entry in the public
+                      // loop keeps its mark.
                       caption: server.isLantern
-                          ? server.tag
-                          : 'Private · ${server.tag}',
-                      flagCode: server.countryCode,
+                          ? ''
+                          : 'PRIVATE SERVER',
                       selected: state.running
                           ? state.selectedTag == server.tag
                           : server.isLantern
@@ -397,14 +395,14 @@ class LanternServersView extends StatelessWidget {
                   Text(
                     state.servers >= 0
                         ? '${latDigits(servers.length > state.serverList.length ? servers.length : state.servers)} servers in the current list. '
-                              'Automatic lets the core connect through the '
-                              'fastest one that answers; picking a server '
-                              'pins the connection to it — while connected '
+                              'Automatic lets the core pick the fastest '
+                              'exit; picking a server pins the '
+                              'connection to it — while connected '
                               'the switch happens right away, while '
-                              'disconnected the pick applies at the next '
-                              'connect.'
-                        : 'No server list yet — the core fetches one when '
-                              'it connects, or fetch it now.',
+                              'disconnected the pick applies at the '
+                              'next connect.'
+                        : 'No server list yet — the core fetches '
+                              'one when it connects, or fetch it now.',
                     style: Ember.caption,
                   ),
                 ],
@@ -558,16 +556,20 @@ class LanternServersView extends StatelessWidget {
 class _ServerPickerRow extends StatelessWidget {
   const _ServerPickerRow({
     required this.label,
-    required this.caption,
+    this.caption = '',
     required this.selected,
     required this.onTap,
-    this.flagCode = '',
     this.isPrivate = false,
   });
 
   final String label;
+
+  /// Build 2147 (#24 sweep): the sample's rows are clean —
+  /// a name, and (on the private row) a micro-label
+  /// caption. The flag chips and raw core tags the rows
+  /// used to carry are gone; a public row shows its name
+  /// only.
   final String caption;
-  final String flagCode;
   final bool selected;
   final VoidCallback? onTap;
 
@@ -606,9 +608,6 @@ class _ServerPickerRow extends StatelessWidget {
                   color: Ember.orange,
                 ),
                 const SizedBox(width: 9),
-              ] else if (flagCode.isNotEmpty) ...[
-                CountryFlag(code: flagCode, width: 24),
-                const SizedBox(width: 9),
               ],
               Expanded(
                 child: Column(
@@ -618,10 +617,13 @@ class _ServerPickerRow extends StatelessWidget {
                       label,
                       style: isPrivate ? Ember.heading : Ember.body,
                     ),
-                    Text(
-                      caption,
-                      style: isPrivate ? Ember.microLabel : Ember.caption,
-                    ),
+                    if (caption.isNotEmpty)
+                      Text(
+                        caption,
+                        style: isPrivate
+                            ? Ember.microLabel
+                            : Ember.caption,
+                      ),
                   ],
                 ),
               ),
@@ -677,11 +679,23 @@ class _RefreshListPillState extends State<_RefreshListPill> {
   }
 
   @override
-  Widget build(BuildContext context) => MapActionPill(
-    icon: Icons.refresh_rounded,
-    label: 'Refresh list',
-    busy: _busy,
+  // Build 2147 (#24 sweep): the sample's action row — a
+  // centred orange text action over a hairline, not a
+  // pill. Same refresh, same busy discipline.
+  Widget build(BuildContext context) => InkWell(
     onTap: _busy ? null : () => unawaited(_refresh()),
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: MapUi.line, width: 1)),
+      ),
+      child: Text(
+        _busy ? 'Refreshing…' : 'Refresh list',
+        textAlign: TextAlign.center,
+        style: Ember.microLabelOrange,
+      ),
+    ),
   );
 }
 

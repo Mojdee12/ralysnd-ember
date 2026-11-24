@@ -293,10 +293,10 @@ void main() {
       expect(page, contains('RegionHopDefaults.panelUrl'));
     });
 
-    test('pubspec is 2.2.0+2146', () {
+    test('pubspec is 2.2.0+2147', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2146'),
+        contains('version: 2.2.0+2147'),
       );
     });
   });
