@@ -55,9 +55,23 @@ ThemeData _theme(Brightness brightness, Locale locale) {
     // Build 2144 (reskin): the chrome follows the tokens to
     // the samples' near-black neutrals (dialog/menu = card,
     // sheet = surface, snackbar = cardSoft).
+    // Build 2150 (engine appearance audit E49-15): the
+    // stock AlertDialog family — 24 call sites under
+    // lib/ui/ember/ — takes the app's panel language: the
+    // hairline border and the panel radius (20; the 24
+    // here was rounder than every panel in the app), and
+    // unstyled titles/bodies inherit the heading/body
+    // tiers instead of the stock Material scale. Dialogs
+    // that style their own text keep it. The border and
+    // text styles are dark-scoped, like the background.
     dialogTheme: DialogThemeData(
       backgroundColor: dark ? const Color(0xFF101216) : null,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Ember.radiusPanel),
+        side: BorderSide(color: dark ? Ember.line : Colors.transparent),
+      ),
+      titleTextStyle: dark ? Ember.heading : null,
+      contentTextStyle: dark ? Ember.body : null,
     ),
     bottomSheetTheme: BottomSheetThemeData(
       backgroundColor: dark ? const Color(0xFF0C0D10) : null,

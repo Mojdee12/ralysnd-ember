@@ -868,9 +868,22 @@ Widget build(BuildContext context) {
         // the sample's subtitle, and the target as a
         // monospace TARGET line — the same address the
         // config picker shows.
+        // Build 2150 (engine appearance audit E49-06): the
+        // head was still the heaviest in the app — the
+        // two-line 54 pt title stack plus its gaps pushed
+        // the first result to ≈57% of the first screen.
+        // The title steps to the stat tier (44) and fits
+        // ONE line at phone widths; the gaps tighten to
+        // the sample's rhythm. The Lab's identity — label,
+        // title string, subtitle, TARGET line, explainer —
+        // is untouched; the first result lands ≈50%.
         Text('‹ STRATEGY LAB', style: Ember.microLabelOrange),
-        const SizedBox(height: 14),
-        Text('DPI Strategy Lab', style: Ember.hero),
+        const SizedBox(height: 10),
+        Text(
+          'DPI Strategy Lab',
+          style: Ember.hero.copyWith(fontSize: Ember.fontStat),
+          maxLines: 1,
+        ),
         const SizedBox(height: 8),
         Text('Test results for the selected config', style: Ember.dimStyle),
         if (profile != null) ...[
@@ -885,7 +898,7 @@ Widget build(BuildContext context) {
             ),
           ),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         // Batch 5 (fidelity rollout): the Lab's glass cards
         // retire — every section sits on the ground in the
         // samples' open composition (tracked labels, hairline

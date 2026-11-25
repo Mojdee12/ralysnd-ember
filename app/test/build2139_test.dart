@@ -674,10 +674,14 @@ void main() {
       // the status chip reads 'Tunnel up' now.
       expect(find.text('Tunnel up'), findsWidgets);
       expect(find.text('Stopped'), findsOneWidget);
-      expect(
-        find.text('Exit DE - Germany · 203.0.113.7 · 812 ms'),
-        findsOneWidget,
-      );
+      // FINDER UPDATED by build 2150 (engine appearance
+      // audit E49-07): the exit line carries the measured
+      // exit alone — the region already reads in the
+      // tile's letters and country line, and the latency
+      // lives only in the tile's top-right numeral (the
+      // old string repeated both, and wrapped to four
+      // lines in the tile's middle column).
+      expect(find.text('Exit 203.0.113.7'), findsOneWidget);
       expect(find.text('Tunnel is stopped — Start it first.'), findsOneWidget);
       expect(
         find.textContaining('Bridge not set up for this location'),

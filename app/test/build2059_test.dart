@@ -51,24 +51,22 @@ void main() {
     // header's BACK, and the header zone is open page
     // composition now. The 48 px pattern still binds every
     // close button that exists.
+    // PIN UPDATED by build 2150 (engine appearance audit
+    // E49-03): the Lantern and WARP/MASQUE views' own ✕s
+    // are retired for the same reason as WireGuard's in
+    // 2149 — every engine tab body now leaves by the shell
+    // header's BACK alone. The pin's intent inverts on
+    // these two files: no page-leave close button remains
+    // in either (the 48 px pattern still binds
+    // MapPanelHeader's own close, which genuine panels
+    // use).
     for (final file in [
       'ui/ember/lantern_pages.dart',
       'ui/ember/aether_pages.dart',
     ]) {
-      test('$file: close button uses the 48 px pattern', () {
+      test('$file: no page-leave close button remains', () {
         final src = _dart(file);
-        expect(
-          src,
-          contains(
-            'icon: const Icon(Icons.close_rounded, size: 19),',
-          ),
-        );
-        // Dart-format splits the constraints across lines; pin
-        // the two values, not the line shape.
-        expect(src, contains('minWidth: 48,'));
-        expect(src, contains('minHeight: 48,'));
-        // The old bare 48 px form: `Icons.close_rounded,` at line end.
-        expect(src.contains('Icons.close_rounded,\n'), isFalse);
+        expect(src.contains('Icons.close_rounded'), isFalse);
       });
     }
   });
@@ -163,12 +161,17 @@ void main() {
     test('the app theme owns every dialog shape', () {
       final src = _dart('ui/app.dart');
       expect(src, contains('dialogTheme: DialogThemeData('));
+      // PIN UPDATED by build 2150 (engine appearance audit
+      // E49-15): the theme's dialog shape takes the app's
+      // panel language — the panel radius (20, was the
+      // rounder 24) and the hairline side; unstyled titles
+      // and bodies inherit the heading/body tiers.
       expect(
         src,
-        contains(
-          'shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),',
-        ),
+        contains('borderRadius: BorderRadius.circular(Ember.radiusPanel),'),
       );
+      expect(src, contains('titleTextStyle: dark ? Ember.heading : null,'));
+      expect(src, contains('contentTextStyle: dark ? Ember.body : null,'));
     });
   });
 

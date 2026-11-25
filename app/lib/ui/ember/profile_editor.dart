@@ -1404,6 +1404,13 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: Ember.text,
+        // Build 2150 (engine appearance audit E49-09): the
+        // settle scrim for this bar lives in the BODY as a
+        // top overlay (see the body below) — a probe in
+        // this build proved the AppBar's own background
+        // (flexibleSpace) paints UNDER the extended body
+        // in this configuration, so a scrim there never
+        // reaches the scrolled content it exists to dim.
         title: Text(
           widget.existing == null ? l.addManual : l.editProfile,
           style: Ember.heading,
@@ -1460,8 +1467,16 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
           ),
         ],
       ),
-      body: EmberBackground(
-        child: ListView(
+      // Build 2150 (audit E49-09): the body is a Stack so
+      // the settle scrim can ride OVER the scrolled list
+      // in the app-bar zone (the overlay below) — the
+      // transparent bar let content slide under the title
+      // with no separation, Finalmask chips striking
+      // through "Edit config" mid-scroll.
+      body: Stack(
+        children: [
+          EmberBackground(
+            child: ListView(
           // Build 2059: the body extends behind the transparent app
           // bar now — keep the first field below it.
           padding: EdgeInsets.fromLTRB(
@@ -2518,7 +2533,39 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
               },
             ),
           ],
-        ),
+            ),
+          ),
+          // Build 2150 (audit E49-09): the settle scrim —
+          // the base colour at near-full strength over the
+          // app-bar zone, easing to clear just below it.
+          // Content scrolling beneath the title settles
+          // behind this instead of striking through; the
+          // AppBar's own foreground (title, Save) paints
+          // above it. IgnorePointer: it never eats a tap.
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height:
+                MediaQuery.of(context).padding.top + kToolbarHeight + 18,
+            child: const IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    stops: [0, 0.7, 1],
+                    colors: [
+                      Color(0xE6050607),
+                      Color(0xC2050607),
+                      Color(0x00050607),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
       ),
     );

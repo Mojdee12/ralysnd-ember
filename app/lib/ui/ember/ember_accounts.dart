@@ -32,7 +32,6 @@ class EmberAccounts extends StatelessWidget {
     required this.core,
     required this.xray,
     required this.v2ray,
-    this.onClose,
     this.bootstrap,
     this.signinBrowserFallbackOffer = false,
   });
@@ -40,7 +39,6 @@ class EmberAccounts extends StatelessWidget {
   final CoreController core;
   final XrayController xray;
   final bool v2ray;
-  final VoidCallback? onClose;
 
   /// Build 2105 (Mozilla feature 1): the sign-in dialog's
   /// failure-screen browser offer follows the owner's setting;
@@ -58,10 +56,9 @@ class EmberAccounts extends StatelessWidget {
   // state and subscription URLs — overlay-guarded.
   Widget build(BuildContext context) => OverlayGuard(
     child: v2ray
-        ? _V2raySubs(xray: xray, onClose: onClose)
+        ? _V2raySubs(xray: xray)
         : _MozillaAccounts(
             core: core,
-            onClose: onClose,
             bootstrap: bootstrap,
             signinBrowserFallbackOffer: signinBrowserFallbackOffer,
           ),
@@ -73,12 +70,10 @@ class EmberAccounts extends StatelessWidget {
 class _MozillaAccounts extends StatelessWidget {
   const _MozillaAccounts({
     required this.core,
-    this.onClose,
     this.bootstrap,
     this.signinBrowserFallbackOffer = false,
   });
   final CoreController core;
-  final VoidCallback? onClose;
   final MozillaBootstrap? bootstrap;
   final bool signinBrowserFallbackOffer;
 
@@ -102,14 +97,17 @@ class _MozillaAccounts extends StatelessWidget {
         // lists sit in the frost region like the config
         // lists — build 2095's appearance batch missed
         // these two panels.
+        // Build 2150 (engine appearance audit E49-14): the
+        // frost settles — the bare blur read as a grey smear
+        // over this page's top half.
         return MapListFrost(
+          settle: true,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             children: [
               // Build 2145 (composition rebuild, pro6-mozilla):
               // the glass header panel is retired — the page
-              // opens with the sample's composition: the close
-              // control where MapPanelHeader carried it, a
+              // opens with the sample's composition: a
               // centred thin orange ring emblem (the mark this
               // surface already uses — an account letter in an
               // orange ring, build 2144's account mark; no new
@@ -117,20 +115,11 @@ class _MozillaAccounts extends StatelessWidget {
               // accounts title and the auto-rotation row open
               // over the page ground. Title, toggle and
               // callbacks unchanged.
-              if (onClose != null)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: IconButton(
-                    tooltip: 'Close',
-                    onPressed: onClose,
-                    icon: const Icon(Icons.close_rounded, size: 19),
-                    color: MapUi.dim,
-                    constraints: const BoxConstraints(
-                      minWidth: 48,
-                      minHeight: 48,
-                    ),
-                  ),
-                ),
+              // Build 2150 (engine appearance audit E49-03):
+              // the page's own ✕ is gone — this is a shell
+              // tab, and the shell header's BACK is the one
+              // way out (the duplication A48-04 removed from
+              // WireGuard in 2149).
               Center(
                 child: Container(
                   // Fidelity rollout batch 3 (pro6-mozilla):
@@ -745,9 +734,8 @@ class _AccountCard extends StatelessWidget {
 // ------------------------------------------------------------------ V2Ray
 
 class _V2raySubs extends StatelessWidget {
-  const _V2raySubs({required this.xray, this.onClose});
+  const _V2raySubs({required this.xray});
   final XrayController xray;
-  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -757,15 +745,19 @@ class _V2raySubs extends StatelessWidget {
       builder: (context, _) => MapListFrost(
         // Build 2096 (post-2095 audit L22): frost region,
         // as the config lists got in build 2095.
+        // Build 2150 (audit E49-14): settled, as above.
+        settle: true,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           children: [
             // Build 2144 (reskin): the MapPanelHeader gives
             // way to the same open typography the V2Ray tab
             // header got — the title as the huge light hero
-            // word, the existing actions bare at the right,
-            // the same close control MapPanelHeader carried.
+            // word, the existing actions bare at the right.
             // Title text, actions and callbacks unchanged.
+            // (Build 2150, audit E49-03: the close control
+            // the 2144 header carried is retired — the shell
+            // BACK is the tab's one way out.)
             // Build 2145 (UI-review fix A9): the hero word gets
             // its OWN full-width line — at phone widths the
             // actions row squeezed it into a FittedBox shrink
@@ -827,19 +819,9 @@ class _V2raySubs extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (onClose != null)
-                  IconButton(
-                    tooltip: 'Close',
-                    onPressed: onClose,
-                    icon: const Icon(Icons.close_rounded, size: 19),
-                    color: MapUi.dim,
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.only(left: 4),
-                    constraints: const BoxConstraints(
-                      minWidth: 48,
-                      minHeight: 48,
-                    ),
-                  ),
+                // Build 2150 (audit E49-03): no ✕ here — the
+                // shell header's BACK is this tab's one way
+                // out, as on the Mozilla side above.
               ],
             ),
             const SizedBox(height: 14),
@@ -1210,7 +1192,23 @@ class _SubCard extends StatelessWidget {
                     Flexible(
                       child: Text(
                         parts.first,
-                        style: Ember.numeral,
+                        // Build 2150 (engine appearance audit
+                        // E49-01): the B3 step-down the Servers
+                        // group head took in 2149 lands here
+                        // too — this figure repeats once per
+                        // subscription on a list page, and the
+                        // pro6 sample shows the 100 pt quota
+                        // figure ONCE, as a single head. One
+                        // figure, one size (the compact hero
+                        // step, 44) on every list surface; the
+                        // low-quota red matches the group
+                        // head's. The single-instance Mozilla
+                        // account hero above keeps the numeral
+                        // scale (the audit's B3 reasoning).
+                        style: Ember.numeral.copyWith(
+                          fontSize: Ember.fontStat,
+                          color: sub.quotaLow ? Ember.red : null,
+                        ),
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,

@@ -3490,6 +3490,16 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
   /// pro5's compact chip row — the current engine wears the
   /// orange rim and text. Every entry taps the rail's own
   /// _chipTap, so arbitration and cadence are unchanged.
+  /// Build 2150 (engine appearance audit E49-12): the
+  /// disconnected arm was two rows of filled chips (~78 dp)
+  /// where pro5 sets ONE compact row of seven hairline
+  /// chips. It is a single row now: eight chips flexed by
+  /// name length at the connected arm's own type size,
+  /// pro5's squarer radius, and a scale-down fit as the
+  /// backstop so no width or text scale can wrap or clip
+  /// the row. (The two-row form was the owner's accepted
+  /// R2 composition; the audit recorded the deviation and
+  /// this build's order closes it toward the sample.)
   Widget _homeEngineSwitcher({required bool anyRunning}) {
     if (anyRunning) {
       return Padding(
@@ -3542,39 +3552,54 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     }
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        spacing: 6,
-        runSpacing: 6,
+      // Build 2150 (audit E49-12): one row, as pro5 — the
+      // chips share the width by name length; the fit is
+      // scale-down so a narrow width or a large text scale
+      // shrinks the row as one piece instead of wrapping
+      // it into the two-row tower the audit measured.
+      child: Row(
         children: [
-          for (final i in _homeEngineOrder)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () => _chipTap(i),
-                borderRadius: BorderRadius.circular(999),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 11,
-                    vertical: 7,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF141518),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: i == mode ? Ember.orange : MapUi.line,
+          for (var k = 0; k < _homeEngineOrder.length; k++) ...[
+            if (k > 0) const SizedBox(width: 4),
+            Expanded(
+              flex: _engineNames[_homeEngineOrder[k]].length + 2,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _chipTap(_homeEngineOrder[k]),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 2,
+                      vertical: 7,
                     ),
-                  ),
-                  child: Text(
-                    _engineNames[i],
-                    style: TextStyle(
-                      fontSize: Ember.fontSmall,
-                      color: i == mode ? Ember.orange : MapUi.dim,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF141518),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _homeEngineOrder[k] == mode
+                            ? Ember.orange
+                            : MapUi.line,
+                      ),
+                    ),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        _engineNames[_homeEngineOrder[k]],
+                        maxLines: 1,
+                        style: TextStyle(
+                          fontSize: Ember.fontMicro,
+                          color: _homeEngineOrder[k] == mode
+                              ? Ember.orange
+                              : MapUi.dim,
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
+          ],
         ],
       ),
     );
@@ -3673,35 +3698,20 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       // Build 2032: WireGuard swaps in its own configurations
       // view; WARP/MASQUE swap in the endpoint view.
       if (psiphonMode)
-        PsiphonRegionsView(
-          psiphon: _psiphon,
-          onClose: () => setState(() => _tab = 0),
-        )
+        PsiphonRegionsView(psiphon: _psiphon)
       else if (lanternMode)
-        LanternServersView(
-          lantern: _lantern,
-          onClose: () => setState(() => _tab = 0),
-        )
+        LanternServersView(lantern: _lantern)
       else if (openvpnMode)
-        OpenVpnServersView(
-          openvpn: _openvpn,
-          onClose: () => setState(() => _tab = 0),
-        )
+        OpenVpnServersView(openvpn: _openvpn)
       else if (wgMode)
         WireGuardServersView(
           xray: _xray,
           onClose: () => setState(() => _tab = 0),
         )
       else if (warpMode)
-        AetherServersView(
-          controller: _warp,
-          onClose: () => setState(() => _tab = 0),
-        )
+        AetherServersView(controller: _warp)
       else if (masqueMode)
-        AetherServersView(
-          controller: _masque,
-          onClose: () => setState(() => _tab = 0),
-        )
+        AetherServersView(controller: _masque)
       else
         EmberServers(
           core: core,
@@ -3728,7 +3738,6 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
           core: core,
           xray: _xray,
           v2ray: v2ray,
-          onClose: () => setState(() => _tab = 0),
           bootstrap: _bootstrap,
           // Build 2105 (Mozilla feature 1): the failure-screen
           // browser offer follows the owner's AppSettings toggle.
@@ -4093,18 +4102,28 @@ class _ShellControlBar extends StatelessWidget {
 
   /// R2: the word the bar's action carries. The two
   /// settled states take the samples' action verbs; every
-  /// other word the model can settle on (a transition, or
-  /// an honest exception like "Connected — not answering")
+  /// other word the model can settle on (a transition)
   /// keeps its own text, tracked and uppercased — the bar
   /// must not flatten information the model carries.
   /// Build 2149 (audit A48-01): BOTH bar forms use this
   /// word — before this build only the slim bar did, and
   /// the full bar's pill still read 'Connected' where the
   /// owner's order (and the slim bar) say DISCONNECT.
+  /// Build 2150 (engine appearance audit E49-17): the
+  /// Connected FAMILY takes DISCONNECT, not only the two
+  /// exact settled words — the pill already fills orange
+  /// for any word starting with 'Connected' (_pillConnected),
+  /// so in 'Connected — not answering' the orange pill
+  /// carried the capitalised state text instead of the
+  /// action. No information is flattened: the state word
+  /// itself still renders verbatim on the bar (the slim
+  /// bar's tracked line, the full bar's telemetry) — only
+  /// the ACTION word is unified. ('Connecting…' is safe:
+  /// it does not share the 'Connected' prefix.)
   String get _actionWord {
     if (!busy) {
       if (stateWord == 'Not connected') return 'CONNECT';
-      if (stateWord == 'Connected' || stateWord.startsWith('Connected via')) {
+      if (stateWord.startsWith('Connected')) {
         return 'DISCONNECT';
       }
     }

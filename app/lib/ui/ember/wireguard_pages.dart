@@ -1068,9 +1068,14 @@ class WireGuardServersView extends StatelessWidget {
   // container-level frosted backing as the V2Ray list —
   // these profile rows (MapGlass blur: false) rendered on
   // the bare dotted map.
+  // Build 2150 (engine appearance audit E49-14): the frost
+  // settles — the bare blur read as a grey smear over this
+  // page's top half, the furthest ground from the samples'
+  // near-black.
   @override
   Widget build(BuildContext context) {
     return MapListFrost(
+      settle: true,
       child: ListenableBuilder(
         listenable: xray,
         builder: (context, _) {

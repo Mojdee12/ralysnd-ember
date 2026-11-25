@@ -255,13 +255,16 @@ class _DnsPresetsPageState extends State<DnsPresetsPage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: Ember.text,
-        centerTitle: true,
-        title: Text(
-          'DNS presets',
-          style: Ember.heading.copyWith(fontSize: Ember.fontHeadline),
-        ),
+        // Build 2150 (engine appearance audit E49-10): the
+        // centered, enlarged title aligned to the app
+        // dialect — left-aligned plain Ember.heading.
+        title: Text('DNS presets', style: Ember.heading),
       ),
+      // Build 2150 (audit E49-14): the intro prose sat on
+      // unsettled dot clusters; the page takes the short
+      // band, the prose settling on the near-black base.
       body: EmberBackground(
+        bandShort: true,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 110, 16, 24),
           children: [

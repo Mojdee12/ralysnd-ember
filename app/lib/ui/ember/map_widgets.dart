@@ -150,6 +150,13 @@ class MapBackdropVisual extends StatelessWidget {
               ),
             ),
           // Build 2147 (strict-audit F1): the short band.
+          // Build 2150 (engine appearance audit E49-14): the
+          // ramp completes earlier and a notch deeper — the
+          // first text rows of the bandShort surfaces
+          // (Settings chips, the Lab head) sat in the
+          // 10–27% zone where the old ramp was still
+          // half-open and the dot clusters read through
+          // them. Same band, settled sooner.
           if (bandShort)
             const DecoratedBox(
               decoration: BoxDecoration(
@@ -160,9 +167,9 @@ class MapBackdropVisual extends StatelessWidget {
                     Color(0x00000000),
                     Color(0x00000000),
                     Color(0xD9050607),
-                    Color(0xE6050607),
+                    Color(0xEC050607),
                   ],
-                  stops: [0, 0.10, 0.24, 0.38],
+                  stops: [0, 0.05, 0.16, 0.30],
                 ),
               ),
             ),
@@ -450,9 +457,21 @@ class MapGlass extends StatelessWidget {
 /// under these tabs is static). Blur only, no tint: each
 /// surface above keeps exactly the colours it had.
 class MapListFrost extends StatelessWidget {
-  const MapListFrost({super.key, required this.child});
+  const MapListFrost({super.key, required this.child, this.settle = false});
 
   final Widget child;
+
+  /// Build 2150 (engine appearance audit E49-14): on the
+  /// WireGuard configurations and Accounts/Subscriptions
+  /// surfaces the bare blur read as a grey smear in the top
+  /// half — a third ground treatment, the furthest from the
+  /// samples' near-black. [settle] lays the near-black base
+  /// over the blur at the faint-ramp's deep weight, so the
+  /// frost keeps its legibility purpose but the ground
+  /// reads as the settled base colour, not grey wash. The
+  /// V2Ray/OpenVPN lists keep the untinted frost (their
+  /// accepted composition).
+  final bool settle;
 
   @override
   Widget build(BuildContext context) {
@@ -466,6 +485,10 @@ class MapListFrost extends StatelessWidget {
             ),
           ),
         ),
+        if (settle)
+          const Positioned.fill(
+            child: ColoredBox(color: Color(0xC2050607)),
+          ),
         child,
       ],
     );
@@ -968,32 +991,46 @@ class MapActionPill extends StatelessWidget {
                   ? Ember.orange.withValues(alpha: 0.10)
                   : Colors.white.withValues(alpha: 0.04),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (busy)
-                  const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Ember.orange,
+            // Build 2150 (engine appearance audit E49-18):
+            // the new scale-matrix cell for the daily report
+            // caught this row overflowing by 1.4 px at
+            // 360 dp × 2.0 text scale ('Share report' in a
+            // half-width pill) — a pre-existing tightness
+            // the 2149 page shipped unmeasured. The row now
+            // carries a scale-down fit: wherever the content
+            // fits (every audited surface at ordinary
+            // scales) it renders at scale 1.0 exactly as
+            // before; at extreme widths/scales it shrinks
+            // as one piece instead of overflowing.
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (busy)
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Ember.orange,
+                      ),
+                    )
+                  else
+                    Icon(icon, size: 12, color: color),
+                  const SizedBox(width: 4),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      // Build 2092 (UI audit item 52): pill labels
+                      // at the 11 sp informational floor.
+                      fontSize: Ember.fontMicro,
+                      fontWeight: FontWeight.w700,
+                      color: color,
                     ),
-                  )
-                else
-                  Icon(icon, size: 12, color: color),
-                const SizedBox(width: 4),
-                Text(
-                  label,
-                  style: TextStyle(
-                    // Build 2092 (UI audit item 52): pill labels
-                    // at the 11 sp informational floor.
-                    fontSize: Ember.fontMicro,
-                    fontWeight: FontWeight.w700,
-                    color: color,
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -1024,7 +1061,10 @@ class MapPanelHeader extends StatelessWidget {
           title,
           style: const TextStyle(
             fontSize: Ember.fontTitle,
-            fontWeight: FontWeight.w700,
+            // Build 2150 (engine appearance audit E49-11):
+            // panel titles join the samples' light title
+            // register — w500, not the w700 bold.
+            fontWeight: FontWeight.w500,
             color: MapUi.text,
             letterSpacing: 0.3,
           ),

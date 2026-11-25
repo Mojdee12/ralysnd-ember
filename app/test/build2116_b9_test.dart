@@ -12,7 +12,7 @@
 // the settings row now says so.
 // B9-4: `app_lock_enabled` exists nowhere — row closed VOID.
 // B9-5: EmberToggle carries switch semantics.
-// B9-6: the 16 named IconButtons carry tooltips.
+// B9-6: the named IconButtons carry tooltips.
 
 import 'dart:convert';
 import 'dart:ui' as ui;
@@ -108,7 +108,7 @@ void main() {
       expect(hits, isEmpty);
     });
 
-    test('B9-6: the 16 named IconButtons carry tooltips', () {
+    test('B9-6: the named IconButtons carry tooltips', () {
       final expectations = <String, List<String>>{
         // The OpenVPN four and the dnstt/warp save+refresh
         // buttons already carried tooltips BELOW the audit's
@@ -127,8 +127,12 @@ void main() {
           "'Move down'",
           "'Remove'",
         ],
-        'lib/ui/ember/aether_pages.dart': ["'Close'"],
-        'lib/ui/ember/lantern_pages.dart': ["'Close'"],
+        // PIN UPDATED by build 2150 (engine appearance
+        // audit E49-03): the aether and lantern views'
+        // 'Close' buttons were removed — they duplicated
+        // the shell header's BACK, exactly as WireGuard's
+        // did in 2149 (below). Their entries leave the
+        // census; every remaining named button stands.
         // PIN UPDATED by build 2149 (audit A48-04): the
         // WireGuard configurations view's 'Close' button
         // was removed — it duplicated the shell header's

@@ -164,7 +164,13 @@ abstract final class Ember {
 
   static TextStyle get title => const TextStyle(
     fontSize: fontDisplay,
-    fontWeight: FontWeight.w800,
+    // Build 2150 (engine appearance audit E49-11): the
+    // samples set their titles light — the w800 this style
+    // carried made every group/section/card title read as
+    // a heavy bold the design language never uses. The
+    // title step now wears the regular weight; hierarchy
+    // comes from size and colour, as in the samples.
+    fontWeight: FontWeight.w400,
     color: text,
   );
   static TextStyle get heading => const TextStyle(
@@ -292,14 +298,12 @@ abstract final class MapUi {
   );
 }
 
-/// Build 2074 (audit item 14): ONE ping rule — [pingColor]:
-/// the owner's frozen pair (green at or under 150 ms,
-/// yellow above; a failed test is faint). This name stays
-/// for its Map Control callers but delegates, so every
-/// surface colours the same delay the same way. (Build
-/// 2119, audit F-19: this comment used to describe a
-/// retired three-band green/amber/red rule the code no
-/// longer implements.)
+/// Build 2074 (audit item 14): ONE ping rule — [pingColor]
+/// (green at or under 150 ms, yellow to 400, red beyond —
+/// the red band restored by build 2150, audit E49-16; a
+/// failed test is faint). This name stays for its Map
+/// Control callers but delegates, so every surface colours
+/// the same delay the same way.
 Color mapPingColor(int ms) => pingColor(ms);
 
 /// The app background: the baked Map Control backdrop (the
@@ -1118,18 +1122,27 @@ String localizedCountryName(
       fallback;
 }
 
-/// Colored ping text — the ONE ping colour rule (build 2116, AP-04): the
-/// spec-frozen pair — green at or under 150 ms, yellow
-/// above. Three rules coexisted (this one at <100/<250,
-/// the legacy delayColor at <400/<1000, and the frozen
-/// MapUi.pingGreen/pingYellow pair defined but unused), so
-/// the same 200 ms read amber on mobile and green on
-/// desktop. Every ping/delay display now routes here; a
-/// negative reading is not a slow ping but no reading.
+/// Colored ping text — the ONE ping colour rule (build 2116, AP-04):
+/// green at or under 150 ms, yellow above. Three rules
+/// coexisted (this one at <100/<250, the legacy delayColor
+/// at <400/<1000, and the frozen MapUi.pingGreen/pingYellow
+/// pair defined but unused), so the same 200 ms read amber
+/// on mobile and green on desktop. Every ping/delay display
+/// routes here; a negative reading is not a slow ping but
+/// no reading.
+/// Build 2150 (engine appearance audit E49-16): the scale
+/// gains its red band back — above 400 ms a reading is poor
+/// health, and the owner's #22 ruling (ping colour follows
+/// health) cannot be served by a scale where 180 ms and
+/// 650 ms wear the same colour. The bands are the app's
+/// pre-2116 documented rule (green ≤150, amber to 400, red
+/// beyond — the _PingPill doc carried it throughout); red
+/// itself stays Ember.red, the Failed word's colour.
 Color pingColor(int ms) {
   if (ms < 0) return Ember.faint;
   if (ms <= 150) return MapUi.pingGreen;
-  return MapUi.pingYellow;
+  if (ms <= 400) return MapUi.pingYellow;
+  return Ember.red;
 }
 
 /// A gradient-filled primary button.

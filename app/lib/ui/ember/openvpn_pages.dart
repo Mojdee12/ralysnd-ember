@@ -1040,10 +1040,9 @@ class _PasteProfileDialogState extends State<_PasteProfileDialog> {
 }
 
 class OpenVpnServersView extends StatefulWidget {
-  const OpenVpnServersView({super.key, required this.openvpn, this.onClose});
+  const OpenVpnServersView({super.key, required this.openvpn});
 
   final OpenVpnController openvpn;
-  final VoidCallback? onClose;
 
   @override
   State<OpenVpnServersView> createState() => _OpenVpnServersViewState();
@@ -1091,7 +1090,11 @@ class _OpenVpnServersViewState extends State<OpenVpnServersView> {
                       children: [
                         MapPanelHeader(
                           title: 'OpenVPN profiles',
-                          onClose: widget.onClose,
+                          // Build 2150 (engine appearance audit
+                          // E49-03): no onClose — the panel's ✕
+                          // duplicated the shell header's BACK
+                          // on this shell tab. BACK is the one
+                          // way out.
                           actions: [
                             if (openvpn.pinging)
                               const SizedBox(

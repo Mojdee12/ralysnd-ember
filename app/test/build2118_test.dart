@@ -40,11 +40,18 @@ String _between(String text, String from, String to) {
 
 void main() {
   test('pubspec is 2.2.0+2119', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2149'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2150'));
   });
 
   test('backdrop asset is a 3200px WebP over 600 KB', () {
-    final bytes = File('assets/backdrop/map_backdrop.webp').readAsBytesSync();
+    // PIN UPDATED by build 2150 (engine appearance audit
+    // E49-19): the coarse map_backdrop.webp was removed
+    // (dead since 2148). The asset this pin's facts were
+    // always about — the shipped 3200×1600 VP8 bake — is
+    // the home asset every surface paints; the same
+    // assertions now read it.
+    final bytes =
+        File('assets/backdrop/map_backdrop_home.webp').readAsBytesSync();
     expect(bytes.length, greaterThan(600000));
     // Lossy VP8: 'VP8 ' chunk at 12, keyframe magic at 23,
     // 14-bit width/height at 26/28.

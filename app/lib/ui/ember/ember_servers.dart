@@ -73,7 +73,10 @@ class EmberServers extends StatelessWidget {
             psiphon: psiphon,
           ),
         )
-      : _MozillaServers(core: core, onClose: onClose);
+      // Build 2150 (audit E49-03): the Mozilla branch no
+      // longer takes onClose — its ✕ duplicated the shell
+      // BACK (see _MozillaServers).
+      : _MozillaServers(core: core);
 }
 
 /// Build 2133: the V2Ray tab as a dedicated full-screen
@@ -133,9 +136,8 @@ class V2RayPage extends StatelessWidget {
 // ---------------------------------------------------------------- Mozilla
 
 class _MozillaServers extends StatefulWidget {
-  const _MozillaServers({required this.core, this.onClose});
+  const _MozillaServers({required this.core});
   final CoreController core;
-  final VoidCallback? onClose;
 
   @override
   State<_MozillaServers> createState() => _MozillaServersState();
@@ -279,7 +281,12 @@ class _MozillaServersState extends State<_MozillaServers> {
                   children: [
                     MapPanelHeader(
                       title: 'Mozilla Locations',
-                      onClose: widget.onClose,
+                      // Build 2150 (engine appearance audit
+                      // E49-03): no onClose — the page's own ✕
+                      // duplicated the shell header's BACK on
+                      // the same screen (the A48-04 class,
+                      // removed from WireGuard in 2149). The
+                      // shell BACK is the one way out.
                       actions: [
                         if (_pinging)
                           const SizedBox(
@@ -786,12 +793,53 @@ class _V2rayPageLead extends StatelessWidget {
       children: [
         Row(
           children: [
+            // Build 2150 (engine appearance audit E49-03 +
+            // E49-04): this pushed page closed with its own
+            // ✕ while every other pushed page follows the
+            // 2148 ruling — the shell-style BACK pill is the
+            // one way out, worn here at the row's left in the
+            // shell header's own construction (same tap
+            // target: the page's onClose pop). Losing the
+            // 48 dp ✕ also ends the header's truncation
+            // (E49-04): the wordmark's tracking tightens,
+            // the label's tightens further and gains a
+            // scale-down fit (see the label below) — the
+            // whole row, BACK · EMBER · status, fits whole
+            // at 411 dp and at 360 dp, and the label never
+            // ellipsises or clips again.
+            if (onClose != null)
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: onClose,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 15,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.arrow_back_rounded,
+                          size: 18,
+                          color: Ember.orange,
+                        ),
+                        const SizedBox(width: 6),
+                        Text('BACK', style: Ember.microLabelOrange),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            if (onClose != null) const SizedBox(width: 6),
             const Text(
               'EMBER',
               style: TextStyle(
                 fontSize: Ember.fontDisplay,
                 fontWeight: FontWeight.w300,
-                letterSpacing: 6,
+                letterSpacing: 2.5,
                 color: Ember.text,
               ),
             ),
@@ -818,25 +866,29 @@ class _V2rayPageLead extends StatelessWidget {
             // label flexes — at 360dp x 1.3 the tracked
             // wordmark + status + close row overflowed by
             // 19px; the label ellipsises instead.
+            // Build 2150 (E49-04): the ✕ is gone (BACK
+            // above), the tracking is tightened (wordmark
+            // 2.5, label 1.2), the ellipsis is retired — and
+            // the label carries a scale-down fit, so at any
+            // width or text scale it shrinks as one piece
+            // instead of clipping: a page title never
+            // truncates. (First 2150 render round: spacing
+            // alone still clipped the last letters at
+            // 411 dp — the fit is the guarantee, the
+            // tightened tracking keeps it at scale 1.0 on
+            // the owner's phone.)
             Flexible(
-              child: Text(
-                'V2RAY ENGINE',
-                style: Ember.microLabel,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            if (onClose != null)
-              IconButton(
-                tooltip: 'Close',
-                onPressed: onClose,
-                icon: const Icon(Icons.close_rounded, size: 19),
-                color: MapUi.dim,
-                constraints: const BoxConstraints(
-                  minWidth: 48,
-                  minHeight: 48,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  'V2RAY ENGINE',
+                  style: Ember.microLabel.copyWith(letterSpacing: 1.2),
+                  maxLines: 1,
+                  softWrap: false,
                 ),
               ),
+            ),
           ],
         ),
         Row(
@@ -1948,17 +2000,12 @@ class _V2rayServersState extends State<_V2rayServers> {
                                 showAddSubscriptionSheet(context, xray),
                             child: const Text('Add', style: _headerActionStyle),
                           ),
-                          if (widget.onClose != null)
-                            IconButton(
-                              tooltip: 'Close',
-                              onPressed: widget.onClose,
-                              icon: const Icon(Icons.close_rounded, size: 19),
-                              color: MapUi.dim,
-                              constraints: const BoxConstraints(
-                                minWidth: 48,
-                                minHeight: 48,
-                              ),
-                            ),
+                          // Build 2150 (engine appearance audit
+                          // E49-03): the tab header's own ✕ is
+                          // retired — on the tab the shell
+                          // header's BACK above is the one way
+                          // out; the pushed page's lead carries
+                          // its BACK pill (E49-03/E49-04).
                         ],
                       ),
                       const SizedBox(height: 10),
@@ -2348,63 +2395,15 @@ class _V2rayServersState extends State<_V2rayServers> {
                   ),
                 ),
               ),
-            // Build 2144 (reskin): the pro6 sample's bottom
-            // action row — a long flat-orange scan pill and
-            // an outline add pill, carrying the existing
-            // QR Scan / Add actions and labels verbatim.
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: EmberButton(
-                        label: 'QR Scan',
-                        icon: Icons.qr_code_scanner_rounded,
-                        onTap: () => unawaited(scanAndImport(context, xray)),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: () => showAddSubscriptionSheet(context, xray),
-                        borderRadius: BorderRadius.circular(999),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 14,
-                            horizontal: 20,
-                          ),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: MapUi.lineStrong),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.add_rounded,
-                                size: 19,
-                                color: Ember.orange,
-                              ),
-                              SizedBox(width: 8),
-                              Text(
-                                'Add',
-                                style: TextStyle(
-                                  fontSize: Ember.fontTitle,
-                                  fontWeight: FontWeight.w800,
-                                  color: MapUi.text,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+            // Build 2150 (engine appearance audit E49-13):
+            // build 2144's bottom action row is retired —
+            // it duplicated the header's QR Scan / Add text
+            // actions at the list's foot on both the tab and
+            // the pushed page, and its QR pill wore the
+            // solid orange fill the samples reserve for the
+            // connect action. The header actions are the one
+            // route; the list keeps the row's bottom gap.
+            const SliverToBoxAdapter(child: SizedBox(height: 24)),
           ],
         );
       },
@@ -3058,29 +3057,39 @@ class _GroupCardHead extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Build 2150 (engine appearance audit E49-02):
+          // the title block takes the head's full width on
+          // its own lines, and the controls move to their
+          // own row beneath it — a long group name ("My
+          // Panel With…") no longer flexes against the
+          // ⋮ / refresh / Ping / chevron furniture and
+          // ellipsises; it wraps to a second line first,
+          // the profile name's own rule. Every control,
+          // callback and fact below is unchanged.
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Ember.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: const TextStyle(
+                  fontSize: Ember.fontMicro,
+                  color: MapUi.dim,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Row(
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: Ember.title,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: Ember.fontMicro,
-                        color: MapUi.dim,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
+              const Spacer(),
               // Build 2136 (visual review V-14): Prune moves
               // into a head overflow menu — the title column
               // gains its 48dp back; Refresh, Ping and the
@@ -3596,6 +3605,17 @@ class _ProfileRow extends StatelessWidget {
     }
 
     final status = statusTrailing();
+    // Build 2150 (engine appearance audit E49-02): a RESULT
+    // status (the ping numeral, Failed, Sidecar busy, the
+    // block glyph) is a settled fact about the row, not a
+    // transient — 2148 stacked the selected row's status on
+    // its own line for exactly this reason, but the plain
+    // rows kept theirs beside the name, and a long name
+    // still ellipsised against it ("Senpai-Netherlands-Ams…"
+    // beside Failed). Result statuses now stack under the
+    // name column on EVERY row; only the transient
+    // testing/switching spinner stays in the name row.
+    final statusIsResult = !testing && !switching && status != null;
         // Batch 2 (fidelity rollout, owner order 2026-11-23):
     // the selected row's anatomy splits in two. In one row
     // the Connect button stacked over the hero ping beside
@@ -3706,13 +3726,19 @@ class _ProfileRow extends StatelessWidget {
                         'TCP connect failed',
                       // Build 2149: the node test reports
                       // both directions — the row shows
-                      // ↓/↑ together when the upload was
+                      // both together when the upload was
                       // measured; a pre-2149 download-only
                       // result keeps its old wording.
+                      // Build 2150 (engine appearance audit
+                      // E49-20): the ↓/↑ glyphs are tofu in
+                      // the row's font — the string takes the
+                      // totals line's own vocabulary (words,
+                      // per ember_format.dart's standing rule
+                      // for string forms).
                       if (profile.lastSpeedBps >= 0 &&
                           profile.lastSpeedUpBps >= 0)
-                        'Speed test ↓ ${fmtRate(profile.lastSpeedBps)}'
-                            ' · ↑ ${fmtRate(profile.lastSpeedUpBps)}'
+                        'Speed test Down ${fmtRate(profile.lastSpeedBps)}'
+                            ' · Up ${fmtRate(profile.lastSpeedUpBps)}'
                       else if (profile.lastSpeedBps >= 0)
                         'Last speed test ${fmtRate(profile.lastSpeedBps)}',
                     ].join(' · '),
@@ -3746,7 +3772,10 @@ class _ProfileRow extends StatelessWidget {
               color: checked ? Ember.orange : MapUi.faint,
             ),
             ?status,
-          ] else if (!selectedIdle)
+          ] else if (!selectedIdle && !statusIsResult)
+            // Build 2150 (E49-02): result statuses render on
+            // their own line below (see rowChild) — only the
+            // transient spinner reaches this slot now.
             ?status,
           // Build 2074 (audit item 4): the star and the ⋮ menu
           // get the full 48 dp hit area — icons unchanged.
@@ -3875,6 +3904,26 @@ class _ProfileRow extends StatelessWidget {
                     ?status,
                   ],
                 ),
+              ),
+            ],
+          )
+        : statusIsResult && !multiSelect
+        // Build 2150 (E49-02): the plain row's result status
+        // takes its own line under the name column — the
+        // selected row's 2148 anatomy, generalised. The name
+        // column keeps the row's full width; nothing about
+        // the status (size, colour, wording) changes.
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              rowA,
+              const SizedBox(height: 2),
+              Padding(
+                padding: const EdgeInsets.only(left: 45),
+                // statusIsResult's own null check promotes
+                // status here — no null-aware element needed.
+                child: Row(children: [status]),
               ),
             ],
           )
@@ -4047,8 +4096,11 @@ class _ProfileRow extends StatelessWidget {
                 bps >= 0
                     ? '${l.speedTest}: '
                           '${profile.delayMs >= 0 ? '${latDigits(profile.delayMs)} ms · ' : ''}'
-                          '↓ ${fmtRate(bps)}'
-                          '${profile.lastSpeedUpBps >= 0 ? ' · ↑ ${fmtRate(profile.lastSpeedUpBps)}' : ''}'
+                          // Build 2150 (audit E49-20): words,
+                          // not the tofu-prone arrow glyphs —
+                          // the string-form rule.
+                          'Down ${fmtRate(bps)}'
+                          '${profile.lastSpeedUpBps >= 0 ? ' · Up ${fmtRate(profile.lastSpeedUpBps)}' : ''}'
                     : l.testFailed,
               ),
             ),

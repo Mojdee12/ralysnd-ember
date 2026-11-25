@@ -131,7 +131,7 @@ void main() {
           // Build 2146: re-pointed 2145 → 2146 per the same
           // standing doctrine (all 26 version pins in the
           // suite moved together, as in every prior build).
-          'version: 2.2.0+2149',
+          'version: 2.2.0+2150',
         ),
         isTrue,
         reason: 'pubspec carries the real build this ships as',

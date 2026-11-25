@@ -186,10 +186,9 @@ class LanternHomePage extends StatelessWidget {
 /// buttons, the VIP private entry, and the smart-routing
 /// toggle backed by the core's real API.
 class LanternServersView extends StatelessWidget {
-  const LanternServersView({super.key, required this.lantern, this.onClose});
+  const LanternServersView({super.key, required this.lantern});
 
   final LanternController lantern;
-  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -233,35 +232,20 @@ class LanternServersView extends StatelessWidget {
             // view opens with the sample's hero zone over the
             // ground — the hero word, the connection state as
             // a quiet tracked line, the list's size and the
-            // current mode under it. The page's Close rides
-            // the hero row (the same control the panel's
-            // title row carried, build 2074's ≥48 dp target).
-            // The panel below keeps only the picker; its
-            // explainer survives as the panel's caption
-            // footnote, verbatim.
+            // current mode under it. The panel below keeps
+            // only the picker; its explainer survives as the
+            // panel's caption footnote, verbatim.
+            // Build 2150 (engine appearance audit E49-03):
+            // the page's own ✕ that rode this hero row is
+            // retired — this is a shell tab, and the shell
+            // header's BACK is the one way out (the same
+            // duplication A48-04 removed from WireGuard).
             Padding(
               padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(child: Text('Lantern', style: Ember.hero)),
-                      if (onClose != null)
-                        IconButton(
-                          tooltip: 'Close',
-                          onPressed: onClose,
-                          icon: const Icon(Icons.close_rounded, size: 19),
-                          color: MapUi.dim,
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.only(left: 4),
-                          constraints: const BoxConstraints(
-                            minWidth: 48,
-                            minHeight: 48,
-                          ),
-                        ),
-                    ],
-                  ),
+                  Text('Lantern', style: Ember.hero),
                   const SizedBox(height: 8),
                   Row(
                     children: [

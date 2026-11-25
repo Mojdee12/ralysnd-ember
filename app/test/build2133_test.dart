@@ -98,7 +98,18 @@ void main() {
       expect(servers, contains('_StatusStrip(xray: xray)'));
       expect(servers, contains('l.tabSummary('));
       expect(servers, contains("label: 'Import'"));
-      expect(servers, contains("label: 'QR Scan'"));
+      // PIN UPDATED by build 2150 (engine appearance audit
+      // E49-13): the bottom action row's EmberButton
+      // ('label: QR Scan') is retired — it duplicated the
+      // header's QR Scan / Add text actions and wore the
+      // solid orange fill reserved for connect. The header
+      // text action is the one QR Scan route now.
+      expect(
+        servers,
+        contains(
+          "Text('QR Scan', style: _V2rayServersState._headerActionStyle)",
+        ),
+      );
       expect(servers, contains("Text('Add', style: _headerActionStyle)"));
       expect(servers, contains('showAddSubscriptionSheet(context, xray)'));
     });
@@ -265,6 +276,6 @@ void main() {
   });
 
   test('pubspec is build 2133', () {
-    expect(pubspec, contains('version: 2.2.0+2149'));
+    expect(pubspec, contains('version: 2.2.0+2150'));
   });
 }

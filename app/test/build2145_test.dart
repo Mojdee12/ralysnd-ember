@@ -22,7 +22,7 @@ void main() {
   group('build 2145 — composition rebuild', () {
     test('pubspec carries 2.2.0+2148', () {
       expect(File('pubspec.yaml').readAsStringSync(),
-          contains('version: 2.2.0+2149'));
+          contains('version: 2.2.0+2150'));
     });
 
     test('home disconnected hero is a painted power ring', () {

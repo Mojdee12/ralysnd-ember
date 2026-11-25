@@ -33,11 +33,11 @@ class DailyReportPage extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: Ember.text,
-        centerTitle: true,
-        title: Text(
-          'Daily problem report',
-          style: Ember.heading.copyWith(fontSize: Ember.fontHeadline),
-        ),
+        // Build 2150 (engine appearance audit E49-10): the
+        // centered, enlarged title was the only one of its
+        // kind — the app dialect is the left-aligned plain
+        // Ember.heading title (the recycle bin's form).
+        title: Text('Daily problem report', style: Ember.heading),
       ),
       body: EmberBackground(
         child: ListenableBuilder(

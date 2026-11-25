@@ -26,8 +26,11 @@ bool _samePins(Set<String> a, Set<String> b) =>
 
 
 /// The Map Control view transform: the SAME equirectangular cover
-/// projection the baked backdrop asset (assets/backdrop/map_backdrop.webp)
-/// is drawn with, so live actors land exactly on the baked dots.
+/// projection the baked backdrop asset
+/// (assets/backdrop/map_backdrop_home.webp — the one asset every
+/// surface paints since build 2148; the coarser pre-2148 sibling
+/// was removed in build 2150, audit E49-19) is drawn with, so live
+/// actors land exactly on the baked dots.
 /// The field is 360×180; [cover] scales it to cover [size]; the view
 /// is centred on [centerLon] (portrait phones shift east so the home
 /// marker and the usual European exits share the frame, as in the

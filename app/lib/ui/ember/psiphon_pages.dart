@@ -61,12 +61,10 @@ class PsiphonRegionsPanel extends StatelessWidget {
   const PsiphonRegionsPanel({
     super.key,
     required this.psiphon,
-    this.onClose,
     this.compact = false,
   });
 
   final PsiphonController psiphon;
-  final VoidCallback? onClose;
   final bool compact;
 
   void _pick(String code) {
@@ -154,31 +152,48 @@ class PsiphonRegionsPanel extends StatelessWidget {
         Text('ENGINE · PSIPHON', style: Ember.microLabelOrange),
         const SizedBox(height: 10),
         // Build 2144 (pro6 reskin): the header takes the
-        // samples' hero tier; the close control is the
-        // header's own (same tooltip, icon, size).
-        Row(
-          children: [
-            Expanded(child: Text('Exit Region', style: Ember.hero)),
-            if (onClose != null)
-              IconButton(
-                tooltip: 'Close',
-                onPressed: onClose,
-                icon: const Icon(Icons.close_rounded, size: 19),
-                color: MapUi.dim,
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.only(left: 4),
-                constraints: const BoxConstraints(
-                  minWidth: 48,
-                  minHeight: 48,
-                ),
-              ),
-          ],
-        ),
+        // samples' hero tier.
+        // Build 2150 (engine appearance audit E49-03): the
+        // header's own ✕ is retired — in the Servers tab it
+        // duplicated the shell header's BACK on the same
+        // screen; the pushed and inline uses never carried
+        // one. The shell BACK is the one way out.
+        Text('Exit Region', style: Ember.hero),
         const SizedBox(height: 12),
         // Build 2074 (audit item 26): no nested scroll —
         // the rows lay out in full and the page scrolls
         // them.
-        list,
+        // Build 2150 (audit E49-05): the rows take a settled
+        // ground of their own — on the raw full-strength
+        // dot field the middle rows lost their contrast
+        // (every other engine list sits on a banded or
+        // frosted ground; pro6-psiphon's rows ground on
+        // settled near-black). The scrim is the band
+        // family's ramp deepened to the list's full height:
+        // no border, no radius, no card — the ground
+        // settles under the rows and the hairlines and
+        // names keep their exact styling.
+        Stack(
+          children: [
+            const Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    stops: [0, 0.35, 1],
+                    colors: [
+                      Color(0x59050607),
+                      Color(0xD9050607),
+                      Color(0xE6050607),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            list,
+          ],
+        ),
         // Build 2145: the chain-underlay toggle row at the
         // list foot (the sample's foot row). Its value is
         // the same proxy-only mode state the selected row's
@@ -218,10 +233,9 @@ class PsiphonRegionsPanel extends StatelessWidget {
 /// The exit-region view (the Servers tab's content in Psiphon
 /// mode, and pushed from the settings page).
 class PsiphonRegionsView extends StatelessWidget {
-  const PsiphonRegionsView({super.key, required this.psiphon, this.onClose});
+  const PsiphonRegionsView({super.key, required this.psiphon});
 
   final PsiphonController psiphon;
-  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -230,7 +244,7 @@ class PsiphonRegionsView extends StatelessWidget {
       builder: (context, _) {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          children: [PsiphonRegionsPanel(psiphon: psiphon, onClose: onClose)],
+          children: [PsiphonRegionsPanel(psiphon: psiphon)],
         );
       },
     );
@@ -454,7 +468,13 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
         foregroundColor: Ember.text,
         title: Text('Psiphon', style: Ember.heading),
       ),
+      // Build 2150 (engine appearance audit E49-05): every
+      // pushed Psiphon page takes the banded ground the
+      // other engine pages already use — the plain ground
+      // left these pages on the raw full-strength dot
+      // field. This page and the five below alike.
       body: EmberBackground(
+        banded: true,
         child: ListView(
           padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
           children: [
@@ -493,6 +513,7 @@ class _PsiphonSettingsPageState extends State<PsiphonSettingsPage> {
                               title: Text(l.region, style: Ember.heading),
                             ),
                             body: EmberBackground(
+                              banded: true,
                               // Build 2138 (visual review V-26):
                               // the body extends behind the
                               // transparent bar; the regions view
@@ -825,6 +846,7 @@ class _PsiphonTransportsPageState extends State<PsiphonTransportsPage> {
         title: Text(l.psiphonTransports, style: Ember.heading),
       ),
       body: EmberBackground(
+        banded: true,
         child: ListView(
           padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
           children: [
@@ -947,6 +969,7 @@ class _PsiphonLogsPageState extends State<PsiphonLogsPage> {
         ],
       ),
       body: EmberBackground(
+        banded: true,
         child: FutureBuilder<String>(
           future: _logs,
           builder: (context, snap) {
@@ -1101,6 +1124,7 @@ class _PsiphonMethodPageState extends State<PsiphonMethodPage> {
         title: Text('Connection method', style: Ember.heading),
       ),
       body: EmberBackground(
+        banded: true,
         child: ListView(
           padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
           children: [
@@ -1301,6 +1325,7 @@ class _PsiphonEdgesPageState extends State<PsiphonEdgesPage> {
             title: Text('CDN edges', style: Ember.heading),
           ),
           body: EmberBackground(
+        banded: true,
             child: ListView(
               padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 18, 18),
               children: [

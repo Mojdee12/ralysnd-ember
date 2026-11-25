@@ -395,7 +395,12 @@ class _AppLockPageState extends State<AppLockPage> {
         // the pad floats bare on that ground, no panel. The
         // pad's behaviour (attempts, cooldown, biometrics)
         // is untouched.
+        // Build 2150 (engine appearance audit E49-14): the
+        // short band — the page's intro prose sat on
+        // unsettled dot clusters; pro6-applock's ground is
+        // settled near-black.
         body: EmberBackground(
+          bandShort: true,
           child: SafeArea(
             child: LayoutBuilder(
               builder: (context, constraints) => SingleChildScrollView(

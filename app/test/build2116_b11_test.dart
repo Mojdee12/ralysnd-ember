@@ -19,13 +19,24 @@ String _src(String rel) => File(rel).readAsStringSync();
 void main() {
   group('B11-3 / AP-04 one ping rule (the frozen ≤150 pair)', () {
     test('pingColor and delayColor agree everywhere', () {
+      // PIN UPDATED by build 2150 (engine appearance audit
+      // E49-16): the 2116 freeze held the top band open —
+      // everything above 150 ms was the same yellow, so a
+      // 180 ms and a 650 ms answer read identically against
+      // the owner's ruling that ping colour follows health
+      // (2147 #22). The rule is the three-band scale the
+      // _PingPill doc always described: green ≤150, yellow
+      // to 400, red beyond. The agreement half of this pin
+      // (one function, both shells) is unchanged.
       expect(pingColor(-1), Ember.faint);
       expect(pingColor(0), MapUi.pingGreen);
       expect(pingColor(150), MapUi.pingGreen);
       expect(pingColor(151), MapUi.pingYellow);
       expect(pingColor(200), MapUi.pingYellow,
           reason: 'the 200 ms case that disagreed across shells');
-      expect(pingColor(2000), MapUi.pingYellow);
+      expect(pingColor(400), MapUi.pingYellow);
+      expect(pingColor(401), Ember.red);
+      expect(pingColor(2000), Ember.red);
       for (final ms in [-1, 0, 100, 150, 151, 400, 1000, 5000]) {
         expect(legacy.delayColor(ms), pingColor(ms), reason: '$ms');
       }
@@ -34,7 +45,16 @@ void main() {
 
   group('B12-1 / AP-03 backdrop', () {
     test('the backdrop is a display-class WebP, decoded capped', () {
-      final webp = File('assets/backdrop/map_backdrop.webp');
+      // PIN UPDATED by build 2150 (engine appearance audit
+      // E49-19): the coarse map_backdrop.webp shipped dead
+      // — since 2148 every surface paints the fine home
+      // bake and nothing referenced the coarse file. It is
+      // REMOVED; the pin now asserts its absence and the
+      // home asset's presence. Intent kept: one WebP
+      // backdrop, decoded capped, no PNG shipped.
+      expect(File('assets/backdrop/map_backdrop.webp').existsSync(),
+          isFalse);
+      final webp = File('assets/backdrop/map_backdrop_home.webp');
       expect(webp.existsSync(), isTrue);
       expect(webp.lengthSync(), lessThan(1024 * 1024));
       expect(File('assets/backdrop/map_backdrop.png').existsSync(),

@@ -1460,10 +1460,9 @@ class AetherOptionsPage extends StatelessWidget {
 }
 
 class AetherServersView extends StatelessWidget {
-  const AetherServersView({super.key, required this.controller, this.onClose});
+  const AetherServersView({super.key, required this.controller});
 
   final AetherController controller;
-  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -1490,21 +1489,10 @@ class AetherServersView extends StatelessWidget {
                           style: Ember.heading,
                         ),
                       ),
-                      if (onClose != null)
-                        // Build 2074 (audit item 4): a ≥48dp hit
-                        // area for the panel close button.
-                        IconButton(
-                          tooltip: 'Close',
-                          onPressed: onClose,
-                          icon: const Icon(Icons.close_rounded, size: 19),
-                          color: MapUi.dim,
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.only(left: 4),
-                          constraints: const BoxConstraints(
-                            minWidth: 48,
-                            minHeight: 48,
-                          ),
-                        ),
+                      // Build 2150 (engine appearance audit
+                      // E49-03): the panel's own ✕ is retired —
+                      // this is a shell tab body, and the shell
+                      // header's BACK is the one way out.
                     ],
                   ),
                   const SizedBox(height: 6),

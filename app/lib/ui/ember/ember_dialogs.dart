@@ -26,7 +26,12 @@ Future<bool> showEmberConfirm(
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      // Build 2150 (audit E49-15): the panel radius and
+      // hairline, matching the dialog theme's new shape.
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Ember.radiusPanel),
+        side: const BorderSide(color: Ember.line),
+      ),
       title: Text(title, style: Ember.heading),
       content: Text(message, style: Ember.dimStyle),
       actions: [
@@ -61,7 +66,11 @@ Future<T?> showEmberFormDialog<T>(
 }) => showDialog<T>(
   context: context,
   builder: (dialogContext) => AlertDialog(
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+    // Build 2150 (audit E49-15): as showEmberConfirm above.
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(Ember.radiusPanel),
+      side: const BorderSide(color: Ember.line),
+    ),
     title: Text(title, style: Ember.heading),
     scrollable: true,
     content: content,

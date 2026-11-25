@@ -810,13 +810,21 @@ class RegionHopLocationTile extends StatelessWidget {
     final portMismatch =
         r != null && r.port != regionHopRelayPortFor(location.socksPort);
     final p = probe;
-    final exitLine = location.exitRegion.isNotEmpty
-        ? 'Exit ${location.exitRegion}'
-              '${p != null && p.ok && p.ip.isNotEmpty ? ' · ${p.ip}' : ''}'
-              '${p != null && p.ok && p.latencyMs > 0 ? ' · ${latDigits(p.latencyMs)} ms' : ''}'
-        : p != null && p.ok && p.ip.isNotEmpty
+    // Build 2150 (engine appearance audit E49-07): the exit
+    // line carried region + IP + latency in the ~150 dp
+    // middle column and wrapped to four lines, and the
+    // latency appeared three times on one tile (here, in
+    // the top-right numeral, and in the connected tile's
+    // bottom strip). The line now carries the exit alone:
+    // once a probe has measured an IP that is the line —
+    // the region already reads in the giant letters and
+    // the country line above — and the latency lives only
+    // in the top-right numeral. The region-only and
+    // unmeasured fallbacks keep their wording.
+    final exitLine = p != null && p.ok && p.ip.isNotEmpty
         ? 'Exit ${p.ip}'
-              '${p.latencyMs > 0 ? ' · ${latDigits(p.latencyMs)} ms' : ''}'
+        : location.exitRegion.isNotEmpty
+        ? 'Exit ${location.exitRegion}'
         : 'No exit measured yet';
     // Build 2144 (reskin, pro6-regionhop sample): the row is
     // typographic — huge light country-code letters, the
@@ -902,18 +910,31 @@ class RegionHopLocationTile extends StatelessWidget {
                               color: Ember.text,
                             ),
                           ),
-                          _TileChip(location: location),
+                          _TileChip(location: location, sessionHere: sessionHere),
                         ],
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        exitLine,
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: Ember.fontSmall,
-                          color: p != null && p.ok
-                              ? Ember.orange
-                              : Ember.dim,
+                      // Build 2150 (E49-07, render round 1):
+                      // on the connected tile the wide
+                      // Disconnect pill narrows this column
+                      // until even the shortened line wrapped
+                      // ('Exit' / IP on two lines). A
+                      // scale-down fit keeps the line whole
+                      // on one line at every tile width —
+                      // an exit IP is never clipped.
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          exitLine,
+                          softWrap: false,
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: Ember.fontSmall,
+                            color: p != null && p.ok
+                                ? Ember.orange
+                                : Ember.dim,
+                          ),
                         ),
                       ),
                     ],
@@ -1286,14 +1307,28 @@ class _LocationRow extends StatelessWidget {
 /// The location tile's status chip (Active / Connecting /
 /// other), coloured by state.
 class _TileChip extends StatelessWidget {
-  const _TileChip({required this.location});
+  const _TileChip({required this.location, required this.sessionHere});
 
   final RegionHopLocation location;
 
+  /// Build 2150 (engine appearance audit E49-08): whether
+  /// THIS tile carries the live session. The panel status
+  /// word ('Tunnel up') describes the location's tunnel on
+  /// the server, which is up for every started location —
+  /// worn as the orange chip on every tile it read as if
+  /// each were the connected one. The orange 'Tunnel up'
+  /// chip now belongs to the connected tile alone; a
+  /// started-but-not-connected location reads 'Ready' in
+  /// the neutral colour — its tunnel is up and it can be
+  /// connected, which is all the chip may claim.
+  final bool sessionHere;
+
   @override
   Widget build(BuildContext context) {
-    final active = location.chipLabel == 'Tunnel up';
+    final tunnelUp = location.chipLabel == 'Tunnel up';
+    final active = tunnelUp && sessionHere;
     final connecting = location.chipLabel == 'Connecting';
+    final label = tunnelUp && !sessionHere ? 'Ready' : location.chipLabel;
     final color = active
         ? Ember.orange
         : connecting
@@ -1306,7 +1341,7 @@ class _TileChip extends StatelessWidget {
         border: Border.all(color: color),
       ),
       child: Text(
-        location.chipLabel,
+        label,
         style: TextStyle(color: color, fontSize: Ember.fontSmall),
       ),
     );
