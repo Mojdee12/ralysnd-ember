@@ -20,6 +20,8 @@ import '../../lantern/lantern_controller.dart';
 import '../../l10n/app_localizations.dart';
 import '../../openvpn/openvpn_controller.dart';
 import 'automation_pages.dart';
+import 'daily_report_page.dart';
+import 'dns_presets_page.dart';
 import 'iran_pages_2147.dart';
 import '../../platform.dart';
 import '../../psiphon/psiphon_controller.dart';
@@ -241,6 +243,58 @@ class EmberSettings extends StatelessWidget {
                 ),
               ),
             ),
+            // Build 2149 (expansion 4): the daily problem
+            // report — a structured journal of the day's
+            // problems (connect failures, DNS failures,
+            // lockouts, …) with a shareable digest. DEFAULT
+            // OFF (the features law): off records nothing.
+            MapSettingRow(
+              label: 'Daily problem report',
+              subtitle: xray.settings.dailyProblemReport
+                  ? 'On — problems are journaled for the daily digest'
+                  : 'Off — nothing is recorded',
+              trailing: EmberToggle(
+                value: xray.settings.dailyProblemReport,
+                onChanged: (v) =>
+                    unawaited(xray.setProblemReportEnabled(v)),
+              ),
+            ),
+            if (xray.settings.dailyProblemReport)
+              MapSettingRow(
+                label: 'Today\u2019s problem report',
+                subtitle: xray.problemJournal.countForDay(
+                      DateTime.now(),
+                    ) ==
+                    0
+                    ? 'No problems recorded today'
+                    : '${latDigits(xray.problemJournal.countForDay(DateTime.now()))} '
+                          'problem${xray.problemJournal.countForDay(DateTime.now()) == 1 ? '' : 's'} '
+                          'recorded today',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (xray.problemJournal.countForDay(
+                          DateTime.now(),
+                        ) >
+                        0)
+                      Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: const BoxDecoration(
+                          color: Ember.orange,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    _navChevron,
+                  ],
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => DailyReportPage(xray: xray),
+                  ),
+                ),
+              ),
             // Tunnel MTU (build 2038, Iran-priority queue 2f;
             // moved here in build 2095, whole-app journey
             // audit #55 — it serves every engine, so it
@@ -2598,6 +2652,34 @@ class _XraySection extends StatelessWidget {
                     await _saveSection();
                   },
                 ),
+              // Build 2149 (expansion 5): the full preset
+              // catalogue — the rows above are the three
+              // DoH providers the panel has always carried;
+              // the picker page holds the whole curated set
+              // (Global + the Iranian anti-sanctions
+              // resolvers). A tap there fills this field and
+              // saves; opening and leaving it changes
+              // nothing, and no default moves.
+              MapSettingRow(
+                label: 'All DNS presets',
+                subtitle: 'Global and Iranian resolvers — fills the remote DNS field',
+                trailing: _navChevron,
+                onTap: () async {
+                  final picked = await Navigator.of(context).push<String>(
+                    MaterialPageRoute(
+                      builder: (_) => DnsPresetsPage(
+                        target: DnsPresetTarget.remote,
+                        currentValue: s.remoteDns,
+                        xray: xray,
+                      ),
+                    ),
+                  );
+                  if (picked != null && picked.isNotEmpty) {
+                    s.remoteDns = picked;
+                    await _saveSection();
+                  }
+                },
+              ),
               // Resolver transport (build 2032): DoH, or DoQ —
               // DNS-over-QUIC to the same provider — but the core
               // dispatches only quic+local (build 2053, audit
@@ -2711,6 +2793,29 @@ class _XraySection extends StatelessWidget {
                   'above.',
                   style: Ember.caption,
                 ),
+              ),
+              // Build 2149 (expansion 5): the same catalogue
+              // for the local field — a tap fills it with the
+              // preset's first address.
+              MapSettingRow(
+                label: 'Local DNS presets',
+                subtitle: 'Global and Iranian resolvers — fills the local DNS field',
+                trailing: _navChevron,
+                onTap: () async {
+                  final picked = await Navigator.of(context).push<String>(
+                    MaterialPageRoute(
+                      builder: (_) => DnsPresetsPage(
+                        target: DnsPresetTarget.local,
+                        currentValue: s.localDns,
+                        xray: xray,
+                      ),
+                    ),
+                  );
+                  if (picked != null && picked.isNotEmpty) {
+                    s.localDns = picked;
+                    await _saveSection();
+                  }
+                },
               ),
               const Divider(color: MapUi.line, height: 1),
               // Ad-block preset (build 2030): the tunnel's

@@ -184,6 +184,20 @@ bool _storedBool(Map<String, dynamic> j, String key, bool fallback) {
   return v is bool ? v : fallback;
 }
 
+/// A stored string→int map (build 2149: the per-server
+/// DNS ping results on a profile). Tolerant like every
+/// reader here: a non-map value reads as empty, non-num
+/// entries drop, non-finite numbers drop — never a throw.
+Map<String, int> _storedIntMap(Map<String, dynamic> j, String key) {
+  final v = j[key];
+  if (v is! Map) return const {};
+  return {
+    for (final e in v.entries)
+      if (e.key is String && e.value is num && (e.value as num).isFinite)
+        e.key as String: (e.value as num).toInt(),
+  };
+}
+
 int _storedInt(Map<String, dynamic> j, String key, int fallback) {
   final v = j[key];
   // Build 2098 (post-2097 audit M12): a JSON number can
@@ -443,9 +457,10 @@ class Profile {
   /// link or the editor, and the builder re-validates at emit time,
   /// so a corrupt store can never break a connect. '' = no pinning,
   /// the core's normal chain verification. Only meaningful with TLS
-  /// security. The core removed `allowInsecure` outright (build
-  /// 2048 dropped the toggle and the field entirely) and names the
-  /// pin as its replacement — Ember never emits that key.
+  /// security. (Build 2149, diagnosis D3: allowInsecure is
+  /// honoured again as the link's own flag — see
+  /// [allowInsecure]; the pin remains the stronger option
+  /// when a link carries one.)
   String tlsCertPin;
 
   bool get hasTlsCertPin => tlsCertPin.isNotEmpty;
@@ -917,6 +932,20 @@ class Profile {
   bool disableSni;
   bool tuicAllowInsecure;
 
+  /// The link's own allowInsecure flag for TLS profiles
+  /// (build 2149, diagnosis D3): builds 2048–2148 dropped
+  /// it at parse on the claim that the core refuses the
+  /// key — so a TLS profile whose origin presents a
+  /// self-signed or wrong-name certificate (the links
+  /// that carry allowInsecure=1) could NEVER connect in
+  /// Ember while v2rayNG, which parses and emits the
+  /// flag, connected. Now parsed, stored, and emitted
+  /// (tlsSettings.allowInsecure) exactly as v2rayNG does
+  /// — ONLY when the link/profile sets it; the default
+  /// stays false (full verification), and a config whose
+  /// profile never set it stays byte-identical.
+  bool allowInsecure;
+
   /// NaiveProxy extra link parameters (build 2116, audit
   /// S-02) as JSON text: every query parameter the parser
   /// does not consume (padding, insecure_concurrency,
@@ -1012,6 +1041,27 @@ class Profile {
   /// result used to live only in a SnackBar — the row now
   /// shows it until a newer test replaces it.
   int lastSpeedBps;
+
+  /// Build 2149 (owner expansion 2 — Karing-style node
+  /// diagnostics): the last full node test's UPLOAD rate
+  /// (bytes/s, -1 = never measured) and when that test ran
+  /// (epoch ms, 0 = never). [lastSpeedBps] is the same
+  /// test's download rate. All three persist with the
+  /// profile (store + stats sidecar) like the delay does.
+  int lastSpeedUpBps;
+  int speedTestedAtMs;
+
+  /// Build 2149 (owner refinement of expansion 2 — the
+  /// Karing-style per-DNS rows he asked for after seeing
+  /// Karing's list): the last per-server DNS ping THROUGH
+  /// this config — server entry (exactly as the generated
+  /// config lists it) → latency ms; -1 = asked, no answer;
+  /// -2 = not probed (fakedns / localhost / an unsupported
+  /// scheme). Empty = never run. [dnsPingAtMs] is when the
+  /// run happened (epoch ms, 0 = never). Persists with the
+  /// profile (store + stats sidecar) like the speed trio.
+  Map<String, int> dnsPingMs;
+  int dnsPingAtMs;
 
   /// True when the last TCP probe ran and the endpoint did
   /// not answer (tcpPingMs stayed -1).
@@ -1206,6 +1256,7 @@ class Profile {
     this.udpOverStream = false,
     this.disableSni = false,
     this.tuicAllowInsecure = false,
+    this.allowInsecure = false,
     this.naiveExtraParams = '',
     this.sudokuOptions = '',
     this.zapretStrategy = '',
@@ -1213,6 +1264,10 @@ class Profile {
     this.tailscaleAuthKey = '',
     this.tcpPingMs = -1,
     this.lastSpeedBps = -1,
+    this.lastSpeedUpBps = -1,
+    this.speedTestedAtMs = 0,
+    this.dnsPingMs = const {},
+    this.dnsPingAtMs = 0,
     this.tcpPingFailed = false,
     this.afUnfilter = false,
     this.afEch = false,
@@ -1334,12 +1389,17 @@ class Profile {
     'udpOverStream': udpOverStream,
     'disableSni': disableSni,
     'tuicAllowInsecure': tuicAllowInsecure,
+    'allowInsecure': allowInsecure,
     'naiveExtraParams': naiveExtraParams,
     'sudokuOptions': sudokuOptions,
     'snellVersion': snellVersion,
     'tailscaleAuthKey': tailscaleAuthKey,
     'tcpPingMs': tcpPingMs,
     'lastSpeedBps': lastSpeedBps,
+    'lastSpeedUpBps': lastSpeedUpBps,
+    'speedTestedAtMs': speedTestedAtMs,
+    'dnsPingMs': dnsPingMs,
+    'dnsPingAtMs': dnsPingAtMs,
     'tcpPingFailed': tcpPingFailed,
     'afUnfilter': afUnfilter,
     'afEch': afEch,
@@ -1469,6 +1529,7 @@ class Profile {
     udpOverStream: _storedBool(j, 'udpOverStream', false),
     disableSni: _storedBool(j, 'disableSni', false),
     tuicAllowInsecure: _storedBool(j, 'tuicAllowInsecure', false),
+    allowInsecure: _storedBool(j, 'allowInsecure', false),
     naiveExtraParams: _storedStr(j, 'naiveExtraParams', ''),
     sudokuOptions: _storedStr(j, 'sudokuOptions', ''),
     udpRelayMode: _storedStr(j, 'udpRelayMode', ''),
@@ -1479,6 +1540,10 @@ class Profile {
     tailscaleAuthKey: _storedStr(j, 'tailscaleAuthKey', ''),
     tcpPingMs: _storedInt(j, 'tcpPingMs', -1),
     lastSpeedBps: _storedInt(j, 'lastSpeedBps', -1),
+    lastSpeedUpBps: _storedInt(j, 'lastSpeedUpBps', -1),
+    speedTestedAtMs: _storedInt(j, 'speedTestedAtMs', 0),
+    dnsPingMs: _storedIntMap(j, 'dnsPingMs'),
+    dnsPingAtMs: _storedInt(j, 'dnsPingAtMs', 0),
     tcpPingFailed: _storedBool(j, 'tcpPingFailed', false),
     afUnfilter: _storedBool(j, 'afUnfilter', false),
     afEch: _storedBool(j, 'afEch', false),
@@ -1577,6 +1642,18 @@ class Subscription {
   /// point of no return the bin's Restore is not.
   List<String> purgedProfileKeys;
 
+  /// Build 2149 (audit A43-11): the deleted profiles' own
+  /// data, by tombstone key — recorded at deletion time
+  /// alongside the key. Up to 2148 the tombstone kept
+  /// only the identity key, so the bin's Restore could
+  /// only un-tombstone and wait for a refresh (a dead
+  /// subscription meant the config never came back, and
+  /// a hand-deleted loose profile was gone for good).
+  /// With the data kept, Restore re-adds the profile
+  /// itself, immediately. Keys deleted before this build
+  /// have no entry here and keep the legacy behaviour.
+  Map<String, Map<String, dynamic>> deletedProfileData;
+
   /// Build 2116 (AB-12): the last auto-update ATTEMPT,
   /// success or failure (lastUpdatedMs only moves on
   /// success). A failed attempt used to leave no trace, so
@@ -1624,6 +1701,7 @@ class Subscription {
     this.customHeaders = const {},
     this.deletedProfileKeys = const [],
     this.purgedProfileKeys = const [],
+    this.deletedProfileData = const {},
   });
 
   int get usedBytes => uploadBytes + downloadBytes;
@@ -1689,6 +1767,7 @@ class Subscription {
     'customHeaders': customHeaders,
     'deletedProfileKeys': deletedProfileKeys,
     'purgedProfileKeys': purgedProfileKeys,
+    'deletedProfileData': deletedProfileData,
   };
 
   factory Subscription.fromJson(Map<String, dynamic> j) => Subscription(
@@ -1736,6 +1815,18 @@ class Subscription {
               .whereType<String>()
               .toList()
         : const [],
+    // Build 2149 (audit A43-11): the tombstones' retained
+    // profile data, read with the same tolerance — only
+    // map-shaped entries survive; a pre-2149 record has
+    // no key and loads with none.
+    deletedProfileData: j['deletedProfileData'] is Map
+        ? {
+            for (final e in (j['deletedProfileData'] as Map).entries)
+              if (e.value is Map)
+                e.key.toString(): (e.value as Map)
+                    .cast<String, dynamic>(),
+          }
+        : const {},
   );
 }
 
@@ -1794,9 +1885,15 @@ extension RoutingPresetLabel on RoutingPreset {
 /// and the failure surfaces only as a generic start failure.
 /// Psiphon 11808/11809, the delay-test range 11080–11260, the
 /// Lantern/Aether/Warp ports 20810, 20840/41, 20850–20854, 20870.
+/// Build 2149 (audit A43-16): the helper-listen block joins —
+/// dnstt 20860, wstunnel 20861, sing-box 20862, Mieru 20863,
+/// Zapret 20864, Sudoku 20865, OLCRTC 20866 — plus the
+/// DNSCrypt proxy's 20530; all were assignable to an Xray
+/// port before this build and collided the same way.
 const _xrayReservedPorts = <int>{
   11808,
   11809,
+  20530,
   20810,
   20840,
   20841,
@@ -1805,6 +1902,13 @@ const _xrayReservedPorts = <int>{
   20852,
   20853,
   20854,
+  20860,
+  20861,
+  20862,
+  20863,
+  20864,
+  20865,
+  20866,
   20870,
 };
 
@@ -1895,17 +1999,25 @@ String effectiveFingerprint(
 /// the migration runs once (XraySettings
 /// .fingerprintDefaultMigrated), a 'chrome' set afterwards is
 /// kept forever. Returns how many profiles were cleared.
+///
+/// Build 2149 (diagnosis D4) — THE CLEARING IS RETIRED. The
+/// honest edge above turned out to be the population that
+/// matters: VLESS tls/reality profiles whose links carried
+/// an EXPLICIT fp=chrome lost it to this migration, and on
+/// stricter networks the resulting core-default ClientHello
+/// is DPI-killed where Chrome uTLS passed. Stored data can
+/// no longer distinguish an explicit 'chrome' from the old
+/// parser fill — there is no marker, and there never was —
+/// so from 2149 the migration clears NOTHING: every stored
+/// fingerprint is left exactly as-is. The function and its
+/// one-time flag stay (the call sites and the flag's
+/// lifecycle are unchanged; the flag still flips once, so
+/// the migration era is closed), and the return is always
+/// 0. A profile whose owner wants rotation instead of a
+/// stored 'chrome' clears the field in the editor — a
+/// human decision, not a migration's guess.
 int clearParserDefaultFingerprints(List<Profile> profiles) {
-  var cleared = 0;
-  for (final p in profiles) {
-    if (p.protocol == Protocol.vless &&
-        (p.security == 'tls' || p.security == 'reality') &&
-        p.fingerprint == 'chrome') {
-      p.fingerprint = '';
-      cleared++;
-    }
-  }
-  return cleared;
+  return 0;
 }
 
 /// Build 2103 (diagnosis N2): the one-time heal for names
@@ -2729,6 +2841,13 @@ class XraySettings {
   /// Feature #4: the SNI whitelist scan surface is offered.
   bool sniScanEnabled = false;
 
+  /// Daily problem report (build 2149, owner expansion 4):
+  /// the structured problem journal records problem events
+  /// and offers the day's digest. DEFAULT OFF (the
+  /// features law) — off means no recording, no journal
+  /// file, no digest, no badge.
+  bool dailyProblemReport = false;
+
   /// Feature #5: subscription group ids whose connect mode is
   /// the core Balancer (observatory + leastPing) instead of a
   /// single picked profile. Per-group opt-in; empty = none.
@@ -2763,8 +2882,11 @@ class XraySettings {
   bool importSafetyFilter = false;
 
   /// Feature #20: per-network handshake-failure counting;
-  /// a profile failing 3x on one network is badged and
-  /// deprioritised (never deleted, never hidden).
+  /// a profile failing [pingSweepFailStrikes]x on one
+  /// network is badged and deprioritised (never deleted,
+  /// never hidden). Build 2149 (audit A48-06): the strike
+  /// threshold is the same configurable one the ping
+  /// sweep (#21a) uses — one threshold for both paths.
   bool quarantineEnabled = false;
 
   /// Feature #21a: the ping sweep's auto-cut — a config not
@@ -2783,6 +2905,13 @@ class XraySettings {
   /// has not answered. Persisted so a restart does not reset
   /// the auto-cut accounting.
   Map<String, int> sweepMissByProfile = {};
+
+  /// Build 2149 (audit A48-06): profile id → the network
+  /// fingerprint [sweepMissByProfile]'s count belongs to.
+  /// The sweep's misses are per-network, like feature
+  /// #20's strikes: a miss on a NEW network restarts the
+  /// count at 1 instead of adding to another network's.
+  Map<String, String> sweepMissNetworkByProfile = {};
 
   /// Seconds between an unexpected drop and the next reconnect
   /// try. Clamped 5..120 wherever it is read, so a corrupt
@@ -2904,6 +3033,7 @@ class XraySettings {
     'autoMtuFound': autoMtuFound,
     'dpiLabRacing': dpiLabRacing,
     'sniScanEnabled': sniScanEnabled,
+    'dailyProblemReport': dailyProblemReport,
     'balancerGroupIds': balancerGroupIds,
     'sidecarSshEnabled': sidecarSshEnabled,
     'stallFailover': stallFailover,
@@ -2918,6 +3048,7 @@ class XraySettings {
     'pingSweepFailStrikes': pingSweepFailStrikes,
     'defaultSubsSeeded2147': defaultSubsSeeded2147,
     'sweepMissByProfile': sweepMissByProfile,
+    'sweepMissNetworkByProfile': sweepMissNetworkByProfile,
     'lanShareEnabled': lanShareEnabled,
     'lanShareAuth': lanShareAuth,
     'lanShareUser': lanShareUser,
@@ -3298,6 +3429,11 @@ class XraySettings {
     s.autoMtuFound = _storedInt(j, 'autoMtuFound', s.autoMtuFound);
     s.dpiLabRacing = _storedBool(j, 'dpiLabRacing', s.dpiLabRacing);
     s.sniScanEnabled = _storedBool(j, 'sniScanEnabled', s.sniScanEnabled);
+    s.dailyProblemReport = _storedBool(
+      j,
+      'dailyProblemReport',
+      s.dailyProblemReport,
+    );
     s.sidecarSshEnabled =
         _storedBool(j, 'sidecarSshEnabled', s.sidecarSshEnabled);
     s.stallFailover = _storedBool(j, 'stallFailover', s.stallFailover);
@@ -3483,6 +3619,9 @@ class XraySettings {
 
     s.balancerGroupIds = strings('balancerGroupIds', []);
     s.sweepMissByProfile = _intMap(j['sweepMissByProfile']);
+    s.sweepMissNetworkByProfile = _stringMap(
+      j['sweepMissNetworkByProfile'],
+    );
     s.customDirectDomains = strings('customDirectDomains', []);
     s.excludedCountries = strings(
       'excludedCountries',

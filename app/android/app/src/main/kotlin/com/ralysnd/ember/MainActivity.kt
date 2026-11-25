@@ -1465,6 +1465,13 @@ class MainActivity : FlutterActivity() {
                     val config = call.argument<String>("config") ?: ""
                     inBackground(result) { XrayTester.speedTest(this, config) }
                 }
+                "xraySpeedTestUp" -> {
+                    // Build 2149: the upload mirror of the
+                    // download speed test (per-config node
+                    // diagnostics).
+                    val config = call.argument<String>("config") ?: ""
+                    inBackground(result) { XrayTester.speedTestUp(this, config) }
+                }
                 "xraySandboxTest" -> {
                     // The sandbox config test (build 2061,
                     // feature queue #1): one throwaway core
@@ -1492,6 +1499,47 @@ class MainActivity : FlutterActivity() {
                             .mapNotNull { it as? String }
                     inBackground(result) {
                         XrayTester.serviceCheck(this, config, hosts)
+                    }
+                }
+                "xrayDnsPing" -> {
+                    // Per-server DNS ping (build 2149, owner
+                    // refinement of expansion 2): every DNS
+                    // server a config lists, asked one real
+                    // query through the config itself and timed
+                    // individually. Three modes on one method:
+                    // a config (throwaway instance, the live
+                    // tunnel untouched), a live SOCKS port
+                    // (the connected config's own tunnel), or
+                    // direct (no tunnel — the preset picker's
+                    // Test all while disconnected).
+                    val mode = call.argument<String>("mode") ?: "config"
+                    @Suppress("UNCHECKED_CAST")
+                    val servers =
+                        (call.argument<List<Any>>("servers") ?: emptyList())
+                            .mapNotNull { it as? String }
+                    val timeoutMs = call.argument<Int>("timeoutMs") ?: 5000
+                    when (mode) {
+                        "port" -> {
+                            val port = call.argument<Int>("socksPort") ?: 10808
+                            val user = call.argument<String>("socksUser") ?: ""
+                            val pass = call.argument<String>("socksPass") ?: ""
+                            inBackground(result) {
+                                XrayTester.dnsPingViaPort(
+                                    port, user, pass, servers, timeoutMs,
+                                )
+                            }
+                        }
+                        "direct" -> inBackground(result) {
+                            XrayTester.dnsPingDirect(servers, timeoutMs)
+                        }
+                        else -> {
+                            val config = call.argument<String>("config") ?: ""
+                            inBackground(result) {
+                                XrayTester.dnsPingViaConfig(
+                                    this, config, servers, timeoutMs,
+                                )
+                            }
+                        }
                     }
                 }
                 "xrayExitInfo" -> {
@@ -1660,6 +1708,15 @@ class MainActivity : FlutterActivity() {
                                 // Build 2129: the picked server
                                 // ("" = automatic).
                                 call.argument<String>("tag") ?: "",
+                                // Build 2149 (audit A43-09):
+                                // the pinned private server's
+                                // stored identity.
+                                call.argument<String>("pinCountry") ?: "",
+                                call.argument<String>("pinCode") ?: "",
+                                // Build 2149 (audit A43-27):
+                                // the stored smart-routing
+                                // choice, applied after init.
+                                call.argument<Boolean>("smartOn") ?: false,
                             )
                         }
                         // Build 2067: guarded start handoff
@@ -1746,9 +1803,13 @@ class MainActivity : FlutterActivity() {
                     // running :lantern session re-selects the
                     // given tag ("" = automatic) inside the
                     // live tunnel; no TUN rebuild.
+                    // Build 2149 (audit A43-09): the pin
+                    // identity rides along, as on the start.
                     LanternVpnService.switchServer(
                         this,
                         call.argument<String>("tag") ?: "",
+                        call.argument<String>("pinCountry") ?: "",
+                        call.argument<String>("pinCode") ?: "",
                     )
                     result.success(null)
                 }

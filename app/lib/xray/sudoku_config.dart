@@ -1,3 +1,4 @@
+import 'singbox_config.dart' show singBoxLogLevel;
 import 'xray_models.dart';
 
 /// The Sudoku engine's local SOCKS port (build 2127, H2).
@@ -115,7 +116,12 @@ Map<String, dynamic> buildSudokuConfig(Profile p, {String logLevel = 'warn'}) {
     outbound['http_mask'] = mask;
   }
   return {
-    'log': {'level': logLevel, 'timestamp': true},
+    // Build 2149 (audit A43-07): the level goes through
+    // the sing-box vocabulary mapping like the sibling
+    // emitter — the raw app setting ('warning') is not a
+    // sing-box level ('warn'), and the fork rejected the
+    // config at load for it.
+    'log': {'level': singBoxLogLevel(logLevel), 'timestamp': true},
     'inbounds': [
       {
         'type': 'mixed',

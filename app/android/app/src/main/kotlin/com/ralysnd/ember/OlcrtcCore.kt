@@ -4,7 +4,9 @@ package com.ralysnd.ember
  * The OLCRTC client (build 2134): openlibrecommunity/olcrtc,
  * built from the pinned source in ~/workspace/ember-app/
  * engines/olcrtc (see PROVENANCE.md there) and staged in
- * jniLibs as libolcrtc.so.
+ * jniLibs as libolcrtc.so. Build 2149 (audit A43-21): the
+ * in-tree inventory of every vendored binary lives at
+ * app/PROVENANCE.md in this source tree.
  *
  * The client carries TCP over WebRTC data/video channels
  * disguised as a video call on an SFU service (Jitsi,

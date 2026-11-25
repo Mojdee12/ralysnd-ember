@@ -337,10 +337,9 @@ Profile? _profileFromOutbounds(Map<String, dynamic> config) {
       if (tls != null) {
         profile.sni = tls['serverName'] as String? ?? '';
         profile.alpn = (tls['alpn'] as List?)?.join(',') ?? '';
-        // tls['allowInsecure'] is ignored (build 2048): the core
-        // removed it and refuses the whole config when it is set,
-        // so a raw JSON carrying it must still import — pinning
-        // is the replacement.
+        // Build 2149 (diagnosis D3): a raw JSON's own
+        // allowInsecure is honoured like a link's.
+        if (tls['allowInsecure'] == true) profile.allowInsecure = true;
         profile.fingerprint = tls['fingerprint'] as String? ?? '';
         // TLS certificate pin (build 2047): a raw core JSON
         // carrying a valid pin keeps it; anything else reads as
@@ -706,10 +705,19 @@ void _applyTransport(Profile p, Map<String, String> q) {
     p.path = q['key'] ?? p.path;
   }
   p.flow = q['flow'] ?? p.flow;
-  // allowInsecure / insecure parameters are ignored (build 2048):
-  // the core removed the feature and refuses the whole config
-  // when it is set, so a link carrying one must still import —
-  // pinning is the replacement.
+  // Build 2149 (diagnosis D3): allowInsecure / insecure are
+  // HONOURED again, as v2rayNG honours them — the link's own
+  // flag is stored on the profile and the builder emits
+  // tlsSettings.allowInsecure only when it is set. Builds
+  // 2048–2148 ignored the flag on the claim that the core
+  // refuses the key, which left every self-signed-origin
+  // link permanently unable to connect; the default stays
+  // unset (full verification) for every link that does not
+  // carry it.
+  final insecureFlag = q['allowInsecure'] ?? q['insecure'];
+  if (insecureFlag == '1' || insecureFlag?.toLowerCase() == 'true') {
+    p.allowInsecure = true;
+  }
 }
 
 Profile? _vless(String link) {
@@ -822,8 +830,13 @@ Profile? _hysteria2(String link) {
   );
   p.upMbps = int.tryParse(q['up'] ?? '') ?? 0;
   p.downMbps = int.tryParse(q['down'] ?? '') ?? 0;
-  // q['insecure'] is ignored (build 2048) — see _applyTransport:
-  // the core removed the feature.
+  // Build 2149 (diagnosis D3): the Hy2 link's own insecure
+  // flag is honoured (stored on the profile; the builder
+  // emits it in the hysteria tlsSettings).
+  final hy2Insecure = q['insecure'] ?? q['allowInsecure'];
+  if (hy2Insecure == '1' || hy2Insecure?.toLowerCase() == 'true') {
+    p.allowInsecure = true;
+  }
   // The certificate pin (build 2053, audit F-H5): the link's
   // `pinSHA256` parameter is the standard Hy2 name, but the
   // core's only pin field is `pinnedPeerCertSha256` — and the
@@ -878,8 +891,12 @@ Profile? _anytls(String link) {
   p.fingerprint = q['fp'] ?? '';
   // Build 2116 (audit G-19): ECH, as in _tuic.
   p.echConfigList = q['ech'] ?? '';
-  // q['insecure'] / q['allowInsecure'] are ignored (build 2048)
-  // — see _applyTransport: the core removed it.
+  // Build 2149 (diagnosis D3): the link's own insecure flag
+  // is honoured (the sing-box TLS block emits it).
+  final anytlsInsecure = q['insecure'] ?? q['allowInsecure'];
+  if (anytlsInsecure == '1' || anytlsInsecure?.toLowerCase() == 'true') {
+    p.allowInsecure = true;
+  }
   return p;
 }
 
@@ -1398,9 +1415,14 @@ Profile? _vmess(String link) {
     p.spiderX = j['spx'] as String? ?? '';
     p.pqv = j['pqv'] as String? ?? '';
     p.flow = j['flow'] as String? ?? '';
-    // j['allowInsecure'] / j['insecure'] are ignored (build
-    // 2048): the core removed the feature — a vmess JSON carrying
-    // them must still import.
+    // Build 2149 (diagnosis D3): the vmess JSON's own
+    // allowInsecure / insecure are honoured like a link's.
+    final vmessInsecure = j['allowInsecure'] ?? j['insecure'];
+    if (vmessInsecure == true ||
+        vmessInsecure == '1' ||
+        vmessInsecure == 1) {
+      p.allowInsecure = true;
+    }
     // TLS certificate pin (build 2047): the vmess JSON carries
     // the core's own field name; a valid value is kept, anything
     // else reads as no pin, as before.

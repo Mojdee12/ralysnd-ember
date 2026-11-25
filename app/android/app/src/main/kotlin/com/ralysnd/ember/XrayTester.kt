@@ -521,6 +521,707 @@ object XrayTester {
         }
     }
 
+    // ---- per-server DNS ping (build 2149, owner refinement
+    // of expansion 2 — Karing-style per-DNS rows): every DNS
+    // server a config lists is asked ONE real query, through
+    // the config itself, and timed individually. Three
+    // transports, one result vocabulary: ms >= 0 answered,
+    // -1 asked but no answer, -2 not a probed kind (fakedns /
+    // localhost never reach here — the Dart side marks them;
+    // quic://, tls:// and other schemes land here and are
+    // reported -2 rather than faked).
+    //
+    // A plain address is asked the way the core itself asks
+    // it: UDP first, over a SOCKS UDP association through
+    // the tunnel, with DNS-over-TCP through the same tunnel
+    // as the fallback when the association or the UDP answer
+    // fails. A DoH URL is asked with a real dns-message POST
+    // through the tunnel. Direct mode (no tunnel up — the
+    // preset picker's Test all) asks the same questions with
+    // no proxy at all.
+
+    /** One DNS query packet for [name] (A/IN, RD set) and
+     * its transaction id, for response matching. */
+    private class DnsQuery(val wire: ByteArray, val id: Int)
+
+    private fun buildDnsQuery(name: String): DnsQuery {
+        val id = (Math.random() * 65536).toInt()
+        val out = java.io.ByteArrayOutputStream()
+        out.write(id shr 8); out.write(id and 0xFF)
+        out.write(0x01); out.write(0x00) // RD
+        out.write(0x00); out.write(0x01) // QDCOUNT 1
+        out.write(0x00); out.write(0x00) // ANCOUNT
+        out.write(0x00); out.write(0x00) // NSCOUNT
+        out.write(0x00); out.write(0x00) // ARCOUNT
+        for (label in name.split('.')) {
+            val bytes = label.toByteArray(Charsets.US_ASCII)
+            out.write(bytes.size)
+            out.write(bytes)
+        }
+        out.write(0x00)
+        out.write(0x00); out.write(0x01) // QTYPE A
+        out.write(0x00); out.write(0x01) // QCLASS IN
+        return DnsQuery(out.toByteArray(), id)
+    }
+
+    private fun isDnsResponse(packet: ByteArray, length: Int, id: Int): Boolean {
+        if (length < 12) return false
+        val rid = ((packet[0].toInt() and 0xFF) shl 8) or (packet[1].toInt() and 0xFF)
+        return rid == id && (packet[2].toInt() and 0x80) != 0
+    }
+
+    /** The name every probe asks for: any public name does —
+     * the figure is the resolver's answer time, not the
+     * name's. */
+    private val dnsProbeName = "example.com"
+
+    /**
+     * Per-server DNS ping through a throwaway instance of
+     * [configJson] — the sandbox discipline exactly (free
+     * port, temp config deleted, instance killed on every
+     * path, the live tunnel never touched). The map is
+     * `{"ok": 1/0, "error": "", "results": {server: ms}}`;
+     * a core that never starts fails every server at -1.
+     */
+    fun dnsPingViaConfig(
+        context: Context,
+        configJson: String,
+        servers: List<String>,
+        timeoutMs: Int = 5000,
+    ): Map<String, Any> {
+        val clean = servers.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (clean.isEmpty()) {
+            return mapOf("ok" to 0, "error" to "no DNS server to ping", "results" to emptyMap<String, Any>())
+        }
+        val port = takeFreePort()
+        if (port < 0) {
+            return mapOf(
+                "ok" to 0,
+                "error" to "no free port for the DNS ping",
+                "results" to clean.associateWith { -1L },
+            )
+        }
+        val config = configJson.replace("\"port\": 0", "\"port\": $port")
+            .replace("\"port\":0", "\"port\":$port")
+        val configFile = File(
+            File(XrayVpnService.workDir(context), "test"),
+            "config-$port.json",
+        )
+        val proc = startInstance(context, config, port)
+            ?: run {
+                try {
+                    configFile.delete()
+                } catch (e: Exception) {
+                    // Overwritten by the next test on this port.
+                }
+                return mapOf(
+                    "ok" to 0,
+                    "error" to "the DNS-ping core did not start — the config may be rejected",
+                    "results" to clean.associateWith { -1L },
+                )
+            }
+        try {
+            setSocksAuth("", "", port)
+            return mapOf(
+                "ok" to 1,
+                "error" to "",
+                "results" to probeDnsList(clean, timeoutMs) { server ->
+                    probeDnsViaSocks(port, server, timeoutMs)
+                },
+            )
+        } finally {
+            kill(proc)
+            try {
+                configFile.delete()
+            } catch (e: Exception) {
+                // Overwritten by the next test on this port.
+            }
+        }
+    }
+
+    /**
+     * Per-server DNS ping through an ALREADY RUNNING tunnel's
+     * SOCKS port (the config detail's live path: the profile
+     * being viewed is the connected one). [user]/[pass] are
+     * the LAN-sharing credentials for that inbound, '' when
+     * it is noauth.
+     */
+    fun dnsPingViaPort(
+        port: Int,
+        user: String = "",
+        pass: String = "",
+        servers: List<String>,
+        timeoutMs: Int = 5000,
+    ): Map<String, Any> {
+        val clean = servers.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (clean.isEmpty()) {
+            return mapOf("ok" to 0, "error" to "no DNS server to ping", "results" to emptyMap<String, Any>())
+        }
+        setSocksAuth(user, pass, port)
+        return mapOf(
+            "ok" to 1,
+            "error" to "",
+            "results" to probeDnsList(clean, timeoutMs) { server ->
+                probeDnsViaSocks(port, server, timeoutMs, user, pass)
+            },
+        )
+    }
+
+    /**
+     * Per-server DNS ping with NO tunnel (the preset picker's
+     * Test all when nothing is connected): the same questions
+     * asked directly from the device.
+     */
+    fun dnsPingDirect(
+        servers: List<String>,
+        timeoutMs: Int = 5000,
+    ): Map<String, Any> {
+        val clean = servers.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (clean.isEmpty()) {
+            return mapOf("ok" to 0, "error" to "no DNS server to ping", "results" to emptyMap<String, Any>())
+        }
+        return mapOf(
+            "ok" to 1,
+            "error" to "",
+            "results" to probeDnsList(clean, timeoutMs) { server ->
+                probeDnsDirect(server, timeoutMs)
+            },
+        )
+    }
+
+    /** The fan-out: four probes at a time (the serviceCheck
+     * pool shape), each bounded a little past its own
+     * timeout so one dead server cannot hold the list. */
+    private fun probeDnsList(
+        servers: List<String>,
+        timeoutMs: Int,
+        probe: (String) -> Long,
+    ): Map<String, Long> {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val futures = servers.associateWith { server ->
+                pool.submit<Long> { probe(server) }
+            }
+            val results = mutableMapOf<String, Long>()
+            for ((server, future) in futures) {
+                results[server] = try {
+                    future.get(
+                        timeoutMs + 3000L,
+                        java.util.concurrent.TimeUnit.MILLISECONDS,
+                    )
+                } catch (e: Exception) {
+                    -1L
+                }
+            }
+            return results
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    /** One server asked through the SOCKS port on [port]. */
+    private fun probeDnsViaSocks(
+        port: Int,
+        server: String,
+        timeoutMs: Int,
+        user: String = "",
+        pass: String = "",
+    ): Long {
+        val entry = server.trim()
+        return when {
+            entry.startsWith("https://") || entry.startsWith("https+one://") ->
+                dohViaSocks(port, entry.replace("https+one://", "https://"), timeoutMs)
+            entry.startsWith("tcp://") -> {
+                val (host, hostPort) = splitHostPort(entry.removePrefix("tcp://"), 53)
+                dnsOverTcpViaSocks(port, user, pass, host, hostPort, timeoutMs)
+            }
+            isIpLiteral(entry) -> {
+                val udp = dnsOverUdpViaSocks(port, user, pass, entry, timeoutMs)
+                if (udp >= 0) udp
+                else dnsOverTcpViaSocks(port, user, pass, entry, 53, timeoutMs)
+            }
+            else -> -2L
+        }
+    }
+
+    /** One server asked directly, no proxy. */
+    private fun probeDnsDirect(server: String, timeoutMs: Int): Long {
+        val entry = server.trim()
+        return when {
+            entry.startsWith("https://") || entry.startsWith("https+one://") ->
+                dohDirect(entry.replace("https+one://", "https://"), timeoutMs)
+            entry.startsWith("tcp://") -> {
+                val (host, hostPort) = splitHostPort(entry.removePrefix("tcp://"), 53)
+                dnsOverTcpDirect(host, hostPort, timeoutMs)
+            }
+            isIpLiteral(entry) -> dnsOverUdpDirect(entry, timeoutMs)
+            else -> -2L
+        }
+    }
+
+    private fun isIpLiteral(s: String): Boolean =
+        try {
+            val addr = java.net.InetAddress.getByName(s)
+            addr.hostAddress == s || s.contains(':')
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun splitHostPort(s: String, defaultPort: Int): Pair<String, Int> {
+        val idx = s.lastIndexOf(':')
+        if (idx > 0) {
+            val port = s.substring(idx + 1).toIntOrNull()
+            if (port != null) return s.substring(0, idx) to port
+        }
+        return s to defaultPort
+    }
+
+    /** A DoH POST through the tunnel: the dns-message for
+     * the probe name, timed to the answered response. */
+    private fun dohViaSocks(port: Int, url: String, timeoutMs: Int): Long {
+        val query = buildDnsQuery(dnsProbeName)
+        var conn: HttpURLConnection? = null
+        return try {
+            val started = System.nanoTime()
+            conn = openViaSocks(URL(url), port)
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
+            conn.instanceFollowRedirects = false
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/dns-message")
+            conn.setRequestProperty("Accept", "application/dns-message")
+            conn.doOutput = true
+            conn.outputStream.use { it.write(query.wire) }
+            val code = conn.responseCode
+            if (code != 200) return -1L
+            val body = conn.inputStream.readBytes()
+            if (isDnsResponse(body, body.size, query.id)) {
+                (System.nanoTime() - started) / 1_000_000
+            } else {
+                -1L
+            }
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            try {
+                conn?.disconnect()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
+    /** The same DoH POST with no proxy (direct mode). */
+    private fun dohDirect(url: String, timeoutMs: Int): Long {
+        val query = buildDnsQuery(dnsProbeName)
+        var conn: HttpURLConnection? = null
+        return try {
+            val started = System.nanoTime()
+            conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
+            conn.instanceFollowRedirects = false
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/dns-message")
+            conn.setRequestProperty("Accept", "application/dns-message")
+            conn.doOutput = true
+            conn.outputStream.use { it.write(query.wire) }
+            val code = conn.responseCode
+            if (code != 200) return -1L
+            val body = conn.inputStream.readBytes()
+            if (isDnsResponse(body, body.size, query.id)) {
+                (System.nanoTime() - started) / 1_000_000
+            } else {
+                -1L
+            }
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            try {
+                conn?.disconnect()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
+    /**
+     * Opens a SOCKS5 connection through 127.0.0.1:[port] to
+     * [targetHost]:[targetPort] and returns the connected
+     * socket (caller closes). Username/password auth is
+     * offered when [user] is non-empty; test cores are
+     * noauth. Null on any handshake failure.
+     */
+    private fun socksConnect(
+        port: Int,
+        user: String,
+        pass: String,
+        targetHost: String,
+        targetPort: Int,
+        timeoutMs: Int,
+    ): Socket? {
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+            socket.soTimeout = timeoutMs
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
+            if (user.isEmpty()) {
+                out.write(byteArrayOf(0x05, 0x01, 0x00))
+            } else {
+                out.write(byteArrayOf(0x05, 0x02, 0x00, 0x02))
+            }
+            out.flush()
+            val greeting = readExactly(input, 2) ?: run {
+                socket.close()
+                return null
+            }
+            if (greeting[0] != 0x05.toByte()) {
+                socket.close()
+                return null
+            }
+            when (greeting[1]) {
+                0x00.toByte() -> Unit
+                0x02.toByte() -> {
+                    val u = user.toByteArray(Charsets.UTF_8)
+                    val p = pass.toByteArray(Charsets.UTF_8)
+                    out.write(0x01)
+                    out.write(u.size)
+                    out.write(u)
+                    out.write(p.size)
+                    out.write(p)
+                    out.flush()
+                    val auth = readExactly(input, 2) ?: run {
+                        socket.close()
+                        return null
+                    }
+                    if (auth[1] != 0x00.toByte()) {
+                        socket.close()
+                        return null
+                    }
+                }
+                else -> {
+                    socket.close()
+                    return null
+                }
+            }
+            // CONNECT, IPv4 or domain form.
+            val ip = try {
+                java.net.InetAddress.getByName(targetHost)
+            } catch (e: Exception) {
+                null
+            }
+            val request = java.io.ByteArrayOutputStream()
+            request.write(0x05)
+            request.write(0x01)
+            request.write(0x00)
+            if (ip != null && ip.address.size == 4 && isIpLiteral(targetHost)) {
+                request.write(0x01)
+                request.write(ip.address)
+            } else {
+                val hostBytes = targetHost.toByteArray(Charsets.US_ASCII)
+                request.write(0x03)
+                request.write(hostBytes.size)
+                request.write(hostBytes)
+            }
+            request.write(targetPort shr 8)
+            request.write(targetPort and 0xFF)
+            out.write(request.toByteArray())
+            out.flush()
+            val head = readExactly(input, 4) ?: run {
+                socket.close()
+                return null
+            }
+            if (head[0] != 0x05.toByte() || head[1] != 0x00.toByte()) {
+                socket.close()
+                return null
+            }
+            // Consume the bound address per its type.
+            val skip = when (head[3]) {
+                0x01.toByte() -> 4
+                0x03.toByte() -> (readExactly(input, 1)?.get(0)?.toInt()?.and(0xFF) ?: -1)
+                0x04.toByte() -> 16
+                else -> -1
+            }
+            if (skip < 0) {
+                socket.close()
+                return null
+            }
+            if (skip > 0 && readExactly(input, skip) == null) {
+                socket.close()
+                return null
+            }
+            if (readExactly(input, 2) == null) {
+                socket.close()
+                return null
+            }
+            return socket
+        } catch (e: Exception) {
+            try {
+                socket.close()
+            } catch (ignored: Exception) {
+                // Already gone.
+            }
+            return null
+        }
+    }
+
+    /** DNS over TCP through the tunnel: the length-prefixed
+     * exchange of RFC 7766 on a SOCKS connection to the
+     * resolver. */
+    private fun dnsOverTcpViaSocks(
+        port: Int,
+        user: String,
+        pass: String,
+        host: String,
+        hostPort: Int,
+        timeoutMs: Int,
+    ): Long {
+        val query = buildDnsQuery(dnsProbeName)
+        val socket = socksConnect(port, user, pass, host, hostPort, timeoutMs)
+            ?: return -1L
+        return try {
+            val started = System.nanoTime()
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
+            out.write(query.wire.size shr 8)
+            out.write(query.wire.size and 0xFF)
+            out.write(query.wire)
+            out.flush()
+            val lenBytes = readExactly(input, 2) ?: return -1L
+            val len = ((lenBytes[0].toInt() and 0xFF) shl 8) or
+                (lenBytes[1].toInt() and 0xFF)
+            if (len < 12 || len > 65535) return -1L
+            val body = readExactly(input, len) ?: return -1L
+            if (isDnsResponse(body, body.size, query.id)) {
+                (System.nanoTime() - started) / 1_000_000
+            } else {
+                -1L
+            }
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            try {
+                socket.close()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
+    /**
+     * DNS over UDP through the tunnel: a SOCKS5 UDP
+     * association (RFC 1928) — the control connection asks
+     * for a relay, the framed datagram rides it, and the
+     * framed answer is timed. -1 when the association or
+     * the answer fails (the caller then tries TCP).
+     */
+    private fun dnsOverUdpViaSocks(
+        port: Int,
+        user: String,
+        pass: String,
+        serverIp: String,
+        timeoutMs: Int,
+    ): Long {
+        // The association handshake shares the CONNECT
+        // greeting/auth — done inline here because the
+        // command differs (0x03) and the reply carries the
+        // relay address.
+        val control = Socket()
+        var udp: java.net.DatagramSocket? = null
+        try {
+            control.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+            control.soTimeout = timeoutMs
+            val out = control.getOutputStream()
+            val input = control.getInputStream()
+            if (user.isEmpty()) {
+                out.write(byteArrayOf(0x05, 0x01, 0x00))
+            } else {
+                out.write(byteArrayOf(0x05, 0x02, 0x00, 0x02))
+            }
+            out.flush()
+            val greeting = readExactly(input, 2) ?: return -1L
+            if (greeting[0] != 0x05.toByte()) return -1L
+            when (greeting[1]) {
+                0x00.toByte() -> Unit
+                0x02.toByte() -> {
+                    val u = user.toByteArray(Charsets.UTF_8)
+                    val p = pass.toByteArray(Charsets.UTF_8)
+                    out.write(0x01)
+                    out.write(u.size)
+                    out.write(u)
+                    out.write(p.size)
+                    out.write(p)
+                    out.flush()
+                    val auth = readExactly(input, 2) ?: return -1L
+                    if (auth[1] != 0x00.toByte()) return -1L
+                }
+                else -> return -1L
+            }
+            // UDP ASSOCIATE, bound 0.0.0.0:0.
+            out.write(
+                byteArrayOf(
+                    0x05, 0x03, 0x00, 0x01,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                ),
+            )
+            out.flush()
+            val head = readExactly(input, 4) ?: return -1L
+            if (head[0] != 0x05.toByte() || head[1] != 0x00.toByte()) return -1L
+            val relayAddress: java.net.InetAddress
+            val relayPort: Int
+            when (head[3]) {
+                0x01.toByte() -> {
+                    val addr = readExactly(input, 4) ?: return -1L
+                    val portBytes = readExactly(input, 2) ?: return -1L
+                    relayAddress = java.net.InetAddress.getByAddress(addr)
+                    relayPort = ((portBytes[0].toInt() and 0xFF) shl 8) or
+                        (portBytes[1].toInt() and 0xFF)
+                }
+                0x03.toByte() -> {
+                    val lenByte = readExactly(input, 1) ?: return -1L
+                    val hostBytes = readExactly(
+                        input,
+                        lenByte[0].toInt() and 0xFF,
+                    ) ?: return -1L
+                    val portBytes = readExactly(input, 2) ?: return -1L
+                    relayAddress = java.net.InetAddress.getByName(
+                        String(hostBytes, Charsets.US_ASCII),
+                    )
+                    relayPort = ((portBytes[0].toInt() and 0xFF) shl 8) or
+                        (portBytes[1].toInt() and 0xFF)
+                }
+                else -> return -1L
+            }
+            // A relay bound on 0.0.0.0 means the SOCKS host
+            // itself (127.0.0.1 here).
+            val target = if (relayAddress.hostAddress == "0.0.0.0") {
+                java.net.InetAddress.getByName("127.0.0.1")
+            } else {
+                relayAddress
+            }
+            val query = buildDnsQuery(dnsProbeName)
+            val serverAddr = java.net.InetAddress.getByName(serverIp)
+            val frame = java.io.ByteArrayOutputStream()
+            frame.write(0x00)
+            frame.write(0x00)
+            frame.write(0x00)
+            frame.write(0x01) // IPv4
+            frame.write(serverAddr.address)
+            frame.write(53 shr 8)
+            frame.write(53 and 0xFF)
+            frame.write(query.wire)
+            val packet = java.net.DatagramPacket(
+                frame.toByteArray(),
+                frame.size(),
+                target,
+                relayPort,
+            )
+            udp = java.net.DatagramSocket()
+            udp.soTimeout = timeoutMs
+            val started = System.nanoTime()
+            udp.send(packet)
+            val buffer = ByteArray(2048)
+            val reply = java.net.DatagramPacket(buffer, buffer.size)
+            udp.receive(reply)
+            // Strip the SOCKS UDP header, then the payload
+            // must be the matching DNS response.
+            var offset = 4
+            if (reply.length < offset + 1) return -1L
+            offset += when (buffer[3]) {
+                0x01.toByte() -> 4 + 2
+                0x03.toByte() -> 1 + (buffer[4].toInt() and 0xFF) + 2
+                0x04.toByte() -> 16 + 2
+                else -> return -1L
+            }
+            if (reply.length <= offset) return -1L
+            val payload = buffer.copyOfRange(offset, reply.length)
+            return if (isDnsResponse(payload, payload.size, query.id)) {
+                (System.nanoTime() - started) / 1_000_000
+            } else {
+                -1L
+            }
+        } catch (e: Exception) {
+            return -1L
+        } finally {
+            try {
+                udp?.close()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+            try {
+                control.close()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
+    /** DNS over UDP directly (direct mode). */
+    private fun dnsOverUdpDirect(serverIp: String, timeoutMs: Int): Long {
+        val query = buildDnsQuery(dnsProbeName)
+        var udp: java.net.DatagramSocket? = null
+        return try {
+            udp = java.net.DatagramSocket()
+            udp.soTimeout = timeoutMs
+            val target = java.net.InetAddress.getByName(serverIp)
+            val packet = java.net.DatagramPacket(query.wire, query.wire.size, target, 53)
+            val started = System.nanoTime()
+            udp.send(packet)
+            val buffer = ByteArray(2048)
+            val reply = java.net.DatagramPacket(buffer, buffer.size)
+            udp.receive(reply)
+            if (isDnsResponse(buffer, reply.length, query.id)) {
+                (System.nanoTime() - started) / 1_000_000
+            } else {
+                -1L
+            }
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            try {
+                udp?.close()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
+    /** DNS over TCP directly (direct mode, tcp:// entries). */
+    private fun dnsOverTcpDirect(host: String, hostPort: Int, timeoutMs: Int): Long {
+        val query = buildDnsQuery(dnsProbeName)
+        val socket = Socket()
+        return try {
+            socket.connect(InetSocketAddress(host, hostPort), timeoutMs)
+            socket.soTimeout = timeoutMs
+            val started = System.nanoTime()
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
+            out.write(query.wire.size shr 8)
+            out.write(query.wire.size and 0xFF)
+            out.write(query.wire)
+            out.flush()
+            val lenBytes = readExactly(input, 2) ?: return -1L
+            val len = ((lenBytes[0].toInt() and 0xFF) shl 8) or
+                (lenBytes[1].toInt() and 0xFF)
+            if (len < 12 || len > 65535) return -1L
+            val body = readExactly(input, len) ?: return -1L
+            if (isDnsResponse(body, body.size, query.id)) {
+                (System.nanoTime() - started) / 1_000_000
+            } else {
+                -1L
+            }
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            try {
+                socket.close()
+            } catch (e: Exception) {
+                // Already gone.
+            }
+        }
+    }
+
     /** Reads exactly [n] bytes or returns null at EOF/timeout. */
     private fun readExactly(input: java.io.InputStream, n: Int): ByteArray? {
         val buffer = ByteArray(n)
@@ -609,6 +1310,60 @@ object XrayTester {
             return (total / elapsed).toLong()
         } catch (e: Exception) {
             Log.w(TAG, "speed test failed", e)
+            return -1
+        } finally {
+            kill(proc)
+        }
+    }
+
+    /**
+     * Uploads through a throwaway instance of [configJson] for up to
+     * [seconds] and returns the average uplink in bytes per second,
+     * or -1 on failure (build 2149 — the download test's mirror for
+     * the per-config node test). The bytes counted are the bytes the
+     * proxied connection accepted inside the window: the POST streams
+     * in fixed-size chunks with no local pre-buffering beyond the
+     * socket's own, so over an 8 s window the figure tracks the
+     * tunnel's real uplink; the response is drained at the end so
+     * the server sees a completed request.
+     */
+    fun speedTestUp(context: Context, configJson: String, seconds: Int = 8): Long {
+        val port = takeFreePort()
+        if (port < 0) return -1
+        val config = configJson.replace("\"port\": 0", "\"port\": $port")
+            .replace("\"port\":0", "\"port\":$port")
+        val proc = startInstance(context, config, port) ?: return -1
+        try {
+            val url = URL("https://speed.cloudflare.com/__up")
+            val conn = openViaSocks(url, port)
+            conn.connectTimeout = 8000
+            conn.readTimeout = 15000
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            // Chunked streaming: no Content-Length, no full
+            // body in memory, the write loop is throttled by
+            // the connection itself.
+            conn.setChunkedStreamingMode(64 * 1024)
+            val started = System.nanoTime()
+            var total = 0L
+            val deadline = started + seconds * 1_000_000_000L
+            conn.outputStream.use { out ->
+                val buffer = ByteArray(64 * 1024)
+                while (System.nanoTime() < deadline) {
+                    out.write(buffer)
+                    total += buffer.size
+                }
+                out.flush()
+            }
+            val elapsed = (System.nanoTime() - started) / 1_000_000_000.0
+            // Drain the verdict so a rejected upload (a
+            // non-2xx answer) is a failure, not a rate.
+            val code = conn.responseCode
+            if (elapsed <= 0 || total == 0L) return -1
+            if (code < 200 || code >= 300) return -1
+            return (total / elapsed).toLong()
+        } catch (e: Exception) {
+            Log.w(TAG, "upload speed test failed", e)
             return -1
         } finally {
             kill(proc)

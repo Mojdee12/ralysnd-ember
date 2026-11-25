@@ -892,8 +892,13 @@ void main() {
       expect(controller, contains('if (!_labAdoptionDone && _loaded) {'));
       final tailAt = controller.lastIndexOf('lastError = e.toString();');
       expect(tailAt, isNonNegative);
+      // Build 2149 (expansion 4): the problem-journal
+      // recording block now sits between lastError and the
+      // clear in the same catch — the window is widened
+      // past it (order and presence unchanged, the
+      // build2098 I2-A1 precedent).
       expect(
-        controller.substring(tailAt, tailAt + 700),
+        controller.substring(tailAt, tailAt + 2400),
         contains('_clearLabDialState();'),
       );
     });
@@ -939,9 +944,13 @@ void main() {
 
     test('a failed attempt offers the Lab only when it is on and eligible', () {
       final controller = _src('xray/xray_controller.dart');
+      // Build 2149 (expansion 4): the segment start marker
+      // follows the problem-journal block that now directly
+      // succeeds lastError in the catch; the pinned offer
+      // lines below are unchanged.
       final tail = _segment(
         controller,
-        'lastError = e.toString();\n      // Build 2107',
+        'lastError = e.toString();\n      // Build 2149 (expansion 4)',
         'rethrow;',
       );
       expect(

@@ -4,13 +4,19 @@
 /// always recorded a tombstone so refreshes cannot
 /// resurrect it — but until now there was no way back.
 ///
-/// What the tombstone retains is ONLY its identity key —
-/// no name, no full profile — so this page is honest
+/// What the tombstone retained was ONLY its identity key —
+/// no name, no full profile — so this page was honest
 /// about what Restore does: it removes the tombstone,
 /// and the profile returns at its subscription's next
 /// refresh (the row says so). Entries are identified by
 /// the endpoint fields the key itself carries
 /// (protocol · address:port) and their subscription.
+///
+/// Build 2149 (audit A43-11): deletions now retain the
+/// profile's data beside the key, so Restore brings the
+/// config itself back at once and the row shows its
+/// name. Pre-2149 entries keep the refresh restore and
+/// the key-derived label; the header copy says both.
 ///
 /// Delete permanently moves the key to the purged set:
 /// it leaves this list and keeps blocking refreshes —
@@ -98,9 +104,14 @@ class RecycleBinPage extends StatelessWidget {
               padding: EdgeInsets.fromLTRB(18, MediaQuery.of(context).padding.top + kToolbarHeight + 6, 18, 24),
               children: [
                 Text(
-                  'Restoring a config removes its deletion '
-                  'record — the config itself comes back the '
-                  'next time its subscription refreshes.',
+                  // Build 2149 (audit A43-11): entries
+                  // deleted from this build on keep their
+                  // config's data and restore at once;
+                  // older entries keep the refresh restore.
+                  'Restoring a config brings it straight '
+                  'back. Entries deleted before this build '
+                  'return the next time their subscription '
+                  'refreshes.',
                   style: Ember.dimStyle,
                 ),
                 const SizedBox(height: 14),

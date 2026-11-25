@@ -303,6 +303,7 @@ object WgTunnelEngine {
                         // instead of going direct, until the
                         // user's own stop or a fresh start
                         // disables it.
+                        var holdRaised = false
                         if (sessionKillSwitch) {
                             val held = runCatching {
                                 created.setKillSwitch(
@@ -315,6 +316,7 @@ object WgTunnelEngine {
                             }.getOrNull()?.isSuccess == true
                             if (held) {
                                 killSwitchHeld = true
+                                holdRaised = true
                             } else {
                                 Log.w(
                                     TAG,
@@ -327,6 +329,20 @@ object WgTunnelEngine {
                             "the AmneziaWG engine stopped; " +
                                 "the session was closed",
                         )
+                        // Build 2149 (audit A43-19): when no
+                        // lockdown holds the slot for this
+                        // dead session, the engine claim goes
+                        // back — every other post-claim exit
+                        // releases it (build 2126, A26-18);
+                        // this collector was the one path
+                        // that kept it forever. A raised hold
+                        // keeps the claim: the lockdown IS
+                        // WireGuard still owning the slot.
+                        if (!holdRaised) {
+                            EngineClaim.release(
+                                appContext, EngineClaim.WIREGUARD,
+                            )
+                        }
                     }
                 }
             }

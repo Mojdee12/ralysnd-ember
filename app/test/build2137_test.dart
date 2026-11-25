@@ -81,10 +81,24 @@ void main() {
   });
 
   group('V-05 toggle OFF word', () {
-    test('the OFF word is the near-white, not the old 2.66:1 slate', () {
+    // SUPERSEDED by build 2149 (owner expansion
+    // 2026-11-25: the held toggle-form decision resolved
+    // by the approved samples — pro6-settings/pro7-dns
+    // draw SLIDING SWITCHES, no state word). The V-05
+    // contrast pin guarded a word that no longer exists;
+    // the pin now guards the switch's own form: a knob
+    // (white ON, mid-grey OFF), and no ON/OFF text
+    // anywhere in the toggle's build.
+    test('the toggle is the samples sliding switch, no state word', () {
       final theme = _src('ui/ember/ember_theme.dart');
-      expect(theme, contains('const Color(0xFFEDF2F8)'));
-      expect(theme, isNot(contains('const Color(0xFF22262D)')));
+      final toggle = theme.substring(
+        theme.indexOf('class EmberToggle extends StatelessWidget'),
+        theme.indexOf('class EmberChip extends StatelessWidget'),
+      );
+      expect(toggle, contains('Color(0xFF9A9AA0)'));
+      expect(toggle, contains('Colors.white'));
+      expect(toggle, isNot(contains("'ON'")));
+      expect(toggle, isNot(contains("'OFF'")));
     });
   });
 
@@ -205,7 +219,7 @@ void main() {
   test('pubspec is 2.2.0+2148', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 2.2.0+2148'),
+      contains('version: 2.2.0+2149'),
     );
   });
 }

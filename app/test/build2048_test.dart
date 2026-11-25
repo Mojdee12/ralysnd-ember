@@ -6,14 +6,23 @@
 /// profile (or the global setting) with it on could not connect at
 /// all. Build 2048 removes the toggle from the editor and settings,
 /// the field from Profile and XraySettings, and the parameter from
-/// the parser and the share-link codec. These tests pin the Dart
-/// side of that removal: no emitted config — tunnel or delay-test,
-/// any TLS protocol — ever carries the key; links and raw core JSON
-/// carrying the parameter still import and build clean; share links
-/// never carry it; and stored data from older builds (a profile or
-/// settings JSON with the key set) still loads, the key simply
-/// ignored. The editor change itself is UI and is not host-testable
-/// without a device.
+/// the parser and the share-link codec.
+///
+/// Build 2149 SUPERSESSION (diagnosis D3, owner order): the
+/// population the 2048 removal stranded — TLS links whose origin
+/// presents a self-signed / wrong-name cert and whose link
+/// therefore carries allowInsecure=1 — could never connect in
+/// Ember while v2rayNG honours the flag. From 2149 the flag is
+/// parsed into Profile.allowInsecure, stored, re-exported on
+/// share links, and emitted into the generated config ONLY when
+/// set; the default stays secure (the first group below still
+/// pins that no config carries the key when the flag is unset).
+/// The parser/store/share groups are rewritten to the D3
+/// behaviour. OPEN DEVICE QUESTION, recorded plainly: whether
+/// the currently bundled core accepts the key again (the 2048
+/// refusal finding above) is only provable on device with a
+/// self-signed-origin config; the host side pins the ordered
+/// parse/store/emit behaviour either way.
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -58,7 +67,8 @@ Profile hy2Profile() => Profile(
 );
 
 void main() {
-  group('The builder never emits allowInsecure (build 2048)', () {
+  group('The builder emits allowInsecure only when set (2048, '
+      'as amended by 2149 D3)', () {
     test('a TLS VLESS tunnel config carries no such key anywhere', () {
       final cfg = decode(
         buildTunnelConfig(tlsProfile('a', 'a.example.com'), XraySettings()),
@@ -96,33 +106,37 @@ void main() {
     });
   });
 
-  group('The parser ignores the parameter (build 2048)', () {
-    test('a vless link with allowInsecure=1 imports and builds clean',
-        () {
+  group('The parser honours the parameter (2149 D3)', () {
+    test('a vless link with allowInsecure=1 imports, flags and '
+        'builds with the key', () {
       final p = parseLink(
         'vless://11111111-1111-1111-1111-111111111111@a.example.com:443'
         '?security=tls&allowInsecure=1#srv',
       );
       expect(p, isNotNull);
-      final cfg = decode(buildTunnelConfig(p!, XraySettings()));
-      expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+      expect(p!.allowInsecure, isTrue);
+      final cfg = decode(buildTunnelConfig(p, XraySettings()));
+      expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
     });
 
-    test('a trojan link with insecure=1 imports and builds clean', () {
+    test('a trojan link with insecure=1 imports, flags and '
+        'builds with the key', () {
       final p = parseLink(
         'trojan://secret@a.example.com:443?security=tls&insecure=1#srv',
       );
       expect(p, isNotNull);
-      final cfg = decode(buildTunnelConfig(p!, XraySettings()));
-      expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+      expect(p!.allowInsecure, isTrue);
+      final cfg = decode(buildTunnelConfig(p, XraySettings()));
+      expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
     });
 
-    test('a hysteria2 link with insecure=1 imports and builds clean',
-        () {
+    test('a hysteria2 link with insecure=1 imports, flags and '
+        'builds with the key', () {
       final p = parseLink('hysteria2://pw@h.example.com:443?insecure=1#h');
       expect(p, isNotNull);
-      final cfg = decode(buildTunnelConfig(p!, XraySettings()));
-      expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+      expect(p!.allowInsecure, isTrue);
+      final cfg = decode(buildTunnelConfig(p, XraySettings()));
+      expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
     });
 
     test('an anytls link with insecure=1 still imports (badged, not '
@@ -144,7 +158,8 @@ void main() {
       expect(p!.protocol, Protocol.tuic);
     });
 
-    test('a vmess JSON with allowInsecure/insecure still imports', () {
+    test('a vmess JSON with allowInsecure/insecure imports and '
+        'flags (2149 D3)', () {
       final j = {
         'v': '2',
         'ps': 'srv',
@@ -161,12 +176,13 @@ void main() {
       final link = 'vmess://${base64.encode(utf8.encode(jsonEncode(j)))}';
       final p = parseLink(link);
       expect(p, isNotNull);
-      final cfg = decode(buildTunnelConfig(p!, XraySettings()));
-      expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+      expect(p!.allowInsecure, isTrue);
+      final cfg = decode(buildTunnelConfig(p, XraySettings()));
+      expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
     });
 
-    test('a raw core JSON with tlsSettings.allowInsecure still '
-        'imports', () {
+    test('a raw core JSON with tlsSettings.allowInsecure imports '
+        'and flags (2149 D3)', () {
       final profiles = parseSubscription(jsonEncode({
         'outbounds': [
           {
@@ -194,39 +210,41 @@ void main() {
         ],
       }));
       expect(profiles.length, 1);
+      expect(profiles.first.allowInsecure, isTrue);
       final cfg = decode(buildTunnelConfig(profiles.first, XraySettings()));
-      expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+      expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
     });
   });
 
   group(
-    'Share links never carry it, and old stores still load (build 2048)',
+    'Share links and stores carry it when set (2149 D3)',
     () {
-      test('a link rebuilt from an insecure=1 import drops the '
+      test('a link rebuilt from an insecure=1 import keeps the '
           'parameter', () {
         final p = parseLink(
           'vless://11111111-1111-1111-1111-111111111111@a.example.com:443'
           '?security=tls&allowInsecure=1#srv',
         )!;
         final link = profileToLink(p);
-        expect(link, isNot(contains('allowInsecure')));
-        expect(link, isNot(contains('insecure')));
+        expect(link, contains('allowInsecure=1'));
         final back = parseLink(link);
         expect(back, isNotNull);
-        final cfg = decode(buildTunnelConfig(back!, XraySettings()));
-        expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+        expect(back!.allowInsecure, isTrue);
+        final cfg = decode(buildTunnelConfig(back, XraySettings()));
+        expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
       });
 
-      test('a stored profile JSON with the key still loads and builds '
-          'clean', () {
+      test('a stored profile JSON with the key loads it as the '
+          'D3 field', () {
         final stored = tlsProfile('a', 'a.example.com').toJson()
           ..['allowInsecure'] = true;
         final p = Profile.fromJson(stored);
         expect(p.name, 't');
         expect(p.address, 'a.example.com');
-        expect(p.toJson().containsKey('allowInsecure'), isFalse);
+        expect(p.allowInsecure, isTrue);
+        expect(p.toJson()['allowInsecure'], isTrue);
         final cfg = decode(buildTunnelConfig(p, XraySettings()));
-        expect(containsKeyDeep(cfg, 'allowInsecure'), isFalse);
+        expect(containsKeyDeep(cfg, 'allowInsecure'), isTrue);
       });
 
       test('stored settings JSON with the key still loads', () {

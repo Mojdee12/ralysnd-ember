@@ -3758,10 +3758,16 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       for (var i = 0; i < pages.length; i++)
         TickerMode(enabled: _tab == i, child: pages[i]),
     ];
-    // The actors ride the map on the home page, and behind the
-    // Mozilla locations panel (the samples keep the arc visible
-    // around the sheet); panels elsewhere get the clean map.
-    final showActors = _tab == 0 || (_tab == 1 && mode == 0);
+    // The actors ride the map on the home page only; panels
+    // elsewhere get the clean map. (Build 2149, audit
+    // A48-05: the Mozilla locations surface kept the actors
+    // from its sheet era — "the arc visible around the
+    // sheet" — but since build 2148 it is a full-page LIST,
+    // and the shipped render shows the filament arc and a
+    // pulsing pin overlapping the search field and the
+    // Recommended card. The samples keep the arc on the
+    // Home composition; list surfaces get none.)
+    final showActors = _tab == 0;
     // Build 2145 (UI-review fix A3): text-heavy surfaces get
     // the banded backdrop — the map as a faint top band, rows
     // on plain near-black (the approved pro6 settings sample).
@@ -3794,12 +3800,14 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
                     selected: a.selected,
                     connected: a.connected,
                     badge: a.badge,
-                    // R1 (pro3 home): the Home tab's actors wear
-                    // the filament composition; the Mozilla
-                    // locations sheet (tab 1) keeps the legacy
-                    // actors.
-                    filament: _tab == 0,
-                    homeLabel: _tab == 0 ? 'TEHRAN' : 'HOME • IRAN',
+                    // R1 (pro3 home): the actors wear the
+                    // filament composition. Build 2149 (audit
+                    // A48-05): the layer renders on the Home
+                    // tab only (see showActors above), so the
+                    // filament form and the TEHRAN label are
+                    // unconditional here.
+                    filament: true,
+                    homeLabel: 'TEHRAN',
                   );
                 },
               ),
@@ -4083,13 +4091,17 @@ class _ShellControlBar extends StatelessWidget {
     ),
   );
 
-  /// R2: the word the slim bar's action carries. The two
+  /// R2: the word the bar's action carries. The two
   /// settled states take the samples' action verbs; every
   /// other word the model can settle on (a transition, or
   /// an honest exception like "Connected — not answering")
-  /// keeps its own text, tracked and uppercased — the slim
-  /// bar must not flatten information the full bar carries.
-  String get _slimActionWord {
+  /// keeps its own text, tracked and uppercased — the bar
+  /// must not flatten information the model carries.
+  /// Build 2149 (audit A48-01): BOTH bar forms use this
+  /// word — before this build only the slim bar did, and
+  /// the full bar's pill still read 'Connected' where the
+  /// owner's order (and the slim bar) say DISCONNECT.
+  String get _actionWord {
     if (!busy) {
       if (stateWord == 'Not connected') return 'CONNECT';
       if (stateWord == 'Connected' || stateWord.startsWith('Connected via')) {
@@ -4220,7 +4232,7 @@ class _ShellControlBar extends StatelessWidget {
                     ],
                     Flexible(
                       child: Text(
-                        _slimActionWord,
+                        _actionWord,
                         style: TextStyle(
                           fontSize: Ember.fontBody,
                           fontWeight: FontWeight.w600,
@@ -4351,7 +4363,14 @@ class _ShellControlBar extends StatelessWidget {
                       ],
                       Flexible(
                         child: Text(
-                          stateWord,
+                          // Build 2149 (audit A48-01): the
+                          // action word, as the slim bar —
+                          // DISCONNECT on the connected pill,
+                          // not the state word 'Connected'.
+                          // Caveat words ('Connected — not
+                          // answering') still render verbatim
+                          // via _actionWord's fall-through.
+                          _actionWord,
                           style: TextStyle(
                             fontSize: Ember.fontTitle,
                             fontWeight: FontWeight.w600,

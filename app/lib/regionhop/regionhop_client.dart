@@ -52,6 +52,18 @@
 /// badCertificateCallback anywhere: a wrong certificate
 /// fails the handshake like any other TLS error.
 ///
+/// Build 2149 (full audit of 2148): the login-bleed
+/// fixes. A credential failure now BLOCKS the client
+/// (no further login attempts for its lifetime — the
+/// 5 s poll can no longer spend a login POST per poll
+/// and lock the owner out of his own panel); the
+/// failure kind is read from the panel's own login-page
+/// wording instead of guessed from login history; the
+/// status timeout bounds the whole fetch; the status
+/// retry never starts a session; duplicate bridge
+/// lines are parse errors; location names are validated
+/// against the panel grammar at parse.
+///
 /// The session cookie lives only in this object's memory.
 /// Neither the password nor the cookie is ever logged,
 /// journaled or persisted from here.
@@ -283,6 +295,49 @@ const _badResponse = RegionHopException(
   'The panel answered in an unexpected way.',
 );
 
+/// The panel's locked-login lines, one per panel locale
+/// (panel `locales.go`, v1.28.0 — the panel renders the
+/// lockout and the wrong-password states as DISTINCT
+/// lines in the login page it serves back). A cookieless
+/// request like this client's always gets the panel's
+/// default locale (en); the full set is matched so the
+/// detection survives a panel whose default ever changes.
+const regionHopLockoutLines = <String>[
+  'Too many attempts, try again later.',
+  'تعداد تلاش‌ها زیاد بود، بعداً دوباره امتحان کنید.',
+  'محاولات كثيرة جدًا، حاول مرة أخرى لاحقًا.',
+  'Слишком много попыток, попробуйте позже.',
+  '尝试次数过多，请稍后再试。',
+];
+
+/// The panel's wrong-password lines, one per panel
+/// locale (same source as [regionHopLockoutLines]).
+const regionHopWrongPasswordLines = <String>[
+  'Incorrect password.',
+  'رمز عبور نادرست است.',
+  'كلمة مرور غير صحيحة.',
+  'Неверный пароль.',
+  '密码错误。',
+];
+
+/// Which credential failure a login page body reports
+/// (build 2149, audit A43-08): the panel's own wording
+/// decides — the locked line means the panel is in its
+/// 5-minute lockout, the wrong-password line means the
+/// password itself was refused. A page carrying NEITHER
+/// line (a panel build whose wording this client
+/// predates) falls back to the historic heuristic: a
+/// password that already worked in this client's life
+/// failing now reads as the lockout.
+RegionHopException regionHopLoginFailure(
+  String body, {
+  required bool everLoggedIn,
+}) {
+  if (regionHopLockoutLines.any(body.contains)) return _lockout;
+  if (regionHopWrongPasswordLines.any(body.contains)) return _loginFailed;
+  return everLoggedIn ? _lockout : _loginFailed;
+}
+
 /// One location row from `GET <prefix>/tunnels-status`.
 class RegionHopLocation {
   const RegionHopLocation({
@@ -412,14 +467,28 @@ List<RegionHopLocation> parseRegionHopStatus(String body) {
   return [for (final row in decoded) _parseRegionHopRow(row)];
 }
 
+/// The panel-side location-name grammar (see
+/// [RegionHopLocation.name]).
+final _regionHopNamePattern = RegExp(r'^[a-z0-9][a-z0-9-]{1,30}$');
+
 RegionHopLocation _parseRegionHopRow(Object? row) {
   if (row is! Map) {
     throw const FormatException('status row is not an object');
   }
   String str(String key) => row[key]?.toString() ?? '';
   final rawPort = row['SocksPort'];
+  // Build 2149 (audit A43-25): the name is validated
+  // against the panel's own grammar at parse. The name
+  // flows into journal lines and row keys downstream; a
+  // respondent sending a name outside the grammar is
+  // not the panel, so the payload is refused as a bad
+  // response like every other shape violation here.
+  final name = str('Name');
+  if (!_regionHopNamePattern.hasMatch(name)) {
+    throw const FormatException('status row name is not a panel name');
+  }
   return RegionHopLocation(
-    name: str('Name'),
+    name: name,
     region: str('Region'),
     socksPort: rawPort is num
         ? rawPort.toInt()
@@ -466,6 +535,18 @@ RegionHopRelayBlock parseRegionHopRelays(String block) {
     final port = int.tryParse(parts[1]);
     if (port == null || port <= 0 || port > 65535) {
       errors.add('Line ${i + 1}: "${parts[1]}" is not a port.');
+      continue;
+    }
+    // Build 2149 (audit A43-24): a second line for the
+    // same location is a paste error, never a silent
+    // overwrite — the first line wins and the duplicate
+    // is reported with its line number, like every other
+    // malformed line.
+    if (relays.containsKey(parts[0])) {
+      errors.add(
+        'Line ${i + 1}: a second entry for "${parts[0]}" — '
+        'the first entry wins; delete the duplicate.',
+      );
       continue;
     }
     relays[parts[0]] = RegionHopRelay(
@@ -606,7 +687,20 @@ class RegionHopClient {
     bool auth = false,
     Duration timeout = const Duration(seconds: 10),
     RegionHopPhaseTimings? phases,
+    DateTime? deadline,
   }) async {
+    // Build 2149 (audit A43-22): a caller may bound the
+    // WHOLE operation with a deadline; every phase's
+    // timeout is then the smaller of its own cap and the
+    // time left before the deadline, so the phase that
+    // crosses the deadline is the one the timings sink
+    // records as timed out — the journal stays exact.
+    Duration phaseTimeout() {
+      if (deadline == null) return timeout;
+      final left = deadline.difference(DateTime.now());
+      if (left < Duration.zero) return Duration.zero;
+      return left < timeout ? left : timeout;
+    }
     // Build 2143: the factory pins the panel's
     // certificate for the baked https endpoint only;
     // every other base URL gets the default client.
@@ -634,7 +728,7 @@ class RegionHopClient {
     try {
       final HttpClientRequest request;
       try {
-        request = await client.openUrl(method, Uri.parse('$_base$path')).timeout(timeout);
+        request = await client.openUrl(method, Uri.parse('$_base$path')).timeout(phaseTimeout());
       } on TimeoutException catch (e) {
         phases?.openFailure = _transportClassOf(e);
         throw _transportFailure(e);
@@ -675,7 +769,7 @@ class RegionHopClient {
       }
       final HttpClientResponse response;
       try {
-        response = await request.close().timeout(timeout);
+        response = await request.close().timeout(phaseTimeout());
       } on TimeoutException catch (e) {
         phases?.headersFailure = _transportClassOf(e);
         throw _transportFailure(e);
@@ -694,7 +788,7 @@ class RegionHopClient {
       final location = response.headers.value(HttpHeaders.locationHeader);
       final String body;
       try {
-        body = await response.transform(utf8.decoder).join().timeout(timeout);
+        body = await response.transform(utf8.decoder).join().timeout(phaseTimeout());
       } on TimeoutException catch (e) {
         phases?.bodyFailure = _transportClassOf(e);
         throw _transportFailure(e);
@@ -732,25 +826,48 @@ class RegionHopClient {
     return null;
   }
 
+  /// Build 2149 (audit A43-01): a credential failure
+  /// (wrong password / lockout) BLOCKS this client —
+  /// every later [login] rethrows the cached failure
+  /// WITHOUT a network attempt. The block ends only
+  /// with the client itself: the page builds a fresh
+  /// client per manual connect, which is the design's
+  /// one-attempt-per-user-action rule made structural.
+  /// Before this build, a session expiry inside the 5 s
+  /// status poll re-entered [_authed] on a null cookie
+  /// and spent a fresh login POST every poll — five
+  /// polls could lock the owner out of his own panel
+  /// from his phone's IP with no action of his own.
+  RegionHopException? _loginBlock;
+
   /// One login attempt — never retried automatically
   /// (the panel's lockout counts attempts per IP). The
   /// GET first proves host, port and prefix in one shot:
   /// the login page answers 200 at the right address and
   /// 404 anywhere else.
-  Future<void> login() async {
-    final probe = await _request('GET', '/login');
+  Future<void> login({DateTime? deadline}) async {
+    final block = _loginBlock;
+    if (block != null) throw block;
+    final probe = await _request('GET', '/login', deadline: deadline);
     if (probe.statusCode != 200) throw _notFound;
     final response = await _request(
       'POST',
       '/login',
       form: {'password': _panelPassword},
+      deadline: deadline,
     );
     final cookie = _sessionCookie(response.setCookies);
     if (cookie == null) {
-      // No cookie: a wrong password — or, when this same
-      // password already worked in this client's life,
-      // the panel's 5-minute lockout answering instead.
-      throw _everLoggedIn ? _lockout : _loginFailed;
+      // No cookie: a credential failure. Which kind is
+      // the panel's own call (build 2149, audit A43-08):
+      // the login page it served back carries its locked
+      // or wrong-password line — see regionHopLoginFailure.
+      final failure = regionHopLoginFailure(
+        response.body,
+        everLoggedIn: _everLoggedIn,
+      );
+      _loginBlock = failure;
+      throw failure;
     }
     _cookie = cookie;
     _everLoggedIn = true;
@@ -774,30 +891,47 @@ class RegionHopClient {
   /// An authed call with the design's expiry rule:
   /// exactly one silent re-login and exactly one retry,
   /// then the failure surfaces.
+  ///
+  /// Build 2149 (audit A43-23): [allowLogin] false refuses
+  /// to START a session — a caller retrying an idempotent
+  /// fetch after a transport failure passes false, so a
+  /// login POST that died in transport is never re-run
+  /// by the retry (the panel may have counted it). The
+  /// expiry re-login below is unaffected: it spends its
+  /// one attempt only behind a live-then-expired session,
+  /// and a credential failure there blocks the client
+  /// (see [login]).
   Future<_PanelResponse> _authed(
     String method,
     String path, {
     bool expectJson = false,
     Duration timeout = const Duration(seconds: 10),
     RegionHopPhaseTimings? phases,
+    bool allowLogin = true,
+    DateTime? deadline,
   }) async {
-    if (_cookie == null) await login();
+    if (_cookie == null) {
+      if (!allowLogin) throw _unreachable;
+      await login(deadline: deadline);
+    }
     var response = await _request(
       method,
       path,
       auth: true,
       timeout: timeout,
       phases: phases,
+      deadline: deadline,
     );
     if (_isExpiry(response, expectJson: expectJson)) {
       _cookie = null;
-      await login();
+      await login(deadline: deadline);
       response = await _request(
         method,
         path,
         auth: true,
         timeout: timeout,
         phases: phases,
+        deadline: deadline,
       );
       if (_isExpiry(response, expectJson: expectJson)) throw _loginFailed;
     }
@@ -835,7 +969,12 @@ class RegionHopClient {
       await Future<void>.delayed(statusRetryDelay);
       phases = RegionHopPhaseTimings();
       try {
-        final rows = await _fetchStatusOnce(phases: phases);
+        // Build 2149 (audit A43-23): the retry never
+        // starts a session (allowLogin: false) — if the
+        // first attempt's login POST died in transport,
+        // the retry surfaces unreachable instead of
+        // spending a second login the panel may count.
+        final rows = await _fetchStatusOnce(phases: phases, allowLogin: false);
         _reportStatusPhases(phases, ok: true);
         return rows;
       } on RegionHopException {
@@ -855,13 +994,29 @@ class RegionHopClient {
 
   Future<List<RegionHopLocation>> _fetchStatusOnce({
     RegionHopPhaseTimings? phases,
+    bool allowLogin = true,
   }) async {
+    // Build 2149 (audit A43-22): [statusTimeout] bounds
+    // the WHOLE fetch, not each phase — one deadline is
+    // threaded through every request the fetch makes
+    // (login + status + re-login + status), and each
+    // phase's timeout shrinks to the time left, so a
+    // sequence that previously ran several times the
+    // named budget inside one poll now ends at the
+    // budget, in the phase that crossed it (which the
+    // timings sink records — the 2142 journal stays
+    // exact). A fetch that outlives its budget surfaces
+    // as the same unreachable/timeout failure as a
+    // phase timeout.
+    final deadline = DateTime.now().add(statusTimeout);
     final response = await _authed(
       'GET',
       '/tunnels-status',
       expectJson: true,
       timeout: statusTimeout,
       phases: phases,
+      allowLogin: allowLogin,
+      deadline: deadline,
     );
     if (response.statusCode != 200) throw _badResponse;
     try {

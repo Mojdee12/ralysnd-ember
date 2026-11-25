@@ -101,7 +101,7 @@ void main() {
     test('pubspec is build 2135', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2148'),
+        contains('version: 2.2.0+2149'),
       );
     });
   });
@@ -420,8 +420,21 @@ void main() {
     });
 
     test('the honesty rule stands: no proof, no Connected', () {
-      expect(controller, contains('carried no traffic'));
-      expect(controller, contains("throw StateError('no-traffic')"));
+      // PIN SUPERSEDED by build 2149 (owner order
+      // 2026-11-25, diagnosis D1): the rule's FORM
+      // changed, not its honesty — a proof-less session
+      // is no longer refused (the 2116 gate tore down
+      // slow-first-byte sessions v2rayNG/Karing adopt);
+      // it is adopted UNVERIFIED and only the background
+      // proof may stamp it verified. The gate's throw and
+      // its journal line are gone; the unverified
+      // adoption and its journal line stand in their
+      // place.
+      expect(controller, isNot(contains("throw StateError('no-traffic')")));
+      expect(controller, isNot(contains('carried no traffic')));
+      expect(controller, contains('this session is marked '));
+      expect(controller, contains('verified only when traffic lands'));
+      expect(controller, contains('state = state.withVerified(false);'));
     });
   });
 }

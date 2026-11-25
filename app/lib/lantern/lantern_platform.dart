@@ -211,6 +211,16 @@ class LanternPlatform {
     // Build 2129: the picked server's tag; "" = automatic
     // (Mobile.startVPN), a tag pins (Mobile.connectToServer).
     String tag = '',
+    // Build 2149 (audit A43-09): the pinned PRIVATE
+    // server's stored identity (country + code), so the
+    // service's exit-identity lookup can synthesize the
+    // pinned entry when the core's list has no row for it.
+    // '' for a public pin or automatic.
+    String pinCountry = '',
+    String pinCode = '',
+    // Build 2149 (audit A43-27): the stored smart-routing
+    // choice; the service applies it after core init.
+    bool smartOn = false,
   }) => _channel.invokeMethod<void>('lanternSetOn', {
     'on': on,
     'ipv6': ipv6,
@@ -218,6 +228,9 @@ class LanternPlatform {
     'dns': dns,
     'killSwitch': killSwitch,
     'tag': tag,
+    'pinCountry': pinCountry,
+    'pinCode': pinCode,
+    'smartOn': smartOn,
   });
 
   static Future<void> stop() => _channel.invokeMethod<void>('lanternStop');
@@ -272,7 +285,15 @@ class LanternPlatform {
   /// Build 2131: switches a RUNNING session to [tag]
   /// ("" = automatic) inside the live tunnel — the service
   /// re-runs the bridge connect, and the core switches via
-  /// SelectServer without a TUN rebuild.
-  static Future<void> switchServer(String tag) =>
-      _channel.invokeMethod<void>('lanternSwitch', {'tag': tag});
+  /// SelectServer without a TUN rebuild. Build 2149 (audit
+  /// A43-09): the pin identity rides along, as on [setOn].
+  static Future<void> switchServer(
+    String tag, {
+    String pinCountry = '',
+    String pinCode = '',
+  }) => _channel.invokeMethod<void>('lanternSwitch', {
+    'tag': tag,
+    'pinCountry': pinCountry,
+    'pinCode': pinCode,
+  });
 }

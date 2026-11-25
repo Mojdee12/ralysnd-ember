@@ -1126,7 +1126,13 @@ group('M9 — a busy picker is a benign no-op', () {
       final xray = read('lib/xray/xray_controller.dart');
       final sw = xray.indexOf('Future<bool> switchServer(Profile next)');
       expect(sw, greaterThan(0));
-      final body = xray.substring(sw, sw + 5000);
+      // PIN UPDATED by build 2149 (audit A43-04): the
+      // rollback snapshot + closure lengthened switchServer
+      // past the old 5000-char window; the pinned ORDER
+      // (rotate -> gen check -> id writes) is unchanged.
+      // The window now runs to the next method.
+      final fnEnd = xray.indexOf('\n  Future<', sw + 10);
+      final body = xray.substring(sw, fnEnd < 0 ? sw + 14000 : fnEnd);
       // The generation is re-checked after the rotate,
       // before the new profile's ids are written, and a
       // core the rotate respawned for a dead session is

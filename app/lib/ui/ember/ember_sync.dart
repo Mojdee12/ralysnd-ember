@@ -558,6 +558,9 @@ class _SyncPageState extends State<SyncPage> {
               ),
               const SizedBox(height: 16),
               MapGlass(
+                // Build 2149 (audit A43-31): explicit —
+                // the MapGlass default is now blur:false.
+                blur: true,
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

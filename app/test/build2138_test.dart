@@ -98,7 +98,11 @@ void main() {
       // more converted site (the same pattern) → 43.
       // Build 2147 re-point: the shared _pageShell of the
       // three new Iran-feature pages is one more → 44.
-      expect(count, 44);
+      // Build 2149 re-point: the two new pushed pages —
+      // the Daily problem report (expansion 4) and the
+      // DNS preset picker (expansion 5) — follow the same
+      // pattern → 46.
+      expect(count, 46);
       expect(_src('ui/browser_signin_page.dart'),
           isNot(contains('extendBodyBehindAppBar')));
       expect(_src('ui/ember/qr_pages.dart'),
@@ -129,7 +133,7 @@ void main() {
     test('pubspec is 2.2.0+2148', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2148'),
+        contains('version: 2.2.0+2149'),
       );
     });
 

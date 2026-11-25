@@ -623,6 +623,21 @@ class XrayPlatform {
     return v ?? -1;
   }
 
+  /// The through-tunnel UPLOAD rate (bytes/s) of a test
+  /// config, or -1 (build 2149): the download test's
+  /// mirror — a throwaway core instance POSTs generated
+  /// bytes to the Cloudflare speed endpoint's upload
+  /// path for the same window. The figure is the bytes
+  /// the proxied connection accepted per second, the
+  /// honest measure available without a cooperating
+  /// server-side counter.
+  static Future<int> speedTestUp(String testConfig) async {
+    final v = await _channel.invokeMethod<int>('xraySpeedTestUp', {
+      'config': testConfig,
+    });
+    return v ?? -1;
+  }
+
   /// The sandbox config test (build 2061, feature queue #1):
   /// ONE throwaway core proves the config end to end — delay,
   /// hold, exit identity — on a free port, without touching the
@@ -673,6 +688,94 @@ class XrayPlatform {
       return m.map((k, v) => MapEntry(k.toString(), v));
     } catch (e) {
       return {'ok': 0, 'error': 'the service check did not answer: $e'};
+    }
+  }
+
+  /// Per-server DNS ping (build 2149, owner refinement of
+  /// expansion 2 — Karing-style per-DNS rows): every server
+  /// in [servers] is asked one real DNS query and timed
+  /// individually. The result maps each requested server to
+  /// its latency in ms; -1 = asked, no answer; -2 = not a
+  /// probed kind (an unsupported scheme). Never throws: a
+  /// channel failure fails every server at -1, so the caller
+  /// always has a complete map to stamp.
+  static Map<String, int> _dnsPingResults(
+    Map<String, dynamic>? m,
+    List<String> servers,
+  ) {
+    final raw = m?['results'];
+    return {
+      for (final s in servers)
+        s: raw is Map && raw[s] is num ? (raw[s] as num).toInt() : -1,
+    };
+  }
+
+  /// Through a throwaway instance of [testConfig] — the
+  /// sandbox discipline; the live tunnel is never touched.
+  static Future<Map<String, int>> dnsPing(
+    String testConfig,
+    List<String> servers, {
+    int timeoutMs = 5000,
+  }) async {
+    try {
+      final m = await _channel.invokeMapMethod<String, dynamic>(
+        'xrayDnsPing',
+        {
+          'mode': 'config',
+          'config': testConfig,
+          'servers': servers,
+          'timeoutMs': timeoutMs,
+        },
+      );
+      return _dnsPingResults(m, servers);
+    } catch (_) {
+      return {for (final s in servers) s: -1};
+    }
+  }
+
+  /// Through an already-running tunnel's SOCKS port (the
+  /// connected config's own tunnel). [socksUser]/[socksPass]
+  /// are the LAN-sharing credentials for that inbound.
+  static Future<Map<String, int>> dnsPingViaPort(
+    int socksPort,
+    List<String> servers, {
+    String socksUser = '',
+    String socksPass = '',
+    int timeoutMs = 5000,
+  }) async {
+    try {
+      final m = await _channel.invokeMapMethod<String, dynamic>(
+        'xrayDnsPing',
+        {
+          'mode': 'port',
+          'socksPort': socksPort,
+          'socksUser': socksUser,
+          'socksPass': socksPass,
+          'servers': servers,
+          'timeoutMs': timeoutMs,
+        },
+      );
+      return _dnsPingResults(m, servers);
+    } catch (_) {
+      return {for (final s in servers) s: -1};
+    }
+  }
+
+  /// With no tunnel at all (the preset picker's Test all
+  /// while disconnected): the same questions asked directly
+  /// from the device.
+  static Future<Map<String, int>> dnsPingDirect(
+    List<String> servers, {
+    int timeoutMs = 5000,
+  }) async {
+    try {
+      final m = await _channel.invokeMapMethod<String, dynamic>(
+        'xrayDnsPing',
+        {'mode': 'direct', 'servers': servers, 'timeoutMs': timeoutMs},
+      );
+      return _dnsPingResults(m, servers);
+    } catch (_) {
+      return {for (final s in servers) s: -1};
     }
   }
 

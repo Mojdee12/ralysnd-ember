@@ -45,9 +45,14 @@ void main() {
   // Build 2074 (UI audit item 4): panel close buttons grew from
   // the 32 px pattern to the 48 dp minimum touch target.
   group('custom-header close buttons are 48 px like MapPanelHeader', () {
+    // PIN UPDATED by build 2149 (audit A48-04): the
+    // WireGuard configurations view no longer carries a
+    // close button at all — its ✕ duplicated the shell
+    // header's BACK, and the header zone is open page
+    // composition now. The 48 px pattern still binds every
+    // close button that exists.
     for (final file in [
       'ui/ember/lantern_pages.dart',
-      'ui/ember/wireguard_pages.dart',
       'ui/ember/aether_pages.dart',
     ]) {
       test('$file: close button uses the 48 px pattern', () {
@@ -118,10 +123,14 @@ void main() {
       // Build 2074: the delegation call now wraps across lines;
       // the pin's intent is unchanged — GlassCard still renders
       // through MapGlass with its full API forwarded.
+      // PIN UPDATED by build 2149 (audit A43-31): the call
+      // carries an explicit blur: true — the MapGlass
+      // default flipped to false, and GlassCard's panels
+      // keep the blur they always rendered with.
       expect(
         build,
         contains(
-          'MapGlass(padding: padding, glow: glow, onTap: onTap, child: child)',
+          'MapGlass(blur: true, padding: padding, glow: glow, onTap: onTap, child: child)',
         ),
       );
       expect(build, contains('padding: padding,'));

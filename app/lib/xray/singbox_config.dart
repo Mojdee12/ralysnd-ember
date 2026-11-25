@@ -77,6 +77,15 @@ const singBoxUtlsFingerprints = <String>{
 /// built. Checked before any process starts, so the user
 /// hears the real reason instead of a dead tunnel.
 String? singBoxConfigError(Profile p) {
+  // Build 2149 (audit A43-17): the server port's range is
+  // pre-flighted like every other field — a port of 0 or
+  // past 65535 used to build a config the core rejected
+  // at load with its own opaque error instead of a plain
+  // reason here. Tailscale is exempt: its endpoint never
+  // reads p.port (the auth key is its credential).
+  if (p.protocol != Protocol.tailscale && (p.port < 1 || p.port > 65535)) {
+    return 'This ${p.protocol.label} config has no valid server port.';
+  }
   switch (p.protocol) {
     case Protocol.tuic:
       if (p.uuidOrPassword.isEmpty) return 'This TUIC config has no UUID.';
@@ -185,6 +194,10 @@ Map<String, dynamic> _tlsBlock(Profile p, {List<String>? defaultAlpn}) {
     // removed the flag in build 2048 — this block is the
     // sidecar's, and only a TUIC profile can carry it).
     if (p.tuicAllowInsecure) 'insecure': true,
+    // Build 2149 (diagnosis D3): the profile's general
+    // allowInsecure flag, for the sing-box-served TLS
+    // protocols (AnyTLS and friends) whose links carry it.
+    if (p.allowInsecure) 'insecure': true,
     // Build 2116 (audit G-21): the TUIC link's disable_sni.
     if (p.disableSni) 'disable_sni': true,
   };

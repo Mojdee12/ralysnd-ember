@@ -331,6 +331,39 @@ bool sweepShouldCut({
   required int threshold,
 }) => consecutiveMisses >= (threshold < 1 ? 1 : threshold);
 
+/// The ping sweep's miss accounting (build 2149, audit
+/// A48-06): one unanswered sweep for one profile, resolved
+/// to the (misses, network, cut) the controller persists.
+/// Two rules the 2147 accounting lacked:
+/// - PER-NETWORK: a miss on a network other than
+///   [recordedNetwork] restarts the count at 1 (the same
+///   semantics as [nextQuarantineStrikes]) — one network's
+///   dead hour no longer counts against another's.
+/// - The SELECTED profile is exempt: it is still tested
+///   (the sweep's tested/answered counts stay honest) but
+///   its misses are never counted and it is never cut —
+///   auto-cutting the config the user is connected through
+///   (or about to use) is the sweep destroying the session
+///   it serves. Its recorded accounting is returned
+///   unchanged.
+({int misses, String network, bool cut}) sweepMissOutcome({
+  required int currentMisses,
+  required String recordedNetwork,
+  required String network,
+  required bool isSelected,
+  required int threshold,
+}) {
+  if (isSelected) {
+    return (misses: currentMisses, network: recordedNetwork, cut: false);
+  }
+  final misses = recordedNetwork == network ? currentMisses + 1 : 1;
+  return (
+    misses: misses,
+    network: network,
+    cut: sweepShouldCut(consecutiveMisses: misses, threshold: threshold),
+  );
+}
+
 // ---------------------------------------------------------------- #4
 
 /// The built-in plausible-front SNI list for the whitelist

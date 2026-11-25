@@ -584,6 +584,17 @@ class LanternVpnService : VpnService() {
     @Volatile
     private var sessionTag: String = ""
 
+    /** Build 2149 (audit A43-09): the pinned private
+     *  server's stored identity, carried on the start /
+     *  switch intents; [applySelectedServer] synthesizes
+     *  the exit identity from it when the core's list has
+     *  no row for the pinned tag. */
+    @Volatile
+    private var sessionPinCountry: String = ""
+
+    @Volatile
+    private var sessionPinCode: String = ""
+
     override fun onCreate() {
         super.onCreate()
         LanternStateStore.bindAppContext(this)
@@ -621,6 +632,10 @@ class LanternVpnService : VpnService() {
                 val dns = intent.getStringExtra(EXTRA_DNS)
                     ?.takeIf { it.isNotBlank() } ?: "1.1.1.1"
                 val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
+                sessionPinCountry =
+                    intent.getStringExtra(EXTRA_PIN_COUNTRY) ?: ""
+                sessionPinCode = intent.getStringExtra(EXTRA_PIN_CODE) ?: ""
+                val smartOn = intent.getBooleanExtra(EXTRA_SMART_ON, false)
                 inKillSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
                 // A fresh start over a kill-switch hold:
                 // close the held duplicate and clear the hold
@@ -631,7 +646,7 @@ class LanternVpnService : VpnService() {
                 }
                 worker.execute {
                     try {
-                        startTunnel(tag, ipv6, mtu, dns)
+                        startTunnel(tag, ipv6, mtu, dns, smartOn)
                     } catch (e: Throwable) {
                         CrashLog.append(
                             this,
@@ -697,9 +712,14 @@ class LanternVpnService : VpnService() {
                 // (the Dart side only sends it while running).
                 if (!LanternStateStore.running) return START_NOT_STICKY
                 val newTag = intent.getStringExtra(EXTRA_TAG) ?: ""
+                val newPinCountry =
+                    intent.getStringExtra(EXTRA_PIN_COUNTRY) ?: ""
+                val newPinCode = intent.getStringExtra(EXTRA_PIN_CODE) ?: ""
                 worker.execute {
                     try {
                         sessionTag = newTag
+                        sessionPinCountry = newPinCountry
+                        sessionPinCode = newPinCode
                         bridge.connect(newTag)
                         applySelectedServer()
                     } catch (e: Throwable) {
@@ -834,12 +854,24 @@ class LanternVpnService : VpnService() {
         }
     }
 
-    private fun startTunnel(tag: String, ipv6: Boolean, mtu: Int, dns: String) {
+    private fun startTunnel(
+        tag: String,
+        ipv6: Boolean,
+        mtu: Int,
+        dns: String,
+        smartOn: Boolean = false,
+    ) {
         LanternStateStore.serviceError = null
         LanternStateStore.stage = "starting"
         sessionTag = tag
         bridge.initialize()
         bridge.setSession(ipv6, mtu, dns)
+        // Build 2149 (audit A43-27): the core init above
+        // forces smart routing OFF; a stored ON is applied
+        // now, after init, so the user's choice survives the
+        // connect it was made for. OFF (the default) applies
+        // nothing — the init state stands.
+        if (smartOn) bridge.setSmartRouting(true)
         LanternStateStore.smartRouting = bridge.smartRouting()
         // The list rides along: the picker is populated by
         // the time the session is up (best-effort — a list
@@ -937,6 +969,20 @@ class LanternVpnService : VpnService() {
                     // The list readback is display only.
                 }
             }
+            // Build 2149 (audit A43-09): no list row for the
+            // pinned tag. Before this build the lookup
+            // returned here and left the PREVIOUS exit's
+            // identity standing under the new pin (the 2130
+            // misreport class). Mirror the Dart picker's
+            // synthesis instead: the exit IS the pinned
+            // server, with the stored identity the start /
+            // switch intent carried (empty for a public pin —
+            // an honest blank, never the previous server's
+            // geography).
+            LanternStateStore.selectedTag = pinned
+            LanternStateStore.exitCity = ""
+            LanternStateStore.exitCountry = sessionPinCountry
+            LanternStateStore.exitCode = sessionPinCode
             return
         }
         val raw = runCatching { bridge.selectedServer() }.getOrDefault("")
@@ -1109,6 +1155,14 @@ class LanternVpnService : VpnService() {
         private const val EXTRA_MTU = "mtu"
         private const val EXTRA_DNS = "dns"
         private const val EXTRA_TAG = "tag"
+
+        // Build 2149 (audit A43-09): the pinned private
+        // server's stored identity (country + code), carried
+        // so the exit-identity lookup can synthesize the
+        // pinned entry the way the Dart picker does when the
+        // core's list has no row for the tag.
+        private const val EXTRA_PIN_COUNTRY = "pinCountry"
+        private const val EXTRA_PIN_CODE = "pinCode"
         private const val EXTRA_SMART_ON = "smart"
         private const val EXTRA_IP = "ip"
         private const val EXTRA_PORT = "port"
@@ -1134,6 +1188,14 @@ class LanternVpnService : VpnService() {
             dns: String = "1.1.1.1",
             killSwitch: Boolean = false,
             tag: String = "",
+            // Build 2149 (audit A43-09): the pinned private
+            // server's stored identity ("" for a public pin
+            // or automatic).
+            pinCountry: String = "",
+            pinCode: String = "",
+            // Build 2149 (audit A43-27): the stored
+            // smart-routing choice, applied after init.
+            smartOn: Boolean = false,
         ) {
             val intent = Intent(context, LanternVpnService::class.java).apply {
                 action = ACTION_START
@@ -1142,6 +1204,9 @@ class LanternVpnService : VpnService() {
                 putExtra(EXTRA_DNS, dns)
                 putExtra(EXTRA_KILL_SWITCH, killSwitch)
                 putExtra(EXTRA_TAG, tag)
+                putExtra(EXTRA_PIN_COUNTRY, pinCountry)
+                putExtra(EXTRA_PIN_CODE, pinCode)
+                putExtra(EXTRA_SMART_ON, smartOn)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -1192,12 +1257,21 @@ class LanternVpnService : VpnService() {
         }
 
         /** Build 2131: asks the running session to switch to
-         *  [tag] ("" = automatic) inside the live tunnel. */
-        fun switchServer(context: Context, tag: String) {
+         *  [tag] ("" = automatic) inside the live tunnel.
+         *  Build 2149 (audit A43-09): the pin identity rides
+         *  along, as on [start]. */
+        fun switchServer(
+            context: Context,
+            tag: String,
+            pinCountry: String = "",
+            pinCode: String = "",
+        ) {
             context.startService(
                 Intent(context, LanternVpnService::class.java).apply {
                     action = ACTION_SWITCH
                     putExtra(EXTRA_TAG, tag)
+                    putExtra(EXTRA_PIN_COUNTRY, pinCountry)
+                    putExtra(EXTRA_PIN_CODE, pinCode)
                 },
             )
         }

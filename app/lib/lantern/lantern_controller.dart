@@ -98,10 +98,22 @@ class LanternController extends ChangeNotifier {
         privateCode = (doc['privateCode'] as String?) ?? '';
         selectedTag = (doc['selectedTag'] as String?) ?? '';
         // DEFAULT OFF: an absent key is off, and the core is
-        // forced off at every init regardless (bridge init);
-        // a stored ON is re-applied to the core by
-        // setSmartRouting when the page is opened.
+        // forced off at every init regardless (bridge init).
+        // Build 2149 (audit A43-27): a stored ON is now
+        // actually re-applied — here at load (the service
+        // initializes the core to apply it) and again on
+        // every connect (the start intent carries it and
+        // startTunnel applies it after init). Before this
+        // build nothing re-applied it: the comment above
+        // claimed a page-open re-application that did not
+        // exist, and the core's init reset silently undid
+        // the stored choice.
         smartRouting = doc['smartRouting'] == true;
+        if (smartRouting) {
+          try {
+            await LanternPlatform.setSmartRouting(true);
+          } catch (_) {}
+        }
       }
     } catch (_) {}
     _state = await LanternPlatform.state();
@@ -324,10 +336,22 @@ class LanternController extends ChangeNotifier {
   /// ("" = Automatic) inside the live tunnel — no TUN
   /// rebuild; the core re-selects via SelectServer. The
   /// poller and the refresh below surface the new exit.
+  /// Build 2149: switching to the private tag carries its
+  /// stored identity for the service's exit lookup (audit
+  /// A43-09), and a failed switch is SURFACED in
+  /// [lastError] instead of swallowed (audit A43-28) —
+  /// the refresh still runs, so the display settles on
+  /// the session's real exit either way.
   Future<void> liveSwitch(String tag) async {
     try {
-      await LanternPlatform.switchServer(tag);
-    } catch (_) {}
+      await LanternPlatform.switchServer(
+        tag,
+        pinCountry: tag == privateTag ? privateCountry : '',
+        pinCode: tag == privateTag ? privateCode : '',
+      );
+    } catch (e) {
+      _lastError = 'Switching the Lantern server failed: $e';
+    }
     await refresh();
   }
 
@@ -460,7 +484,14 @@ class LanternController extends ChangeNotifier {
         if (gen != _startGen) return;
         tag = lanternPrivateTag(parseLanternPrivateServerLink(privateKey)!);
       }
-      await _startAndAwait(tag: tag, gen: gen);
+      await _startAndAwait(
+        tag: tag,
+        gen: gen,
+        // Build 2149 (audit A43-09): the private pin's
+        // stored identity rides to the service.
+        pinCountry: privateMode ? privateCountry : '',
+        pinCode: privateMode ? privateCode : '',
+      );
     } finally {
       if (identical(_busyToken, busyToken)) {
         _busyToken = null;
@@ -470,7 +501,12 @@ class LanternController extends ChangeNotifier {
     }
   }
 
-  Future<void> _startAndAwait({required String tag, int gen = 0}) async {
+  Future<void> _startAndAwait({
+    required String tag,
+    int gen = 0,
+    String pinCountry = '',
+    String pinCode = '',
+  }) async {
     // Build 2096 (post-2095 audit H5): the start is
     // gen-gated, and a superseded wait stops its own core on
     // the way out (a disconnect during connect must not
@@ -483,6 +519,12 @@ class LanternController extends ChangeNotifier {
       // Build 2125 (A25-04): the kill switch.
       killSwitch: killSwitchEnabled(),
       tag: tag,
+      pinCountry: pinCountry,
+      pinCode: pinCode,
+      // Build 2149 (audit A43-27): the stored smart-routing
+      // choice rides the start; the service applies it
+      // after the core init that would otherwise reset it.
+      smartOn: smartRouting,
     );
     final started = DateTime.now();
     while (true) {

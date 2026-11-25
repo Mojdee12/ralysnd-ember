@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../../xray/anti_filter.dart';
 import '../../xray/config_builder.dart';
+import '../../xray/dns_presets.dart';
 import '../../xray/link_parser.dart' show newProfileId;
 import '../../xray/profile_validation.dart';
 import '../../xray/tls_cert_pin.dart';
@@ -16,6 +17,7 @@ import '../../xray/vless_encryption.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../../xray/xray_platform.dart';
+import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
 import 'qr_pages.dart';
@@ -78,6 +80,76 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
   /// Build 2147 (feature #11): a pin-capture read is in
   /// flight.
   bool _pinning = false;
+
+  /// Build 2149 (per-config diagnostics): the node speed
+  /// test / DNS check are in flight, and the DNS check's
+  /// verdict line once it has run.
+  bool _speedTesting = false;
+  bool _dnsChecking = false;
+  bool _dnsPinging = false;
+  String _dnsVerdict = '';
+
+  /// The STORED profile this editor edits (the working
+  /// copy [_p] is a clone): diagnostics read and test the
+  /// stored one, so results land where the list shows
+  /// them.
+  Profile? get _savedProfile {
+    final existing = widget.existing;
+    if (existing == null) return null;
+    for (final p in widget.xray.profiles) {
+      if (p.id == existing.id) return p;
+    }
+    return existing;
+  }
+
+  Future<void> _runSpeedTest() async {
+    final saved = _savedProfile;
+    if (saved == null || _speedTesting) return;
+    setState(() => _speedTesting = true);
+    try {
+      await widget.xray.testSpeed(saved);
+    } finally {
+      if (mounted) setState(() => _speedTesting = false);
+    }
+  }
+
+  /// The per-server DNS ping (build 2149 refinement): each
+  /// server in the generated config is asked one real query
+  /// through this config and timed on its own row — the
+  /// controller stamps the results on the stored profile.
+  Future<void> _runDnsPings() async {
+    final saved = _savedProfile;
+    if (saved == null || _dnsPinging) return;
+    setState(() => _dnsPinging = true);
+    try {
+      await widget.xray.testDnsPings(saved);
+    } finally {
+      if (mounted) setState(() => _dnsPinging = false);
+    }
+  }
+
+  /// The DNS check: the sandbox's staged request crosses
+  /// a throwaway core of this config BY DOMAIN NAME,
+  /// resolved by the core itself (the guided diagnosis's
+  /// stage-3 proof) — so an ok verdict means this
+  /// config's own DNS answers inside its tunnel.
+  Future<void> _runDnsCheck() async {
+    final saved = _savedProfile;
+    if (saved == null || _dnsChecking) return;
+    setState(() => _dnsChecking = true);
+    try {
+      final r = await widget.xray.sandboxTest(saved);
+      if (!mounted) return;
+      setState(
+        () => _dnsVerdict = r.ok
+            ? 'A request by name crossed this config — '
+                  'its DNS resolves inside the tunnel.'
+            : 'The check did not complete: ${r.error}',
+      );
+    } finally {
+      if (mounted) setState(() => _dnsChecking = false);
+    }
+  }
 
   /// Reads the certificate the profile's endpoint presents
   /// right now and fills the pin field with its SHA-256.
@@ -1098,6 +1170,217 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       ),
     ),
   );
+
+  /// Build 2149 (owner expansion 2 — per-config
+  /// diagnostics): the saved profile's last node test
+  /// (delay · download · upload, with its timestamp), a
+  /// button to run it again, the DNS servers this
+  /// config's generated core config actually uses (read
+  /// back out of the generated config — display only,
+  /// nothing here edits DNS), and the per-config DNS
+  /// check. Saved profiles only: a draft has no stored
+  /// results and no generated config of its own yet.
+  Widget _diagnosticsSection() {
+    Widget line(String label, String value) => Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(label, style: Ember.caption),
+          ),
+          Expanded(child: Text(value, style: Ember.body)),
+        ],
+      ),
+    );
+    return ListenableBuilder(
+      listenable: widget.xray,
+      builder: (context, _) {
+        final saved = _savedProfile;
+        if (saved == null) return const SizedBox.shrink();
+        final tested = saved.speedTestedAtMs > 0
+            ? DateTime.fromMillisecondsSinceEpoch(saved.speedTestedAtMs)
+            : null;
+        String two(int v) => v.toString().padLeft(2, '0');
+        // A profile the builder refuses (an incomplete
+        // hand-made one) shows no list rather than
+        // breaking the page.
+        var dnsServers = const <String>[];
+        try {
+          dnsServers = dnsServersOfConfigJson(
+            buildTunnelConfig(saved, widget.xray.settings),
+          );
+        } catch (_) {
+          dnsServers = const <String>[];
+        }
+        return _section('Diagnostics', [
+          line(
+            'Delay',
+            saved.delayMs >= 0
+                ? '${latDigits(saved.delayMs)} ms'
+                : saved.delayFailed
+                ? 'Failed'
+                : 'Not tested',
+          ),
+          line(
+            'Download',
+            saved.lastSpeedBps >= 0 ? fmtRate(saved.lastSpeedBps) : '—',
+          ),
+          line(
+            'Upload',
+            saved.lastSpeedUpBps >= 0 ? fmtRate(saved.lastSpeedUpBps) : '—',
+          ),
+          if (tested != null)
+            line(
+              'Tested',
+              '${tested.year}-${two(tested.month)}-${two(tested.day)} '
+              '${two(tested.hour)}:${two(tested.minute)}',
+            ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: Center(
+                  child: MapActionPill(
+                    icon: Icons.speed_rounded,
+                    label: _speedTesting ? 'Testing…' : 'Run speed test',
+                    busy: _speedTesting,
+                    onTap: _speedTesting
+                        ? null
+                        : () => unawaited(_runSpeedTest()),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text('DNS servers', style: Ember.body),
+          const SizedBox(height: 4),
+          Text(
+            'From this config\u2019s generated core config — '
+            'what the core will use, in order.',
+            style: Ember.caption,
+          ),
+          const SizedBox(height: 8),
+          if (dnsServers.isEmpty)
+            Text('None in the generated config.', style: Ember.caption)
+          else
+            for (final server in dnsServers)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                // Build 2149 (expansion 5, display bonus):
+                // an entry a preset claims carries the
+                // preset's name beside the address — the
+                // catalogue's matcher, display only.
+                // Build 2149 (owner refinement): after a
+                // Test DNS run the row also carries that
+                // server's own through-config latency — the
+                // 2148 small-size/colour rules (pingColor for
+                // an answer, the failure red for none).
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        server,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: Ember.fontSmall,
+                          color: MapUi.text,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (dnsPresetNameFor(server) != null) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        dnsPresetNameFor(server)!,
+                        style: Ember.caption.copyWith(color: Ember.orange),
+                      ),
+                    ],
+                    if (saved.dnsPingMs[server] != null) ...[
+                      const SizedBox(width: 8),
+                      if (saved.dnsPingMs[server]! >= 0)
+                        Text(
+                          '${latDigits(saved.dnsPingMs[server]!)} ms',
+                          style: TextStyle(
+                            fontSize: Ember.fontSmall,
+                            fontWeight: FontWeight.w600,
+                            color: pingColor(saved.dnsPingMs[server]!),
+                          ),
+                        )
+                      else if (saved.dnsPingMs[server]! == -1)
+                        const Text(
+                          'Failed',
+                          style: TextStyle(
+                            fontSize: Ember.fontSmall,
+                            fontWeight: FontWeight.w600,
+                            color: Ember.red,
+                          ),
+                        )
+                      else
+                        Text('—', style: Ember.caption),
+                    ],
+                  ],
+                ),
+              ),
+          if (saved.dnsPingAtMs > 0) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Per-server ping through this config · tested '
+              '${DateTime.fromMillisecondsSinceEpoch(saved.dnsPingAtMs).year}'
+              '-${two(DateTime.fromMillisecondsSinceEpoch(saved.dnsPingAtMs).month)}'
+              '-${two(DateTime.fromMillisecondsSinceEpoch(saved.dnsPingAtMs).day)} '
+              '${two(DateTime.fromMillisecondsSinceEpoch(saved.dnsPingAtMs).hour)}'
+              ':${two(DateTime.fromMillisecondsSinceEpoch(saved.dnsPingAtMs).minute)}',
+              style: Ember.caption,
+            ),
+          ],
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Center(
+                  child: MapActionPill(
+                    icon: Icons.network_ping,
+                    label: _dnsPinging ? 'Pinging…' : 'Test DNS',
+                    busy: _dnsPinging,
+                    onTap: _dnsPinging
+                        ? null
+                        : () => unawaited(_runDnsPings()),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Center(
+                  child: MapActionPill(
+                    icon: Icons.dns_rounded,
+                    label: _dnsChecking ? 'Checking…' : 'Check DNS',
+                    busy: _dnsChecking,
+                    onTap: _dnsChecking
+                        ? null
+                        : () => unawaited(_runDnsCheck()),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_dnsVerdict.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(_dnsVerdict, style: Ember.caption),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            'The check sends one request by name through a '
+            'test core of this config. The full leak test '
+            'for the connected config is in Settings.',
+            style: Ember.caption,
+          ),
+        ]);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2150,6 +2433,11 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                   style: Ember.caption,
                 ),
               ]),
+            // Build 2149: per-config diagnostics (saved
+            // profiles only) — node-test results, the
+            // generated config's DNS servers, the DNS
+            // check.
+            if (widget.existing != null) _diagnosticsSection(),
             // Sample C's foot (build 2050): test / share
             // actions and the live status card. Saving lives
             // in the AppBar's ember pill now.

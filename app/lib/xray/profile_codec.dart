@@ -59,8 +59,11 @@ Map<String, String> _transportParams(Profile p) {
     // REALITY PQ verification (build 2057, audit F-M13).
     if (p.pqv.isNotEmpty) q['pqv'] = p.pqv;
   }
-  // No allowInsecure parameter (build 2048): the core removed
-  // the feature, so a shared link must not carry it.
+  // Build 2149 (diagnosis D3): a profile whose link set
+  // allowInsecure re-exports it, so a share round-trip
+  // keeps the flag (v2rayNG parity); unset profiles emit
+  // nothing, as before.
+  if (p.allowInsecure) q['allowInsecure'] = '1';
   // gRPC authority (build 2057, audit §6 codec drop).
   if (p.network == 'grpc' && p.grpcAuthority.isNotEmpty) {
     q['authority'] = p.grpcAuthority;

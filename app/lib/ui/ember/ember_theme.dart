@@ -355,7 +355,9 @@ class GlassCard extends StatelessWidget {
   // specular top line; the old drop shadow is gone). The 15 call
   // sites keep their padding/glow/onTap API unchanged.
   Widget build(BuildContext context) =>
-      MapGlass(padding: padding, glow: glow, onTap: onTap, child: child);
+      // Build 2149 (audit A43-31): explicit blur — the
+      // MapGlass default is now blur:false.
+      MapGlass(blur: true, padding: padding, glow: glow, onTap: onTap, child: child);
 }
 
 /// The dashed outline button of the mockups («افزودن حساب» / اشتراک).
@@ -719,7 +721,7 @@ class EmberToggle extends StatelessWidget {
         width: 50,
         height: 26,
         alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 3),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(999),
           // Build 2119 (audit F-18): the ON gradient is the
@@ -729,9 +731,7 @@ class EmberToggle extends StatelessWidget {
           gradient: value ? Ember.gradient : null,
           // Build 2144: the OFF track is the reskin samples'
           // dark charcoal with a hairline rim (was the 2023
-          // mid-slate); the ON/OFF state word stays — the
-          // 2137 V-05 readability fix is owner-visible
-          // behaviour of the control, not decoration.
+          // mid-slate).
           color: value ? null : const Color(0xFF2A2B2F),
           border: value ? null : Border.all(color: const Color(0x33FFFFFF)),
           boxShadow: value
@@ -744,20 +744,29 @@ class EmberToggle extends StatelessWidget {
                 ]
               : null,
         ),
-        child: Text(
-          value ? 'ON' : 'OFF',
-          style: TextStyle(
-            // Build 2092 (UI audit item 52): micro-text floor —
-            // the ON/OFF state word is informational, 9→11 sp.
-            fontSize: Ember.fontMicro,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.6,
-            // Build 2137 (visual review V-05): the OFF word
-            // was #FF22262D on the slate track — 2.66:1, the
-            // switch's state unreadable at a glance. The
-            // near-white reads ≈5.9:1 on the same track; the
-            // track itself is unchanged.
-            color: value ? const Color(0xFF1A1206) : const Color(0xFFEDF2F8),
+        // Build 2149 (owner expansion 2026-11-25, un-holding
+        // the toggle-form decision): the approved samples
+        // (pro6-settings, pro7-dns) draw a SLIDING SWITCH —
+        // a knob, no state word — so the knob replaces the
+        // ON/OFF text the 2137 V-05 fix put inside the pill.
+        // ON: white knob on the orange track; OFF: grey knob
+        // on the dark track. The switch semantics above
+        // (toggled state for TalkBack) are unchanged, so the
+        // state stays announced without the word.
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: 20,
+          height: 20,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: value ? Colors.white : const Color(0xFF9A9AA0),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x55000000),
+                blurRadius: 3,
+                offset: Offset(0, 1),
+              ),
+            ],
           ),
         ),
       ),
@@ -824,12 +833,22 @@ class EmberChip extends StatelessWidget {
             ),
             const SizedBox(width: 6),
           ],
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: compact ? Ember.fontMicro : Ember.fontSmall,
-              fontWeight: FontWeight.w700,
-              color: selected ? const Color(0xFF1A1206) : MapUi.dim,
+          // Build 2149 (audit A48-07): the label flexes and
+          // ellipsises — at 360dp × 2.0 text scale a long
+          // chip label (the chain builder's underlay chips)
+          // overflowed the chip's Row by 39 px, a cell the
+          // new scale matrix caught. Unconstrained, the
+          // Flexible changes nothing.
+          Flexible(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: compact ? Ember.fontMicro : Ember.fontSmall,
+                fontWeight: FontWeight.w700,
+                color: selected ? const Color(0xFF1A1206) : MapUi.dim,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

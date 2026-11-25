@@ -458,7 +458,11 @@ void main() {
       expect(isValidPin('1234567'), isFalse);
       expect(isValidPin('12a4'), isFalse);
       expect(pinHashOf('1234'), isNot(pinHashOf('1235')));
-      expect(pinHashOf('1234').length, 64);
+      // PIN UPDATED by build 2149 (audit A43-29): the
+      // stored form is no longer a bare 64-char SHA-256 —
+      // it is the salted, stretched v2 record (see
+      // build2149_test.dart for the full gate).
+      expect(pinHashOf('1234'), startsWith('v2:'));
     });
   });
 

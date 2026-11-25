@@ -383,6 +383,17 @@ void main() {
     });
 
     test('the proof gates adoption in _connectSelected (pins)', () {
+      // PIN SUPERSEDED by build 2149 (owner order
+      // 2026-11-25, diagnosis D1): the adoption GATE is
+      // removed — the gate tore down slow-first-byte
+      // sessions (the CF-fronted WS+TLS class) that
+      // v2rayNG/Karing adopt on core-up. The proof is
+      // demoted to the adopted-session surfacing (2119
+      // F-02): adoption stamps the session UNVERIFIED and
+      // the background proof upgrades it. The carries
+      // machinery itself is unchanged (the verdict tests
+      // above stand); what this pin now guards is the
+      // gate's ABSENCE and the unverified adoption.
       final src = File('lib/xray/xray_controller.dart').readAsStringSync();
       final start = src.indexOf('Future<void> _connectSelected() async {');
       final end = src.indexOf(
@@ -391,13 +402,17 @@ void main() {
       expect(start, greaterThanOrEqualTo(0));
       expect(end, greaterThan(start));
       final segment = src.substring(start, end);
-      final proofAt = segment.indexOf('awaitXrayCarries(checkAlive)');
-      final adoptAt = segment.indexOf('_connectedProfileId = p.id;');
-      expect(proofAt, greaterThanOrEqualTo(0));
-      expect(adoptAt, greaterThan(proofAt));
       expect(segment, contains('p.protocol != Protocol.wireguard'));
-      expect(segment, contains("throw StateError('no-traffic')"));
-      expect(segment, contains('_proofVerifiedSinceMs = state.sinceMs'));
+      expect(segment, isNot(contains("throw StateError('no-traffic')")));
+      expect(segment, isNot(contains('awaitXrayCarries(checkAlive)')));
+      expect(segment, contains('_proofVerifiedSinceMs = 0'));
+      expect(segment, contains('state = state.withVerified(false);'));
+      final adoptAt = segment.indexOf('_connectedProfileId = p.id;');
+      final unverifiedAt = segment.indexOf(
+        'state = state.withVerified(false);',
+      );
+      expect(unverifiedAt, greaterThanOrEqualTo(0));
+      expect(adoptAt, greaterThan(unverifiedAt));
     });
   });
 }

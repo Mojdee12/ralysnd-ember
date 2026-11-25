@@ -1083,39 +1083,27 @@ class WireGuardServersView extends StatelessWidget {
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             children: [
-              MapGlass(
-                blur: false,
-                luminous: true,
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'WireGuard configurations',
-                            style: Ember.heading,
-                          ),
-                        ),
-                        if (onClose != null)
-                          // Build 2074 (audit item 4): a ≥48dp hit
-                          // area for the panel close button.
-                          IconButton(
-                            tooltip: 'Close',
-                            onPressed: onClose,
-                            icon: const Icon(Icons.close_rounded, size: 19),
-                            color: MapUi.dim,
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.only(left: 4),
-                            constraints: const BoxConstraints(
-                              minWidth: 48,
-                              minHeight: 48,
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
+              // Build 2149 (audit A48-04): the header zone is
+              // PAGE composition now, not a floating card —
+              // with no configs the rimmed luminous panel
+              // occupied the top third over ≈55% void, and
+              // its ✕ duplicated the shell header's BACK
+              // (the 2148 navigation model: BACK is the one
+              // leave affordance on a non-Home tab). The
+              // title, the import actions and the empty copy
+              // sit open on the ground, as the pro6-wireguard
+              // composition lays them out; the profile rows
+              // below keep their own cards. [onClose] stays
+              // in the view's contract (the shell passes it)
+              // but no longer renders a second control.
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'WireGuard configurations',
+                    style: Ember.heading,
+                  ),
+                  const SizedBox(height: 10),
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
@@ -1173,8 +1161,7 @@ class WireGuardServersView extends StatelessWidget {
                         style: Ember.caption,
                       ),
                     ],
-                  ],
-                ),
+                ],
               ),
               for (final entry in groups.entries) ...[
                 if (entry.value.length > 1) ...[

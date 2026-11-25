@@ -572,7 +572,9 @@ class Panel extends StatelessWidget {
         ],
       ),
     );
-    if (emberHosted) return MapGlass(child: content);
+    // Build 2149 (audit A43-31): explicit blur — the
+    // MapGlass default is now blur:false.
+    if (emberHosted) return MapGlass(blur: true, child: content);
     return Card(margin: EdgeInsets.zero, child: content);
   }
 }

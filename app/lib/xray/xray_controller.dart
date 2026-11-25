@@ -21,6 +21,7 @@ import '../net/tcp_ping.dart';
 import '../psiphon/psiphon_platform.dart';
 import 'config_builder.dart';
 import 'diagnostics.dart';
+import 'problem_report.dart';
 import 'dnscrypt_config.dart';
 import 'dnstt_args.dart';
 import 'dnstt_platform.dart';
@@ -246,16 +247,36 @@ FastestPrunePlan planFastestPrune(
 /// tombstone retains no profile name, so an entry is
 /// identified by its endpoint, never by a name it does
 /// not have.
+/// Build 2149 (audit A43-11): entries whose profile data
+/// was retained (deletions from this build on) carry the
+/// profile's name and restore immediately
+/// ([restorableNow]); older entries keep the key-derived
+/// label and the refresh restore.
 class DeletedProfileEntry {
-  const DeletedProfileEntry({required this.subscription, required this.key});
+  const DeletedProfileEntry({
+    required this.subscription,
+    required this.key,
+    this.retainedName = '',
+    this.restorableNow = false,
+  });
 
   final Subscription subscription;
   final String key;
 
+  /// The retained profile's name (build 2149); '' for an
+  /// entry deleted before data retention.
+  final String retainedName;
+
+  /// Whether Restore re-adds the profile itself at once
+  /// (build 2149) rather than at the next refresh.
+  final bool restorableNow;
+
+  /// The retained name when there is one; otherwise
   /// 'vless · node.example.com:443' — or the bare protocol
   /// when the key predates the tombstone shape and its
   /// endpoint cannot be parsed out of it.
   String get label {
+    if (retainedName.isNotEmpty) return retainedName;
     final parsed = parseTombstoneKey(key);
     if (parsed == null) return key.split('|').first;
     return '${parsed.protocol} · ${parsed.address}:${parsed.port}';
@@ -314,6 +335,41 @@ const backupSecretSettingsKeys = {'sync_github_token', 'app_lock_pin_hash'};
 Map<String, Object?> stripBackupSecrets(Map<String, Object?> doc) =>
     Map<String, Object?>.of(doc)
       ..removeWhere((k, _) => backupSecretSettingsKeys.contains(k));
+
+/// Build 2149 (audit A43-03): the XraySettings keys whose
+/// values are SECRETS — they live in the Keystore-backed
+/// vault ([SecretStore], the same vault as the sync
+/// token) instead of the plaintext store document. The
+/// panel password and the bridge credentials block are
+/// live credentials for the owner's server; the LAN
+/// share password guards the shared tunnel; the HWID is
+/// a stable device identifier. The in-memory settings
+/// fields stay the runtime truth — only the PERSISTED
+/// shape changes (see _writeStore / _overlayVaultSecrets).
+const vaultSettingsSecretKeys = <String>{
+  'regionHopPanelPassword',
+  'regionHopRelays',
+  'lanSharePass',
+  'deviceHwid',
+};
+
+/// The vault key a settings secret rides under.
+String vaultKeyForSettingsSecret(String settingsKey) =>
+    'xray_settings_$settingsKey';
+
+/// A copy of a settings JSON map with every vault secret
+/// blanked (build 2149, A43-03/A43-10). Pure, so the
+/// persisted and exported shapes are unit-testable
+/// without a platform channel.
+Map<String, Object?> scrubSettingsSecrets(
+  Map<String, Object?> settingsJson,
+) {
+  final out = Map<String, Object?>.of(settingsJson);
+  for (final key in vaultSettingsSecretKeys) {
+    if (out.containsKey(key)) out[key] = '';
+  }
+  return out;
+}
 
 /// Build 2095 (third-pass audit 2.1): thrown inside a
 /// connect when a disconnect (or a newer connect) has
@@ -977,15 +1033,23 @@ class XrayController extends ChangeNotifier {
         final next = nextQuarantineStrikes(p, networkFp);
         p.quarantineStrikes = next.strikes;
         p.quarantineNetwork = next.network;
-        if (next.strikes >= 3) {
+        // Build 2149 (audit A48-06): ONE threshold for both
+        // quarantine paths — the configurable
+        // pingSweepFailStrikes the sweep uses, not a second
+        // hardcoded 3 that could drift from it.
+        final threshold = settings.pingSweepFailStrikes < 1
+            ? 1
+            : settings.pingSweepFailStrikes;
+        if (next.strikes >= threshold) {
           p.quarantined = true;
           p.quarantineReason =
-              'Failed 3 times on this network (build 2147 quarantine)';
+              'Failed $threshold times on this network '
+              '(build 2147 quarantine)';
           diagnostics.add(
             'quarantine',
-            '${p.name} was quarantined after 3 failed attempts '
-                'on this network. It stays in the list and can '
-                'be restored from the quarantine surface.',
+            '${p.name} was quarantined after $threshold failed '
+                'attempts on this network. It stays in the list '
+                'and can be restored from the quarantine surface.',
             ok: false,
           );
         }
@@ -1469,42 +1533,65 @@ class XrayController extends ChangeNotifier {
   /// carrier, which is why a hostname-form config only
   /// ever worked with the IP substituted by hand.
   ///
-  /// Failure doctrine: a pin can improve a connect, never
-  /// break one — an empty/failed lookup returns {} and the
-  /// config is built exactly as before. Sidecar-served
-  /// profiles are excluded (the core never dials their
-  /// names; the sidecar resolves them itself). WireGuard
-  /// profiles are NOT excluded: the plain-WG leg and the
-  /// WG test configs dial the endpoint through the core.
-  /// Answers are IPv4-first, v2rayNG's default family sort.
-  /// [journal] is set by the session-establishing callers
-  /// (connect / switch) so a Diagnostics export shows the
-  /// resolution outcome; the bulk test paths stay silent.
+  /// Failure doctrine (build 2149, diagnosis D2 —
+  /// REVISED): up to 2110–2148 a missed lookup returned {}
+  /// and the config was built exactly as pre-2110 —
+  /// domain outbound, no stamp — on the doctrine "a pin
+  /// can improve a connect, never break one". The
+  /// doctrine was backwards in the miss case: the
+  /// unstamped shape is the BROKEN one (its AS_IS system
+  /// dialer resolves through Go's pure resolver, dead at
+  /// 127.0.0.1:53 on Android), so a flaky 3 s lookup
+  /// silently relapsed a hostname profile to a shape that
+  /// can never connect. Now: the lookup RETRIES once with
+  /// a longer window, and a double miss returns the
+  /// stamp marker {host: []} — no hosts entry, but the
+  /// builder still stamps UseIP, so the core resolves the
+  /// name through its own DNS module (the v2rayNG-netd
+  /// behaviour, as closely as this tree allows: the
+  /// module's resolvers ride the config, their endpoints
+  /// pinned by the built-in hosts table). The unstamped
+  /// shape is never built for a hostname profile again.
+  /// Sidecar-served profiles are excluded (the core never
+  /// dials their names; the sidecar resolves them itself).
+  /// WireGuard profiles are NOT excluded: the plain-WG
+  /// leg and the WG test configs dial the endpoint through
+  /// the core. Answers are IPv4-first, v2rayNG's default
+  /// family sort. [journal] is set by the
+  /// session-establishing callers (connect / switch) so a
+  /// Diagnostics export shows the resolution outcome; the
+  /// bulk test paths stay silent.
   Future<Map<String, List<String>>> _serverNamePins(
     Profile p, {
     bool journal = false,
   }) async {
     if (servedViaSidecar(p)) return const {};
     var host = p.address.trim();
-    if (host.isEmpty || InternetAddress.tryParse(host) != null) {
+    // Build 2149 (audit A43-13): the literal test is the
+    // sibling helper, not a bare tryParse — the bracketed
+    // and host:port forms a stored address can take are
+    // literals too, and tryParse sent them into a system
+    // lookup (and a spurious "did not pin" journal) here.
+    // The pin MECHANISM is unchanged (A26-02 stands as
+    // the owner's waived call); only the test is aligned.
+    if (host.isEmpty || isLiteralServerHost(host)) {
       return const {};
     }
-    List<InternetAddress> found;
-    try {
-      found = await InternetAddress.lookup(
-        host,
-      ).timeout(const Duration(seconds: 3));
-    } catch (_) {
-      if (journal) {
-        diagnostics.add(
-          'dns',
-          'On-device lookup for $host failed — connecting '
-              'without a pin; the core resolves the name '
-              'itself.',
-          ok: false,
-        );
+    // Two attempts: the historic 3 s window, then one
+    // retry at 6 s — a carrier-DNS hiccup or a lookup
+    // racing the TUN setup gets a second chance before
+    // the fallback marker is spent.
+    List<InternetAddress> found = const [];
+    for (final window in const [
+      Duration(seconds: 3),
+      Duration(seconds: 6),
+    ]) {
+      try {
+        found = await InternetAddress.lookup(host).timeout(window);
+      } catch (_) {
+        found = const [];
       }
-      return const {};
+      if (found.isNotEmpty) break;
     }
     final answers = <String>[
       for (final a in found)
@@ -1513,16 +1600,25 @@ class XrayController extends ChangeNotifier {
         if (a.type != InternetAddressType.IPv4) a.address,
     ];
     if (answers.isEmpty) {
+      var key = host.toLowerCase();
+      if (key.endsWith('.')) key = key.substring(0, key.length - 1);
       if (journal) {
         diagnostics.add(
           'dns',
-          'On-device lookup for $host returned nothing — '
-              'connecting without a pin; the core resolves '
-              'the name itself.',
+          'On-device lookup for $host failed twice — no '
+              'pin, but the config is stamped UseIP: the '
+              'core resolves the name through its own DNS '
+              'module instead of the system resolver.',
           ok: false,
         );
+        recordProblem(
+          type: ProblemTypes.dnsFailure,
+          profile: p,
+          stage: 'server name lookup',
+          reason: 'the on-device lookup failed twice',
+        );
       }
-      return const {};
+      return {key: const []};
     }
     if (journal) {
       diagnostics.add(
@@ -1583,6 +1679,104 @@ class XrayController extends ChangeNotifier {
   Future<Directory> workDir() async {
     final coreDir = await AndroidCore.dataDir();
     return Directory('${File(coreDir).parent.path}/xray');
+  }
+
+  // ---- daily problem report (build 2149, expansion 4) --
+  //
+  // The structured problem journal (problem_report.dart):
+  // recorded only while settings.dailyProblemReport is on
+  // (DEFAULT OFF — off means no recording, no file, no
+  // digest, no badge), persisted beside state.json,
+  // pruned to a rolling 7 days on load, on record, and on
+  // the 2147 housekeeping tick (no new timer of its own).
+
+  final ProblemJournal problemJournal = ProblemJournal();
+  bool _problemJournalLoaded = false;
+
+  bool get problemReportOn => settings.dailyProblemReport;
+
+  Future<File> _problemFile() async {
+    final state = await _stateFile();
+    return File('${state.parent.path}/problem_report.json');
+  }
+
+  Future<void> _loadProblemJournal() async {
+    if (_problemJournalLoaded) return;
+    _problemJournalLoaded = true;
+    try {
+      final f = await _problemFile();
+      if (await f.exists()) {
+        final decoded = jsonDecode(await f.readAsString());
+        if (decoded is Map) {
+          final loaded = ProblemJournal.fromJson(decoded);
+          problemJournal.clear();
+          for (final e in loaded.events) {
+            problemJournal.record(e);
+          }
+          problemJournal.prune(DateTime.now().millisecondsSinceEpoch);
+        }
+      }
+    } catch (_) {
+      // A damaged journal starts empty — it is evidence,
+      // never a reason to fail a load.
+    }
+  }
+
+  Future<void> _saveProblemJournal() async {
+    if (!_problemJournalLoaded) return;
+    try {
+      final f = await _problemFile();
+      await f.parent.create(recursive: true);
+      await f.writeAsString(jsonEncode(problemJournal.toJson()));
+    } catch (_) {
+      // Evidence housekeeping never breaks the caller.
+    }
+  }
+
+  /// Records one problem event — a no-op while the feature
+  /// is off or the controller is disposed. Call sites pass
+  /// only constant reason strings or sanitized error codes
+  /// (see problem_report.dart's privacy contract): never a
+  /// host, a link, or a credential.
+  void recordProblem({
+    required String type,
+    String engine = 'V2Ray',
+    Profile? profile,
+    String profileName = '',
+    String stage = '',
+    required String reason,
+  }) {
+    if (_disposed || !problemReportOn) return;
+    problemJournal.record(
+      ProblemEvent(
+        atMs: DateTime.now().millisecondsSinceEpoch,
+        type: type,
+        engine: engine,
+        profileName: profile?.name ?? profileName,
+        shape: profile == null ? '' : problemShapeOf(profile),
+        stage: stage,
+        reason: reason,
+      ),
+    );
+    unawaited(_saveProblemJournal());
+    notifyListeners();
+  }
+
+  /// The Settings toggle's handler: flips the gate,
+  /// loads (or creates) the journal when turning on, and
+  /// persists the setting with the store.
+  Future<void> setProblemReportEnabled(bool v) async {
+    settings.dailyProblemReport = v;
+    if (v) await _loadProblemJournal();
+    await _save();
+    notifyListeners();
+  }
+
+  /// Clears the journal (the report page's Clear action).
+  Future<void> clearProblemJournal() async {
+    problemJournal.clear();
+    await _saveProblemJournal();
+    notifyListeners();
   }
 
   Future<void> load() async {
@@ -1836,6 +2030,17 @@ class XrayController extends ChangeNotifier {
     // document: a partial decode must never be completed
     // from a second file.
     if (docDecoded) await _overlayStatsSidecar();
+    // Build 2149 (audit A43-03): the vault overlay rides
+    // the same fully-decoded-only doctrine as the stats
+    // sidecar — a partial document is never completed
+    // from a second store. Plaintext found in the
+    // document (a pre-2149 store) triggers the migration
+    // save below, so the secrets move to the vault in
+    // this session.
+    var secretsPlaintextFound = false;
+    if (docDecoded) {
+      secretsPlaintextFound = await _overlayVaultSecrets();
+    }
     _loaded = true;
     // Build 2103 (verification iteration 2): the defaults
     // term carries the same partial-document guard as its
@@ -1844,6 +2049,7 @@ class XrayController extends ChangeNotifier {
     // partial in-memory state on this trigger either.
     if (fingerprintMigrated ||
         addressNamesHealed ||
+        secretsPlaintextFound ||
         (settings.defaultsJustMigrated2103 &&
             (!docPresent || docDecoded))) {
       await _save();
@@ -1866,6 +2072,25 @@ class XrayController extends ChangeNotifier {
     _geoInstall ??= _installGeoFiles();
     unawaited(_geoInstall!);
     await refreshState();
+    // Build 2149 (expansion 4): the problem journal loads
+    // with the store when its gate is on, and a store that
+    // still claims a connected session the native side no
+    // longer has is the previous-session crash marker —
+    // the last process ended without recording a
+    // disconnect (crash, OS kill, force-stop). An adopted
+    // (still running) session records nothing.
+    if (problemReportOn) {
+      await _loadProblemJournal();
+      if (_connectedProfileId.isNotEmpty && !state.running) {
+        recordProblem(
+          type: ProblemTypes.previousSessionCrash,
+          profile: _profileById(_connectedProfileId),
+          stage: 'session',
+          reason:
+              'the previous session ended without a clean disconnect',
+        );
+      }
+    }
     // EmberWarp housekeeping (build 2030): finish any renewal
     // settle an interrupted run left staged, and learn the
     // core's state for the card.
@@ -2095,11 +2320,18 @@ class XrayController extends ChangeNotifier {
   /// export used to re-read state.json from disk, so an
   /// edit still queued in the save chain (or a torn file)
   /// exported stale or partial state.
-  Map<String, Object?> _buildStoreDoc() => {
+  Map<String, Object?> _buildStoreDoc({bool scrubSecrets = false}) {
+    // Build 2149 (audit A43-03): with [scrubSecrets], the
+    // settings secrets ride as '' — their values live in
+    // the vault (see vaultSettingsSecretKeys). The disk
+    // write scrubs only after the vault write landed;
+    // the backup export always scrubs (A43-10).
+    final settingsJson = settings.toJson();
+    return {
     'schemaVersion': 1,
     'profiles': profiles.map((p) => p.toJson()).toList(),
     'subscriptions': subscriptions.map((s) => s.toJson()).toList(),
-    'settings': settings.toJson(),
+    'settings': scrubSecrets ? scrubSettingsSecrets(settingsJson) : settingsJson,
     'warpProfile': warpProfile.toJson(),
     'selectedProfileId': selectedProfileId,
     // Build 2092 (UI audit item 5): every save carries
@@ -2129,7 +2361,8 @@ class XrayController extends ChangeNotifier {
     // read (see the load side).
     'dpiRemoteStrategies': dpiRemoteStrategiesToJson(dpiRemoteStrategies),
     'dpiRemoteUpdatedMs': dpiRemoteUpdatedMs,
-  };
+    };
+  }
 
   Future<void> _writeStore() async {
     // Never persist before the store has loaded (build 2033,
@@ -2152,9 +2385,20 @@ class XrayController extends ChangeNotifier {
         if (await file.exists()) return;
         _storeUnreadable = false;
       }
+      // Build 2149 (audit A43-03): the settings secrets go
+      // to the vault FIRST, and the document is written
+      // scrubbed only when every non-empty secret landed
+      // there. Any vault failure keeps the pre-2149
+      // plaintext document — a save can never lose a
+      // secret to a Keystore error, and the next save
+      // retries the migration.
+      final scrubbed = await _vaultSettingsSecrets();
       await file.parent.create(recursive: true);
       final tmp = File('${file.path}.tmp');
-      await tmp.writeAsString(jsonEncode(_buildStoreDoc()), flush: true);
+      await tmp.writeAsString(
+        jsonEncode(_buildStoreDoc(scrubSecrets: scrubbed)),
+        flush: true,
+      );
       await tmp.rename(file.path);
       // Build 2071 (review §5.4): a save that lands clears
       // a save-failure complaint. A damaged-at-load
@@ -2165,7 +2409,13 @@ class XrayController extends ChangeNotifier {
       // before anyone saw it).
       if (storeError == storeSaveFailedMessage) {
         storeError = null;
-        notifyListeners();
+        // Build 2149 (verification): the save chain is not
+        // cancelled on dispose, and 2149's longer chain
+        // (vault migration above) made a queued write land
+        // after disposal often enough to trip the
+        // ChangeNotifier assert in tests — the write itself
+        // is harmless post-dispose, the notify is not.
+        if (!_disposed) notifyListeners();
       }
     } catch (_) {
       // Persistence failure must not take the UI down — but
@@ -2174,9 +2424,69 @@ class XrayController extends ChangeNotifier {
       // until a save succeeds again.
       if (storeError != storeSaveFailedMessage) {
         storeError = storeSaveFailedMessage;
-        notifyListeners();
+        if (!_disposed) notifyListeners();
       }
     }
+  }
+
+  /// Build 2149 (audit A43-03): writes the in-memory
+  /// settings secrets to the Keystore-backed vault.
+  /// Returns true when every non-empty secret is safely
+  /// there (an empty value deletes its vault copy, so a
+  /// cleared field can never resurrect at the next load).
+  /// Any failure returns false and the caller keeps the
+  /// plaintext document — the lossless fallback.
+  Future<bool> _vaultSettingsSecrets() async {
+    var ok = true;
+    Future<void> put(String settingsKey, String value) async {
+      final vaultKey = vaultKeyForSettingsSecret(settingsKey);
+      if (value.isEmpty) {
+        await SecretStore.delete(vaultKey);
+        return;
+      }
+      if (!await SecretStore.store(vaultKey, value)) ok = false;
+    }
+
+    await put('regionHopPanelPassword', settings.regionHopPanelPassword);
+    await put('regionHopRelays', settings.regionHopRelays);
+    await put('lanSharePass', settings.lanSharePass);
+    await put('deviceHwid', settings.deviceHwid);
+    return ok;
+  }
+
+  /// Build 2149 (audit A43-03): fills the settings secrets
+  /// from the vault after a load, and reports whether the
+  /// document itself carried any secret in plaintext.
+  /// Priority: a NON-EMPTY document value wins — it is a
+  /// pre-2149 store not yet migrated, or a restored
+  /// pre-2149 backup; both are complete snapshots newer
+  /// than whatever the vault holds. The vault fills only
+  /// the fields the document carries empty (the scrubbed
+  /// shape this build writes). When plaintext was found,
+  /// the caller runs a save so the migration lands in
+  /// this session, not whenever the next edit happens.
+  Future<bool> _overlayVaultSecrets() async {
+    var foundPlaintext = false;
+    Future<String> pick(String docValue, String settingsKey) async {
+      if (docValue.isNotEmpty) {
+        foundPlaintext = true;
+        return docValue;
+      }
+      return await SecretStore.load(vaultKeyForSettingsSecret(settingsKey)) ??
+          '';
+    }
+
+    settings.regionHopPanelPassword = await pick(
+      settings.regionHopPanelPassword,
+      'regionHopPanelPassword',
+    );
+    settings.regionHopRelays = await pick(
+      settings.regionHopRelays,
+      'regionHopRelays',
+    );
+    settings.lanSharePass = await pick(settings.lanSharePass, 'lanSharePass');
+    settings.deviceHwid = await pick(settings.deviceHwid, 'deviceHwid');
+    return foundPlaintext;
   }
 
   // ---- stats sidecar (build 2123, audit B-02 / P-10) ------
@@ -2211,6 +2521,19 @@ class XrayController extends ChangeNotifier {
           'statsUpdatedMs': p.statsUpdatedMs,
           'exitIp': p.exitIp,
           'exitCountryCode': p.exitCountryCode,
+          // Build 2149: the node test's rates + timestamp
+          // are volatile results like the delay — they ride
+          // the sidecar so a hot test persists without a
+          // full store write (lastSpeedBps joins them; it
+          // lived only in the main document before).
+          'lastSpeedBps': p.lastSpeedBps,
+          'lastSpeedUpBps': p.lastSpeedUpBps,
+          'speedTestedAtMs': p.speedTestedAtMs,
+          // Build 2149 (per-DNS ping refinement): the
+          // per-server results + their timestamp are
+          // volatile test results too — same sidecar ride.
+          'dnsPingMs': p.dnsPingMs,
+          'dnsPingAtMs': p.dnsPingAtMs,
         },
     },
     // Build 2126 (audit A26-17): an in-flight held delta
@@ -2308,6 +2631,38 @@ class XrayController extends ChangeNotifier {
         if (exitIp is String) p.exitIp = exitIp;
         final exitCountryCode = entry['exitCountryCode'];
         if (exitCountryCode is String) p.exitCountryCode = exitCountryCode;
+        // Build 2149: the node-test trio (see
+        // _buildStatsDoc) — finite-checked like every
+        // numeric field here; absent in older sidecars.
+        final lastSpeedBps = entry['lastSpeedBps'];
+        if (lastSpeedBps is num && lastSpeedBps.isFinite) {
+          p.lastSpeedBps = lastSpeedBps.toInt();
+        }
+        final lastSpeedUpBps = entry['lastSpeedUpBps'];
+        if (lastSpeedUpBps is num && lastSpeedUpBps.isFinite) {
+          p.lastSpeedUpBps = lastSpeedUpBps.toInt();
+        }
+        final speedTestedAtMs = entry['speedTestedAtMs'];
+        if (speedTestedAtMs is num && speedTestedAtMs.isFinite) {
+          p.speedTestedAtMs = speedTestedAtMs.toInt();
+        }
+        // Build 2149 (per-DNS ping refinement): the
+        // per-server map + timestamp, entry-checked like
+        // the model reader.
+        final dnsPingMs = entry['dnsPingMs'];
+        if (dnsPingMs is Map) {
+          p.dnsPingMs = {
+            for (final e in dnsPingMs.entries)
+              if (e.key is String &&
+                  e.value is num &&
+                  (e.value as num).isFinite)
+                e.key as String: (e.value as num).toInt(),
+          };
+        }
+        final dnsPingAtMs = entry['dnsPingAtMs'];
+        if (dnsPingAtMs is num && dnsPingAtMs.isFinite) {
+          p.dnsPingAtMs = dnsPingAtMs.toInt();
+        }
       }
       // Build 2126 (audit A26-17): restore an in-flight
       // held delta (see _buildStatsDoc) — the first poll
@@ -2394,6 +2749,18 @@ class XrayController extends ChangeNotifier {
       if (selectedProfileId.isEmpty) selectedProfileId = p.id;
     }
     if (parsed.isNotEmpty) unawaited(_save());
+    // Build 2149 (expansion 4): a paste with content that
+    // yielded nothing is an import rejection in the day's
+    // report (a constant reason — the pasted text itself
+    // is never recorded).
+    if (parsed.isEmpty && text.trim().isNotEmpty) {
+      recordProblem(
+        type: ProblemTypes.importRejection,
+        engine: 'Import',
+        stage: 'paste',
+        reason: 'no usable config in the pasted text',
+      );
+    }
     notifyListeners();
     return parsed.length;
   }
@@ -3034,6 +3401,9 @@ class XrayController extends ChangeNotifier {
     p.quarantineStrikes = 0;
     p.quarantineReason = '';
     settings.sweepMissByProfile.remove(profileId);
+    // Build 2149 (audit A48-06): the per-network companion
+    // entry clears with the count.
+    settings.sweepMissNetworkByProfile.remove(profileId);
     await _save();
     notifyListeners();
   }
@@ -3060,24 +3430,40 @@ class XrayController extends ChangeNotifier {
             if (ms >= 0) {
               answered++;
               if (settings.sweepMissByProfile.remove(p.id) != null) {}
+              // Build 2149 (audit A48-06): the per-network
+              // companion entry clears with the count.
+              settings.sweepMissNetworkByProfile.remove(p.id);
               if (settings.quarantineEnabled && p.quarantineStrikes > 0) {
                 p.quarantineStrikes = 0;
               }
             } else if (settings.pingSweepEnabled) {
-              final misses = (settings.sweepMissByProfile[p.id] ?? 0) + 1;
-              settings.sweepMissByProfile[p.id] = misses;
-              if (sweepShouldCut(
-                consecutiveMisses: misses,
+              // Build 2149 (audit A48-06): per-network
+              // misses + the selected profile's exemption
+              // (see sweepMissOutcome). The selected
+              // profile's outcome is its unchanged record,
+              // so nothing is written for it at all.
+              final outcome = sweepMissOutcome(
+                currentMisses: settings.sweepMissByProfile[p.id] ?? 0,
+                recordedNetwork:
+                    settings.sweepMissNetworkByProfile[p.id] ?? '',
+                network: networkFp,
+                isSelected: p.id == selectedProfileId,
                 threshold: settings.pingSweepFailStrikes,
-              )) {
+              );
+              if (p.id != selectedProfileId) {
+                settings.sweepMissByProfile[p.id] = outcome.misses;
+                settings.sweepMissNetworkByProfile[p.id] = outcome.network;
+              }
+              if (outcome.cut) {
                 p.quarantined = true;
                 p.quarantineReason =
-                    'Ping sweep: no answer in $misses consecutive sweeps';
+                    'Ping sweep: no answer in ${outcome.misses} '
+                    'consecutive sweeps';
                 cut++;
                 diagnostics.add(
                   'quarantine',
                   '${p.name} was cut by the ping sweep after '
-                      '$misses unanswered sweeps. Restore it '
+                      '${outcome.misses} unanswered sweeps. Restore it '
                       'from the quarantine surface.',
                   ok: false,
                 );
@@ -3371,6 +3757,14 @@ class XrayController extends ChangeNotifier {
         // speed-test result carries too — it used to
         // reset on every refresh while delayMs survived.
         p.lastSpeedBps = old.lastSpeedBps;
+        // Build 2149: the upload rate and the test's
+        // timestamp carry with it.
+        p.lastSpeedUpBps = old.lastSpeedUpBps;
+        p.speedTestedAtMs = old.speedTestedAtMs;
+        // Build 2149: the per-DNS ping results carry over
+        // a subscription refresh like the node test's.
+        p.dnsPingMs = old.dnsPingMs;
+        p.dnsPingAtMs = old.dnsPingAtMs;
       }
       profiles.add(p);
     }
@@ -3663,8 +4057,19 @@ class XrayController extends ChangeNotifier {
       final key = profileTombstoneKey(p);
       if (sub.deletedProfileKeys.contains(key)) return;
       var keys = [...sub.deletedProfileKeys, key];
-      if (keys.length > 500) keys = keys.sublist(keys.length - 500);
+      // Build 2149 (audit A43-11): the profile's data is
+      // retained beside its key, so the bin's Restore can
+      // bring the config itself back (see
+      // restoreDeletedProfile). The cap trims data with
+      // the keys it drops.
+      final data = {...sub.deletedProfileData, key: p.toJson()};
+      if (keys.length > 500) {
+        final dropped = keys.sublist(0, keys.length - 500);
+        keys = keys.sublist(keys.length - 500);
+        data.removeWhere((k, _) => dropped.contains(k));
+      }
       sub.deletedProfileKeys = keys;
+      sub.deletedProfileData = data;
     }
   }
 
@@ -3674,35 +4079,69 @@ class XrayController extends ChangeNotifier {
   /// and the endpoint fields the key itself retains
   /// (protocol / address / port via [parseTombstoneKey];
   /// empty when the key predates the tombstone shape).
-  /// The tombstone retains NO name and NO full profile,
-  /// so this is all a listing can honestly show.
+  /// Build 2149 (audit A43-11): entries with retained
+  /// profile data carry its name and restore at once.
   List<DeletedProfileEntry> get deletedProfiles => [
     for (final sub in subscriptions)
       for (final key in sub.deletedProfileKeys)
-        DeletedProfileEntry(subscription: sub, key: key),
+        DeletedProfileEntry(
+          subscription: sub,
+          key: key,
+          retainedName:
+              sub.deletedProfileData[key]?['name']?.toString() ?? '',
+          restorableNow: sub.deletedProfileData.containsKey(key),
+        ),
   ];
 
   /// How many profiles sit in the recycle bin.
   int get deletedProfileCount =>
       subscriptions.fold(0, (n, s) => n + s.deletedProfileKeys.length);
 
-  /// Build 2129 (recycle bin): RESTORE one bin entry —
-  /// removes its tombstone, so the profile comes back at
-  /// its subscription's NEXT REFRESH (the tombstone kept
-  /// no copy of the profile itself; un-tombstoning is
-  /// the only restore the data supports). Nothing is
-  /// added to the profile list here, and nothing
-  /// auto-restores: entries the user never restores stay
-  /// tombstoned across refreshes exactly as before.
+  /// Build 2129 (recycle bin): RESTORE one bin entry.
+  /// Build 2149 (audit A43-11): an entry whose profile
+  /// data was retained (every deletion from this build
+  /// on) restores the profile ITSELF, immediately — no
+  /// refresh, so a dead subscription no longer means
+  /// never. An entry without retained data (deleted
+  /// before 2149) keeps the 2129 behaviour: the
+  /// tombstone is removed and the profile comes back at
+  /// its subscription's next refresh. Nothing
+  /// auto-restores either way: entries the user never
+  /// restores stay tombstoned across refreshes exactly
+  /// as before.
   Future<void> restoreDeletedProfile(
     Subscription sub,
     String key,
   ) async {
     if (!sub.deletedProfileKeys.contains(key)) return;
+    final data = sub.deletedProfileData[key];
     sub.deletedProfileKeys = [
       for (final k in sub.deletedProfileKeys)
         if (k != key) k,
     ];
+    if (data != null) {
+      sub.deletedProfileData = {
+        for (final e in sub.deletedProfileData.entries)
+          if (e.key != key) e.key: e.value,
+      };
+      try {
+        final restored = Profile.fromJson(data);
+        // The retained id can collide only with a copy
+        // the user re-imported by hand meanwhile — the
+        // refresh filter kept every other copy out. A
+        // colliding restore takes a fresh id rather than
+        // a duplicate key in the store.
+        if (profiles.any((p) => p.id == restored.id)) {
+          restored.id =
+              'restored-${DateTime.now().microsecondsSinceEpoch}';
+        }
+        profiles = [...profiles, restored];
+      } catch (_) {
+        // Damaged retained data: the un-tombstone above
+        // still stands, so the entry falls back to the
+        // legacy refresh restore instead of vanishing.
+      }
+    }
     await _save();
     notifyListeners();
   }
@@ -3719,6 +4158,15 @@ class XrayController extends ChangeNotifier {
       for (final k in sub.deletedProfileKeys)
         if (k != key) k,
     ];
+    // Build 2149 (audit A43-11): the retained data goes
+    // with the purge — permanent means the config itself
+    // is gone, not merely unlisted.
+    if (sub.deletedProfileData.containsKey(key)) {
+      sub.deletedProfileData = {
+        for (final e in sub.deletedProfileData.entries)
+          if (e.key != key) e.key: e.value,
+      };
+    }
     if (!sub.purgedProfileKeys.contains(key)) {
       sub.purgedProfileKeys = [...sub.purgedProfileKeys, key];
     }
@@ -3912,7 +4360,14 @@ class XrayController extends ChangeNotifier {
     // Build 2095 (audit 4a-1): flush the save chain, then
     // export the in-memory document — never a disk re-read.
     await _save();
-    final doc = _buildStoreDoc();
+    // Build 2149 (audit A43-10): the export is scrubbed —
+    // the settings secrets (panel password, bridge
+    // credentials, LAN password, HWID) never ride a
+    // backup, local or synced. What still travels is the
+    // config data itself (profiles, subscription URLs):
+    // a backup that cannot restore the configs is not a
+    // backup, and those values are the configs.
+    final doc = _buildStoreDoc(scrubSecrets: true);
     if (appSettingsJson != null) {
       doc['appSettings'] = stripBackupSecrets(appSettingsJson);
     }
@@ -4035,6 +4490,27 @@ class XrayController extends ChangeNotifier {
               (doc['settings'] as Map).cast<String, dynamic>(),
             )
           : XraySettings();
+      // Build 2149 (audit A43-03/A43-10): the settings
+      // secrets are device-local — they no longer ride a
+      // backup (see exportBackup), so a restore keeps
+      // THIS device's values wherever the backup carries
+      // the field empty. A pre-2149 backup's non-empty
+      // value is explicit data the owner chose to
+      // restore, and it wins (the save that follows
+      // vaults it like any other value).
+      if (newSettings.regionHopPanelPassword.isEmpty) {
+        newSettings.regionHopPanelPassword =
+            settings.regionHopPanelPassword;
+      }
+      if (newSettings.regionHopRelays.isEmpty) {
+        newSettings.regionHopRelays = settings.regionHopRelays;
+      }
+      if (newSettings.lanSharePass.isEmpty) {
+        newSettings.lanSharePass = settings.lanSharePass;
+      }
+      if (newSettings.deviceHwid.isEmpty) {
+        newSettings.deviceHwid = settings.deviceHwid;
+      }
       // Build 2054 (audit F-H9/F-M14): the fields the old
       // import silently dropped — a restore used to keep the
       // TARGET's warp profile and CF IPs and re-persist them.
@@ -4376,6 +4852,15 @@ class XrayController extends ChangeNotifier {
                 _reproofNextAtMs =
                     DateTime.now().millisecondsSinceEpoch +
                     _reproofCadenceMs;
+                // Build 2149 (expansion 4): the day's
+                // report counts it — an adopted session
+                // whose proof has not landed.
+                recordProblem(
+                  type: ProblemTypes.proofUnverified,
+                  profile: adopted,
+                  stage: 'session proof',
+                  reason: 'the session has not answered a proof yet',
+                );
               }
             }),
           );
@@ -5565,6 +6050,15 @@ class XrayController extends ChangeNotifier {
       _sweepLastRunMs = now;
       await runPingSweep();
     }
+    // Build 2149 (expansion 4): the problem journal's
+    // daily rollover rides this existing tick — prune the
+    // rolling 7 days, persist when anything dropped. No
+    // timer of its own (the 2148 leak class).
+    if (problemReportOn &&
+        _problemJournalLoaded &&
+        problemJournal.prune(now)) {
+      await _saveProblemJournal();
+    }
   }
 
   Future<void> _watchdogTick(XrayState sample) async {
@@ -5877,6 +6371,22 @@ class XrayController extends ChangeNotifier {
           '${stage.title} — ${stage.detail}',
           ok: stage.ok,
         );
+      }
+      // Build 2149 (expansion 4): a failed TLS-handshake
+      // stage of the guided check is the day's handshake
+      // entry — the one place a handshake verdict is
+      // actually measured.
+      if (!state.running && selected != null) {
+        for (final stage in stages) {
+          if (!stage.ok && stage.title == 'TLS handshake answers') {
+            recordProblem(
+              type: ProblemTypes.handshakeTimeout,
+              profile: selected,
+              stage: 'TLS handshake',
+              reason: 'the TLS handshake was reset or timed out',
+            );
+          }
+        }
       }
       lastCheck = stages;
       return stages;
@@ -7698,6 +8208,62 @@ class XrayController extends ChangeNotifier {
     switchingProfileId = next.id;
     switchNotice = '';
     notifyListeners();
+    // Build 2149 (audit A43-04): the switch rollback state —
+    // filled in at adoption inside the try, consumed by the
+    // proof-failure exit and the catch (both outside the
+    // try's scope, hence declared here). See the adoption
+    // site for the full note.
+    Profile? prevProfile;
+    var prevConnectedId = '';
+    Map<String, List<String>> prevProviderPins = const {};
+    Map<String, List<String>> prevServerPins = const {};
+    var prevWdShape = shapeStock;
+    var prevLabActive = false;
+    var prevLabCandidateId = '';
+    var adopted = false;
+    Future<void> rollbackSwitch() async {
+      final prev = prevProfile;
+      if (prev == null) return;
+      try {
+        // The previous session's egress, rebuilt from its
+        // profile and its OWN pins (the snapshot's, merged
+        // as at adoption). The dial plan is the profile's
+        // base plan — a shape/Lab variant the old session
+        // was dialed with is not replayed; the rollback's
+        // promise is the same exit answering again, not
+        // the same ClientHello.
+        final oldConfig = buildTunnelConfig(
+          prev,
+          settings,
+          serverHostPins: _mergedServerPins(prevServerPins, prevProviderPins),
+        );
+        if (!await XrayPlatform.rotateConfig(oldConfig)) return;
+      } catch (_) {
+        return;
+      }
+      // A superseding disconnect/connect owns the core now —
+      // restoring identity over it would corrupt its
+      // session. The interim state stands, exactly as a
+      // pre-2149 failed switch left it.
+      if (_tunnelGen != gen) return;
+      _connectedProfileId = prevConnectedId;
+      _sessionProviderPins = prevProviderPins;
+      _sessionServerPins = prevServerPins;
+      _wdShape = prevWdShape;
+      _labDialActive = prevLabActive;
+      _labDialCandidateId = prevLabCandidateId;
+      _labStandDownJournaled = false;
+      _resetWatchdogBases();
+      _adaptiveFails = 0;
+      await _save();
+      diagnostics.add(
+        'switch',
+        'Switch to ${next.name} did not prove — rolled '
+            'back to ${prev.name}; the session is unchanged.',
+        ok: false,
+      );
+    }
+
     try {
       if (networkFp.isEmpty) await refreshNetworkFingerprint();
       // The same shape fast-path connect() uses: a shape that
@@ -7773,6 +8339,30 @@ class XrayController extends ChangeNotifier {
         if (!connecting) await _stopTunnel();
         return false;
       }
+      // Build 2149 (audit A43-04): the SESSION identity is
+      // snapshotted before adoption. Up to 2148 the switch
+      // adopted — and with the save below, persisted — the
+      // new profile the moment the rotation landed, before
+      // the proof ran; a proof failure then left the store
+      // claiming a live session for a profile that never
+      // carried traffic, and callers without a full-connect
+      // fallback (the stall failover) kept running the
+      // dead rotation under that identity. On proof
+      // failure the switch rolls back (rollbackSwitch,
+      // declared above): the previous profile's config
+      // rotates back in and this snapshot is restored, so
+      // a failed switch leaves the session exactly as it
+      // found it. The user's SELECTION is not part of the
+      // snapshot — the target stays selected, and a
+      // caller's fallback full-connect still aims at it.
+      prevProfile = _profileById(_connectedProfileId);
+      prevConnectedId = _connectedProfileId;
+      prevProviderPins = _sessionProviderPins;
+      prevServerPins = _sessionServerPins;
+      prevWdShape = _wdShape;
+      prevLabActive = _labDialActive;
+      prevLabCandidateId = _labDialCandidateId;
+
       // The rotated config is live from here: new bytes belong
       // to the new profile.
       selectedProfileId = next.id;
@@ -7787,6 +8377,7 @@ class XrayController extends ChangeNotifier {
       _labStandDownJournaled = false;
       _resetWatchdogBases();
       _adaptiveFails = 0;
+      adopted = true;
       await _save();
       // Prove the new exit answers a real request (the probe
       // the watchdog shape rotation uses). Each check can take
@@ -7814,6 +8405,15 @@ class XrayController extends ChangeNotifier {
           // Build 2050: a fresh exit gets a fresh backoff too.
           _exitFailures = 0;
           _exitNextTryAt = null;
+          // Build 2149 (audit A43-15): the rotation's proof
+          // is a proof — stamp the latch like every other
+          // proof path (connect, adoption), so the verified
+          // word and the re-proof cadence start from the
+          // switch instead of the previous session's last
+          // proof.
+          _proofVerifiedSinceMs = state.sinceMs;
+          _proofVerifiedAtMs = DateTime.now().millisecondsSinceEpoch;
+          state = state.withVerified(true);
           _fetchExitInfo();
           switchNotice = 'Switched to ${next.name} — connection kept.';
           diagnostics.add(
@@ -7827,6 +8427,12 @@ class XrayController extends ChangeNotifier {
         }
         await Future<void>.delayed(const Duration(milliseconds: 500));
       }
+      // Build 2149 (audit A43-04): proof failed — roll the
+      // session back to the profile that was live before
+      // the switch (a no-op when the rollback rotation
+      // itself fails), then let the caller's own fallback
+      // run as before.
+      await rollbackSwitch();
       diagnostics.add(
         'switch',
         'Switched to ${next.name} but the new exit never '
@@ -7835,6 +8441,11 @@ class XrayController extends ChangeNotifier {
       );
       return false;
     } catch (e) {
+      // Build 2149 (audit A43-04): a failure AFTER adoption
+      // gets the same rollback — the session must not keep
+      // an identity the failure orphaned. Before adoption
+      // nothing was adopted, so there is nothing to undo.
+      if (adopted && _tunnelGen == gen) await rollbackSwitch();
       diagnostics.add(
         'switch',
         'Switch to ${next.name} failed ($e); falling back to a '
@@ -8151,6 +8762,8 @@ class XrayController extends ChangeNotifier {
           await _awaitSidecarReady(
             ZapretPlatform.state,
             'Zapret desync proxy',
+            stop: ZapretPlatform.stop,
+            isCancelled: isCancelled,
           );
           return true;
         } catch (_) {
@@ -8592,20 +9205,62 @@ class XrayController extends ChangeNotifier {
   /// connects; a stage error fails fast with the core's own
   /// plain message (its stderr tail's last line rides along
   /// in the native error string).
+  ///
+  /// Build 2149 (full audit of 2148):
+  ///  - A43-06: EVERY failure exit stops the process first,
+  ///    here in the one funnel every starter waits through.
+  ///    Before this build the throw left the process
+  ///    running, and the test-shaped callers could not stop
+  ///    it either (their started-flag is only assigned
+  ///    after the start returns) — a failed-readiness
+  ///    sidecar leaked, holding its port and its slot.
+  ///  - A43-20: the budget is 80 × 250 ms = 20 s, aligned
+  ///    with the native probe's own 20 s
+  ///    (SubprocessCore.probeTimeoutMs) — the Dart side
+  ///    used to give up at 10 s and tear down sidecars the
+  ///    native side would still have waited for.
+  ///  - A43-12: an optional cancellation hook, checked
+  ///    each round — a superseded start (a disconnect, a
+  ///    newer connect, a cancelled Lab run) stops the
+  ///    process and unwinds instead of waiting out the
+  ///    budget against a session that no longer exists.
   Future<void> _awaitSidecarReady(
     Future<SidecarState> Function() stateOf,
-    String label,
-  ) async {
-    for (var i = 0; i < 40; i++) {
+    String label, {
+    required Future<void> Function() stop,
+    bool Function()? isCancelled,
+  }) async {
+    for (var i = 0; i < 80; i++) {
+      if (isCancelled?.call() ?? false) {
+        await stop();
+        throw StateError('The $label start was superseded.');
+      }
       final st = await stateOf();
       if (st.ready) return;
       if (st.stage == 'error') {
+        await stop();
+        // Build 2149 (expansion 4): the day's report
+        // counts it (the superseded exit above is a
+        // cancellation, not a problem, and never records).
+        recordProblem(
+          type: ProblemTypes.sidecarFailure,
+          engine: label,
+          stage: 'sidecar start',
+          reason: 'the sidecar stopped while starting',
+        );
         throw StateError(
           st.error.isNotEmpty ? st.error : 'The $label stopped while starting.',
         );
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
+    await stop();
+    recordProblem(
+      type: ProblemTypes.sidecarFailure,
+      engine: label,
+      stage: 'sidecar start',
+      reason: 'the sidecar did not open its listener in time',
+    );
     throw StateError('The $label did not open its listener in time.');
   }
 
@@ -8662,18 +9317,24 @@ class XrayController extends ChangeNotifier {
   /// returns its local SOCKS port. The config is validated
   /// in plain language BEFORE any process starts, so a
   /// malformed profile fails with its real reason.
-  Future<int> _startSidecarFor(Profile p) async {
+  Future<int> _startSidecarFor(
+    Profile p, {
+    bool Function()? isCancelled,
+  }) async {
     // Build 2095 (audit 2.6): mark the start in flight so
     // a config test cannot race a second sidecar up.
     _sidecarBusy = true;
     try {
-      return await _startSidecarInner(p);
+      return await _startSidecarInner(p, isCancelled: isCancelled);
     } finally {
       _sidecarBusy = false;
     }
   }
 
-  Future<int> _startSidecarInner(Profile p) async {
+  Future<int> _startSidecarInner(
+    Profile p, {
+    bool Function()? isCancelled,
+  }) async {
     // Build 2127 (H2): the Sudoku branch — its own fork
     // binary, its own config directory, its own port.
     // Checked first: the protocol sets are disjoint, so
@@ -8706,7 +9367,12 @@ class XrayController extends ChangeNotifier {
           st.error.isNotEmpty ? st.error : 'The Sudoku engine could not start.',
         );
       }
-      await _awaitSidecarReady(SudokuBoxPlatform.state, 'Sudoku engine');
+      await _awaitSidecarReady(
+        SudokuBoxPlatform.state,
+        'Sudoku engine',
+        stop: SudokuBoxPlatform.stop,
+        isCancelled: isCancelled,
+      );
       _sessionSidecarKind = 'sudokubox';
       return sudokuListenPort;
     }
@@ -8722,7 +9388,12 @@ class XrayController extends ChangeNotifier {
           st.error.isNotEmpty ? st.error : 'The Mieru client could not start.',
         );
       }
-      await _awaitSidecarReady(MieruPlatform.state, 'Mieru client');
+      await _awaitSidecarReady(
+        MieruPlatform.state,
+        'Mieru client',
+        stop: MieruPlatform.stop,
+        isCancelled: isCancelled,
+      );
       _sessionSidecarKind = 'mieru';
       return mieruListenPort;
     }
@@ -8798,7 +9469,12 @@ class XrayController extends ChangeNotifier {
         st.error.isNotEmpty ? st.error : 'The sing-box engine could not start.',
       );
     }
-    await _awaitSidecarReady(SingBoxPlatform.state, 'sing-box engine');
+    await _awaitSidecarReady(
+      SingBoxPlatform.state,
+      'sing-box engine',
+      stop: SingBoxPlatform.stop,
+      isCancelled: isCancelled,
+    );
     _sessionSidecarKind = 'singbox';
     return singBoxListenPort;
   }
@@ -8846,7 +9522,14 @@ class XrayController extends ChangeNotifier {
       throw StateError('zapret-start');
     }
     try {
-      await _awaitSidecarReady(ZapretPlatform.state, 'Zapret desync proxy');
+      await _awaitSidecarReady(
+        ZapretPlatform.state,
+        'Zapret desync proxy',
+        // The funnel stops the proxy on its own failure
+        // exits (build 2149, A43-06); the stop in the
+        // catch below is the same call, kept harmless.
+        stop: ZapretPlatform.stop,
+      );
     } catch (e) {
       diagnostics.add('zapret', '$e', ok: false);
       await ZapretPlatform.stop();
@@ -9476,7 +10159,14 @@ class XrayController extends ChangeNotifier {
       // _stopSidecars.
       _sidecarUnreadyTicks = 0;
       if (sidecarServed) {
-        sidecarPort = await _startSidecarFor(p);
+        // Build 2149 (audit A43-12): the readiness wait
+        // itself now watches the generation — a disconnect
+        // landing inside the wait stops the sidecar there
+        // instead of the wait running out its budget.
+        sidecarPort = await _startSidecarFor(
+          p,
+          isCancelled: () => gen != _tunnelGen,
+        );
         checkAlive();
         _sessionSidecarPort = sidecarPort;
         diagnostics.add(
@@ -9737,41 +10427,49 @@ class XrayController extends ChangeNotifier {
       // can take over two minutes — a disconnect landing in
       // it must not be adopted either.
       checkAlive();
-      // Build 2116 (audit AB-01): the data-plane proof.
-      // Builds ≤2115 adopted a plain Xray session on
-      // `running` alone — "Connected" meant the VPN service
-      // was up, never that traffic flowed (the fugui class:
-      // a session can run perfectly and carry nothing).
-      // The WireGuard leg has always proved carrying before
-      // adopting (the 12 s carries window in
-      // connectWireGuardWithFallback); plain Xray gets the
-      // same proof here: an exit lookup through the tunnel,
-      // then one tunnel check as the verdict. A session
-      // that carries nothing is torn down and thrown into
-      // the fallback walk like any other failed attempt —
-      // it is never stamped Connected. The WireGuard
-      // protocol leg is exempt: the walk runs this same
-      // proof itself around this function. The demoting
-      // watchdogs stay DEFAULT OFF (the defaults law) —
-      // the proof is at adoption, not a new always-on guard.
+      // Build 2116 (audit AB-01) — SUPERSEDED by build
+      // 2149 (owner order 2026-11-25, diagnosis D1): the
+      // adoption proof GATE is gone. Builds 2116–2148
+      // refused to adopt a plain Xray session until a
+      // data-plane proof landed inside ~12 s and TORE THE
+      // TUNNEL DOWN when it did not (StateError
+      // 'no-traffic') — a gate neither v2rayNG nor Karing
+      // has, and its worst case is exactly a slow-first-
+      // byte shape (CDN-fronted WS/XHTTP + TLS from a
+      // filtered carrier): the session was up and warming,
+      // and Ember killed it for not proving itself fast
+      // enough. The session is now adopted on core-up,
+      // like everywhere else. The proof itself is NOT
+      // deleted — it is demoted to the adopted-session
+      // surfacing that already exists for restart-adopted
+      // sessions (build 2119 F-02): the session starts
+      // UNVERIFIED (the bar's honest "Connected — not
+      // answering" wording, never a bare verified claim),
+      // the poll runs the same awaitXrayCarries proof once
+      // for this session and stamps it verified when
+      // traffic lands, and the 2125/2126 re-proof cadence
+      // keeps retrying — none of which ever tears a
+      // session down. The kill switch and the verified /
+      // unverified wording model are untouched. The
+      // WireGuard protocol leg keeps its own walk, as
+      // before.
       if (p.protocol != Protocol.wireguard) {
-        final carried = await awaitXrayCarries(checkAlive);
         checkAlive();
-        if (!carried) {
-          diagnostics.add(
-            'connect',
-            'The tunnel started but carried no traffic '
-                'within 12 s — it is not marked connected.',
-            ok: false,
-          );
-          await _stopTunnel();
-          throw StateError('no-traffic');
-        }
-        _proofVerifiedSinceMs = state.sinceMs;
-        // Build 2125 (A25-11): the re-proof cadence starts
-        // from this proof.
-        _proofVerifiedAtMs = DateTime.now().millisecondsSinceEpoch;
-        state = state.withVerified(true);
+        _proofVerifiedSinceMs = 0;
+        _proofVerifiedAtMs = 0;
+        state = state.withVerified(false);
+        diagnostics.add(
+          'connect',
+          'Connected — the data-plane proof now runs in '
+              'the background; this session is marked '
+              'verified only when traffic lands.',
+        );
+        recordProblem(
+          type: ProblemTypes.proofUnverified,
+          profile: p,
+          stage: 'adoption',
+          reason: 'connected before any proof traffic landed',
+        );
       }
       _connectedProfileId = p.id;
       // Build 2098 (post-2097 audit M16): the session's
@@ -9861,6 +10559,41 @@ class XrayController extends ChangeNotifier {
         return;
       }
       lastError = e.toString();
+      // Build 2149 (expansion 4): the day's report counts
+      // the failed attempt, classified by its error code —
+      // the recorded reason is a constant per class, never
+      // the raw error text. The sidecar sentences are
+      // skipped here: _awaitSidecarReady already recorded
+      // them as sidecar failures.
+      final problemText = e.toString();
+      if (!problemText.contains('did not open its listener') &&
+          !problemText.contains('stopped while starting')) {
+        final code = problemCodeOf(problemText);
+        if (code == 'start-failed') {
+          recordProblem(
+            type: ProblemTypes.coreStartFailure,
+            profile: p,
+            stage: 'core start',
+            reason: 'the core did not start',
+          );
+        } else if (code == 'underlay-failed') {
+          recordProblem(
+            type: ProblemTypes.connectFailure,
+            profile: p,
+            stage: 'underlay',
+            reason: 'the chained underlay never became ready',
+          );
+        } else {
+          recordProblem(
+            type: ProblemTypes.connectFailure,
+            profile: p,
+            stage: 'connect',
+            reason: code.isEmpty
+                ? 'the connect attempt failed'
+                : 'the connect attempt failed ($code)',
+          );
+        }
+      }
       // Build 2107 (verification iteration 4): a terminally
       // failed attempt ends its Lab-dial state with it — the
       // flags were set pre-start, and leaving them set would
@@ -9952,6 +10685,13 @@ class XrayController extends ChangeNotifier {
     // Lab-dial sets the flag again at its fast path, which
     // runs after this stop.
     _clearLabDialState();
+    // Build 2149 (audit A43-14): the proof latch describes
+    // a live session like the Lab-dial state — it ends
+    // here too, so a later session inherits neither a
+    // verified stamp nor a re-proof cadence from a dead
+    // one.
+    _proofVerifiedSinceMs = 0;
+    _proofVerifiedAtMs = 0;
     // Build 2116: the WG exit stamp describes a live
     // session; any stop ends its claim.
     wgExitUnverified = false;
@@ -10506,7 +11246,19 @@ class XrayController extends ChangeNotifier {
     }
   }
 
-  /// The download rate (bytes/s) through one profile's own core.
+  /// The full per-config node test (build 2149, owner
+  /// expansion 2 — the Karing shape): delay, download and
+  /// upload, each through a throwaway core of THIS profile
+  /// (the live session is never touched), every result
+  /// persisted on the profile with its timestamp. Returns
+  /// the download rate (bytes/s), the value the caller has
+  /// always shown. Before 2149 this measured download
+  /// only (build 2095, which also made the result persist
+  /// on the profile — the row shows the last measured rate
+  /// instead of the number living only in a SnackBar).
+  /// A sidecar-busy refusal is the delay test's distinct
+  /// outcome, not a failure: nothing is stamped but the
+  /// stage.
   Future<int> testSpeed(Profile p) async {
     if (!p.protocol.connectable) return -1;
     _testing.add(p.id);
@@ -10515,13 +11267,36 @@ class XrayController extends ChangeNotifier {
     try {
       final (config, started) = await _testConfigFor(p);
       startedSidecar = started;
+      // Delay first — the same measurement testDelay runs
+      // (two rounds, the configured per-request timeout),
+      // stamping the same fields, exit identity included.
+      final timeoutMs = settings.delayTestTimeoutMs;
+      final r = await XrayPlatform.measureDelayEx(
+        config,
+        rounds: 2,
+        timeoutMs: timeoutMs,
+      );
+      final ms = (r['ms'] as num?)?.toInt() ?? -1;
+      p.delayMs = ms;
+      p.delayFailed = ms < 0;
+      p.delayStage = 'core';
+      if (ms >= 0) {
+        final ip = (r['ip'] as String?) ?? '';
+        final cc = (r['countryCode'] as String?) ?? '';
+        if (ip.isNotEmpty) p.exitIp = ip;
+        if (cc.isNotEmpty) p.exitCountryCode = cc;
+      }
       final bps = await XrayPlatform.speedTest(config);
-      // Build 2095 (V2Ray journey audit, batch 8): the
-      // result persists on the profile — the row shows the
-      // last measured rate instead of the number living
-      // only in a SnackBar.
       p.lastSpeedBps = bps;
+      p.lastSpeedUpBps = await XrayPlatform.speedTestUp(config);
+      p.speedTestedAtMs = DateTime.now().millisecondsSinceEpoch;
+      await _saveStatsSidecar(); // build 2123 (B-02): volatile fields only
       return bps;
+    } on StateError catch (e) {
+      if (e.message == 'sidecar-busy') {
+        p.delayStage = 'sidecar-busy';
+      }
+      return -1;
     } catch (_) {
       return -1;
     } finally {
@@ -10529,6 +11304,108 @@ class XrayController extends ChangeNotifier {
       _testing.remove(p.id);
       notifyListeners();
     }
+  }
+
+  /// The per-server DNS ping (build 2149, owner refinement
+  /// of expansion 2 — «از همون کانفیگ وصل اینجوری پینگ
+  /// بگیره», Karing's per-DNS rows): every DNS server in
+  /// [p]'s generated config is asked ONE real query THROUGH
+  /// that config and timed individually; the map (server →
+  /// ms, -1 no answer, -2 not probed) is stamped on the
+  /// profile with its timestamp and persisted like the node
+  /// test's results.
+  ///
+  /// Transport follows the owner's sentence: when [p] IS
+  /// the connected config, the probes ride the live
+  /// tunnel's own SOCKS; otherwise they ride a throwaway
+  /// instance of the config (the [testSpeed] discipline —
+  /// the active connection is never disturbed; a
+  /// sidecar-busy refusal returns an empty map and stamps
+  /// nothing). 'fakedns' and 'localhost' are not servers
+  /// and are stamped -2 without being asked.
+  Future<Map<String, int>> testDnsPings(Profile p) async {
+    if (!p.protocol.connectable) return const {};
+    _testing.add(p.id);
+    notifyListeners();
+    var startedSidecar = false;
+    try {
+      final live = state.running && selectedProfileId == p.id;
+      final String config;
+      if (live) {
+        // The connected config's own generated shape (the
+        // editor's display reads the same builder).
+        config = buildTunnelConfig(p, settings);
+      } else {
+        final (testConfig, started) = await _testConfigFor(p);
+        config = testConfig;
+        startedSidecar = started;
+      }
+      final listed = dnsServersOfConfigJson(config);
+      final results = <String, int>{};
+      final probed = <String>[];
+      for (final server in listed) {
+        if (server == 'fakedns' || server == 'localhost') {
+          results[server] = -2;
+        } else {
+          probed.add(server);
+        }
+      }
+      if (probed.isNotEmpty) {
+        final timeoutMs = settings.delayTestTimeoutMs < 5000
+            ? settings.delayTestTimeoutMs
+            : 5000;
+        if (live) {
+          results.addAll(
+            await XrayPlatform.dnsPingViaPort(
+              settings.socksPort,
+              probed,
+              socksUser: _lanUser,
+              socksPass: _lanPass,
+              timeoutMs: timeoutMs,
+            ),
+          );
+        } else {
+          results.addAll(
+            await XrayPlatform.dnsPing(config, probed, timeoutMs: timeoutMs),
+          );
+        }
+      }
+      p.dnsPingMs = results;
+      p.dnsPingAtMs = DateTime.now().millisecondsSinceEpoch;
+      await _saveStatsSidecar(); // build 2123 (B-02): volatile fields only
+      return results;
+    } on StateError catch (e) {
+      if (e.message == 'sidecar-busy') {
+        p.delayStage = 'sidecar-busy';
+      }
+      return const {};
+    } catch (_) {
+      return const {};
+    } finally {
+      if (startedSidecar) await _stopSidecars();
+      _testing.remove(p.id);
+      notifyListeners();
+    }
+  }
+
+  /// The preset picker's Test all (build 2149, expansion 5
+  /// refinement): probe resolver entries that belong to no
+  /// config — through the live tunnel when one is up (the
+  /// picker's rows then answer as the tunnel's traffic
+  /// would meet them), directly from the device when
+  /// nothing is connected. Session-only by design: nothing
+  /// is stamped or stored.
+  Future<Map<String, int>> testPresetDns(List<String> servers) async {
+    if (servers.isEmpty) return const {};
+    if (state.running) {
+      return XrayPlatform.dnsPingViaPort(
+        settings.socksPort,
+        servers,
+        socksUser: _lanUser,
+        socksPass: _lanPass,
+      );
+    }
+    return XrayPlatform.dnsPingDirect(servers);
   }
 
   // ---- logs ---------------------------------------------------------------

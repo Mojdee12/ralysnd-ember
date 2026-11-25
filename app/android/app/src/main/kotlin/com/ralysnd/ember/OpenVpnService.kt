@@ -398,13 +398,6 @@ class OpenVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_START -> {
-                // Build 2116 (B7-1, AB-08): claim the VPN
-                // slot through the native single-writer
-                // claim, displacing any other engine.
-                EngineClaim.claim(this, EngineClaim.OPENVPN)
-                startInForeground()
-                if (running) return START_STICKY
-                stopping.set(false)
                 val profileId = intent.getStringExtra(EXTRA_PROFILE_ID) ?: ""
                 val name = intent.getStringExtra(EXTRA_NAME) ?: ""
                 val config = intent.getStringExtra(EXTRA_CONFIG) ?: ""
@@ -412,6 +405,25 @@ class OpenVpnService : VpnService() {
                 val user = intent.getStringExtra(EXTRA_USER) ?: ""
                 val pass = intent.getStringExtra(EXTRA_PASS) ?: ""
                 val needsCreds = intent.getBooleanExtra(EXTRA_NEEDS_CREDS, false)
+                // Build 2149 (audit A43-18): the input is
+                // validated BEFORE the engine claim — a start
+                // that can never run (no config text at all)
+                // must not displace a running engine. The
+                // rejection surfaces through the same error
+                // state a failed start uses.
+                if (config.isBlank()) {
+                    OpenVpnCore.error =
+                        "START_FAILED: the OpenVPN profile has no configuration"
+                    OpenVpnCore.phase = "error"
+                    return START_NOT_STICKY
+                }
+                // Build 2116 (B7-1, AB-08): claim the VPN
+                // slot through the native single-writer
+                // claim, displacing any other engine.
+                EngineClaim.claim(this, EngineClaim.OPENVPN)
+                startInForeground()
+                if (running) return START_STICKY
+                stopping.set(false)
                 // Build 2125 (A25-04): the kill switch.
                 inKillSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
                 if (killSwitchHeld) {

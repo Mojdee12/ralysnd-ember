@@ -75,11 +75,16 @@ Map<String, dynamic> _streamSettings(
   if (security == 'tls') {
     // TLS certificate pin (build 2047): emitted verbatim when
     // valid; re-validated here, so a corrupt store can never break
-    // a connect (the 2041 lesson). The core removed
-    // `allowInsecure` outright — it refuses the whole config when
-    // the key is set — so Ember never emits it at all (build
-    // 2048 removed the toggle and the field; a valid pin is the
-    // core's own replacement for skipping the check).
+    // a connect (the 2041 lesson).
+    // Build 2149 (diagnosis D3): allowInsecure is emitted
+    // again — ONLY when the profile's own link set it
+    // (Profile.allowInsecure), exactly as v2rayNG emits it.
+    // Builds 2048–2148 never emitted the key on the claim
+    // that the core refuses it, which made every
+    // self-signed-origin config unconnectable; a profile
+    // that never set the flag emits nothing, so default
+    // configs stay byte-identical and verification stays
+    // the default.
     final pin = isValidTlsCertPin(p.tlsCertPin) ? p.tlsCertPin : '';
     final tls = <String, dynamic>{
       'serverName': p.sni.isEmpty ? p.address : p.sni,
@@ -104,6 +109,8 @@ Map<String, dynamic> _streamSettings(
     if (fp.isNotEmpty && !isValidTlsCertPin(fp)) {
       tls['fingerprint'] = fp;
     }
+    // Build 2149 (diagnosis D3): the link's own flag only.
+    if (p.allowInsecure) tls['allowInsecure'] = true;
     // A stored ECH config list (build 2033, from the link's
     // `ech` parameter) applies as written; the anti-filter ECH
     // shape, when also on, replaces it with its own source in
@@ -757,10 +764,10 @@ Map<String, dynamic>? buildOutbound(
           'serverName': p.afMixedSni && hy2Sni.isNotEmpty
               ? mixCaseSni(hy2Sni)
               : hy2Sni,
-          // No allowInsecure (build 2048): the core removed it
-          // outright and refuses the whole config when the key
-          // is set — a Hysteria2 profile that used to skip the
-          // check now verifies normally, or pins (see above).
+          // Build 2149 (diagnosis D3): the link's own
+          // insecure flag, as v2rayNG emits it — only when
+          // the profile carries it.
+          if (p.allowInsecure) 'allowInsecure': true,
           'alpn': ['h3'],
           if (hyPin.isNotEmpty) 'pinnedPeerCertSha256': hyPin,
           if (p.echConfigList.isNotEmpty) 'echConfigList': p.echConfigList,
@@ -1988,11 +1995,24 @@ List<Map<String, dynamic>> _inbounds(XraySettings s) {
 /// any dialerProxy, so stamping the proxy outbound alone
 /// also covers chained shapes (fragment / underlay hops
 /// receive an IP destination). No pin for the name — the
-/// on-device lookup returned nothing — means today's shape,
+/// name is absent from the map — means today's shape,
 /// byte for byte: this stamp can only ever ride a pin the
 /// controller actually computed. The sockopt is MERGED into
 /// whatever the outbound already carries (dialerProxy,
 /// dialMode, tcpKeepAliveIdle…), never assigned over it.
+///
+/// Build 2149 (diagnosis D2): a pin entry with NO answers
+/// is the controller's lookup-miss marker — the on-device
+/// lookup failed twice, so no hosts entry exists for the
+/// name (_dnsSection skips empty answer lists), but the
+/// stamp STILL applies: UseIP moves the name's resolution
+/// into the core's own DNS module (whose resolvers the
+/// config carries, endpoints pinned by the built-in hosts
+/// table) instead of leaving the outbound unstamped —
+/// the pre-2110 shape, whose AS_IS system dialer resolves
+/// through Go's pure resolver and dies at 127.0.0.1:53.
+/// The unstamped shape is never built for a hostname
+/// profile again.
 void _stampServerNameResolve(
   Map<String, dynamic> outbound,
   Profile p,
@@ -2002,8 +2022,7 @@ void _stampServerNameResolve(
   var host = p.address.trim().toLowerCase();
   if (host.endsWith('.')) host = host.substring(0, host.length - 1);
   if (host.isEmpty) return;
-  final answers = serverHostPins[host];
-  if (answers == null || answers.isEmpty) return;
+  if (!serverHostPins.containsKey(host)) return;
   final streamRaw = outbound['streamSettings'];
   final streamMap = <String, dynamic>{
     if (streamRaw is Map) ...streamRaw.cast<String, dynamic>(),
@@ -2509,4 +2528,35 @@ String buildBalancerTunnelConfig(
     return compactJson(applyConfigMixins(merged, mixins));
   }
   return compactJson(config);
+}
+
+/// Build 2149 (owner expansion 2 — per-config
+/// diagnostics): the DNS servers a generated core config
+/// actually uses, in the config's own order — read back
+/// out of the generated JSON, never re-derived from the
+/// settings, so what the profile page shows is what the
+/// core will run. An entry is either a plain resolver
+/// string ('8.8.8.8', 'https://…', 'fakedns', 'localhost')
+/// or a scoped map whose resolver is its 'address'.
+/// Unparseable input yields an empty list. Display only:
+/// nothing here feeds a config.
+List<String> dnsServersOfConfigJson(String configJson) {
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(configJson);
+  } catch (_) {
+    return const [];
+  }
+  if (decoded is! Map<String, dynamic>) return const [];
+  final dns = decoded['dns'];
+  if (dns is! Map<String, dynamic>) return const [];
+  final servers = dns['servers'];
+  if (servers is! List) return const [];
+  return [
+    for (final entry in servers)
+      if (entry is String)
+        entry
+      else if (entry is Map && entry['address'] is String)
+        entry['address'] as String,
+  ];
 }

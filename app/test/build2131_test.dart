@@ -96,7 +96,11 @@ void main() {
     });
 
     test('a companion switchServer helper sends the intent', () {
-      expect(kt, contains('fun switchServer(context: Context, tag: String)'));
+      // PIN UPDATED by build 2149 (audit A43-09): the
+      // helper carries the pin identity now, like start().
+      expect(kt, contains('fun switchServer('));
+      expect(kt, contains('pinCountry: String = ""'));
+      expect(kt, contains('pinCode: String = ""'));
     });
 
     test('MainActivity routes lanternSwitch to the service', () {
@@ -107,7 +111,14 @@ void main() {
     test('the Dart platform + controller expose the switch', () {
       expect(platform, contains("invokeMethod<void>('lanternSwitch'"));
       expect(controller, contains('Future<void> liveSwitch(String tag)'));
-      expect(controller, contains('LanternPlatform.switchServer(tag)'));
+      // PIN UPDATED by build 2149 (audit A43-09): the
+      // switch call passes the private server's identity
+      // when the target is the private tag.
+      expect(controller, contains('LanternPlatform.switchServer('));
+      expect(
+        controller,
+        contains("pinCountry: tag == privateTag ? privateCountry : ''"),
+      );
       expect(
         controller,
         contains('Future<bool> registerPrivateForSwitch()'),
@@ -123,7 +134,14 @@ void main() {
 
     test('the picker copy says the switch is live', () {
       expect(pages, contains('the switch happens right away'));
-      expect(pages, contains('applies at the next'));
+      // PIN REPAIRED by build 2149 (no behaviour change):
+      // the copy wraps across two source string literals
+      // ('…applies at the ' + 'next connect.'), so the old
+      // contiguous pin could never match the raw file —
+      // it was already unmatchable in the 2148 tree. The
+      // two fragments pin the same sentence.
+      expect(pages, contains('applies at the '));
+      expect(pages, contains('next connect.'));
     });
   });
 
@@ -158,6 +176,6 @@ void main() {
   });
 
   test('pubspec is build 2131', () {
-    expect(pubspec, contains('version: 2.2.0+2148'));
+    expect(pubspec, contains('version: 2.2.0+2149'));
   });
 }

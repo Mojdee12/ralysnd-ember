@@ -7,7 +7,9 @@
 // restore overlays the live migration flags — a pre-2114
 // backup's deliberate autoReconnect ON restores ON. B8-4
 // (AB-16): importBackup runs the fingerprint migration
-// under its flag guard. B8-5 (AB-05): engine sections ride
+// under its flag guard (build 2149/D4: the migration is
+// retired — restored fingerprints are kept verbatim).
+// B8-5 (AB-05): engine sections ride
 // the backup document both ways. B8-6 (E-7): the sync
 // token migrates from plaintext settings to the Keystore
 // vault on load, and the document stops carrying it.
@@ -140,7 +142,18 @@ void main() {
       expect(c.settings.autoReconnect, isTrue);
     });
 
-    test('B8-4: restored parser fingerprints are cleared under the flag',
+    // Build 2149 SUPERSESSION (diagnosis D4): the 2070
+    // fingerprint clearing is RETIRED — stored data cannot
+    // distinguish an explicit fp=chrome from the old parser
+    // fill, so from 2149 nothing is cleared anywhere the
+    // migration ran, the restore path included (it is the
+    // same migration under the same flag). The pre-2149
+    // form of this test expected the restored 'chrome' to
+    // be cleared to ''; the D4 behaviour pinned here is
+    // the opposite: the value survives verbatim, and the
+    // one-time flag still flips (the migration era is
+    // closed, not re-run).
+    test('B8-4: restored fingerprints are KEPT under the flag (D4)',
         () async {
       final profile = Profile(
         id: 'p1',
@@ -158,7 +171,7 @@ void main() {
       });
       final result = await c.importBackup(backup);
       expect(result, isNotNull);
-      expect(c.profiles.single.fingerprint, '');
+      expect(c.profiles.single.fingerprint, 'chrome');
       expect(c.settings.fingerprintDefaultMigrated, isTrue);
     });
 

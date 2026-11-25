@@ -6,16 +6,26 @@
 /// failure, cancel or lockout only falls back to the keypad,
 /// so biometrics can never strand the owner out of the app.
 ///
-/// The PIN is never stored: AppSettings holds its SHA-256
-/// (the tree's pure-Dart sha256Hex over a namespaced
-/// string). This is a privacy gate against casual access
-/// to the app, not a cryptographic vault — the copy on the
+/// The PIN is never stored: AppSettings holds a salted,
+/// stretched hash of it. Build 2149 (audit A43-29): the
+/// stored form is PBKDF2-HMAC-SHA256 over a per-PIN
+/// random salt ([pinHashIterations] rounds), replacing
+/// the original single unsalted SHA-256 over the 4–6
+/// digit space. A hash stored by an older build still
+/// verifies (the legacy form below) and is re-stored in
+/// the new form at the first successful verification —
+/// the migration is lossless and needs no user action.
+/// This is a privacy gate against casual access to the
+/// app, not a cryptographic vault — the copy on the
 /// settings row does not oversell it.
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:pointycastle/export.dart' hide State, Padding;
 
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
@@ -23,13 +33,99 @@ import '../../xray/sha256.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
 
-/// The stored-hash form of a PIN.
-String pinHashOf(String pin) => sha256Hex(utf8.encode('ember-lock-v1:$pin'));
+/// The PBKDF2 round count for the stored PIN hash
+/// (build 2149). A verify runs at every typed length
+/// (4, 5, 6) on the lock keypad, so the count is set by
+/// the keystroke budget — measured ≈250 ms first call,
+/// ≈60 ms marginal, for 10k rounds of the tree's
+/// pointycastle PBKDF2 — while still multiplying an
+/// exhaustive search of the ≤10⁶ PIN space by 10⁴ over
+/// the old single hash, on top of the per-PIN salt and
+/// the escalating cooldown ([lockCooldownSeconds]).
+const int pinHashIterations = 10000;
 
-/// True when [pin] matches the settings' stored hash.
-bool pinMatches(AppSettings settings, String pin) =>
+/// The stored-hash form of a PIN (build 2149):
+/// `v2:<iterations>:<salt hex>:<PBKDF2-HMAC-SHA256 hex>`.
+/// A fresh random salt per call, so two stores of the
+/// same PIN never look alike. [salt] is a test seam.
+String pinHashOf(String pin, {Uint8List? salt}) {
+  final saltBytes =
+      salt ?? Uint8List.fromList(List<int>.generate(16, (_) => Random.secure().nextInt(256)));
+  final derived = _derivePinHash(pin, saltBytes, pinHashIterations);
+  return 'v2:$pinHashIterations:${_hexOf(saltBytes)}:${_hexOf(derived)}';
+}
+
+Uint8List _derivePinHash(String pin, Uint8List salt, int iterations) {
+  final derivator = PBKDF2KeyDerivator(HMac(SHA256Digest(), 64))
+    ..init(Pbkdf2Parameters(salt, iterations, 32));
+  return derivator.process(Uint8List.fromList(utf8.encode(pin)));
+}
+
+String _hexOf(List<int> bytes) =>
+    bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+Uint8List? _unhex(String text) {
+  if (text.length.isOdd) return null;
+  final out = Uint8List(text.length ~/ 2);
+  for (var i = 0; i < out.length; i++) {
+    final v = int.tryParse(text.substring(i * 2, i * 2 + 2), radix: 16);
+    if (v == null) return null;
+    out[i] = v;
+  }
+  return out;
+}
+
+bool _hashEquals(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i];
+  }
+  return diff == 0;
+}
+
+/// The pre-2149 stored form: one unsalted SHA-256 over a
+/// namespaced string. Kept ONLY so a stored legacy hash
+/// still verifies (and then migrates — see
+/// [upgradeLegacyPinHash]).
+String legacyPinHashOf(String pin) =>
+    sha256Hex(utf8.encode('ember-lock-v1:$pin'));
+
+/// True when the settings' stored hash is a pre-2149
+/// legacy hash awaiting migration.
+bool storedPinHashIsLegacy(AppSettings settings) =>
     settings.appLockPinHash.isNotEmpty &&
-    settings.appLockPinHash == pinHashOf(pin);
+    !settings.appLockPinHash.startsWith('v2:');
+
+/// True when [pin] matches the settings' stored hash —
+/// either stored form. A malformed v2 record never
+/// matches (and never throws).
+bool pinMatches(AppSettings settings, String pin) {
+  final stored = settings.appLockPinHash;
+  if (stored.isEmpty) return false;
+  if (!stored.startsWith('v2:')) return stored == legacyPinHashOf(pin);
+  final parts = stored.split(':');
+  if (parts.length != 4) return false;
+  final iterations = int.tryParse(parts[1]);
+  final salt = _unhex(parts[2]);
+  final expected = _unhex(parts[3]);
+  if (iterations == null || iterations <= 0 || salt == null || expected == null) {
+    return false;
+  }
+  return _hashEquals(_derivePinHash(pin, salt, iterations), expected);
+}
+
+/// Build 2149 (audit A43-29): the lossless migration —
+/// after a successful verification against a LEGACY
+/// stored hash, re-store the same PIN in the v2 form.
+/// Called from every successful-verify site (the lock
+/// page's digit/confirm paths and the settings page's
+/// current-PIN check); a no-op for v2 stores.
+void upgradeLegacyPinHash(AppSettings settings, String pin) {
+  if (storedPinHashIsLegacy(settings)) {
+    settings.update(appLockPinHash: pinHashOf(pin));
+  }
+}
 
 /// A PIN is 4–6 digits, digits only.
 bool isValidPin(String pin) =>
@@ -228,6 +324,9 @@ class _AppLockPageState extends State<AppLockPage> {
     // from 4 up is tried as it is reached.
     if (next.length >= 4) {
       if (pinMatches(widget.settings, next)) {
+        // Build 2149 (audit A43-29): a legacy stored hash
+        // migrates to the salted form on this success.
+        upgradeLegacyPinHash(widget.settings, next);
         _resetLockCounters();
         widget.onUnlocked();
         return;
@@ -267,6 +366,9 @@ class _AppLockPageState extends State<AppLockPage> {
     if (_inCooldown) return;
     if (_entered.length < 4) return;
     if (pinMatches(widget.settings, _entered)) {
+      // Build 2149 (audit A43-29): legacy migration, as
+      // on the digit path.
+      upgradeLegacyPinHash(widget.settings, _entered);
       _resetLockCounters();
       widget.onUnlocked();
       return;
@@ -538,7 +640,12 @@ class _AppLockSettingsPageState extends State<AppLockSettingsPage> {
   /// cooldown schedule) before returning false.
   bool _verifyCurrentPin() {
     final settings = widget.settings;
-    if (pinMatches(settings, _current.text)) return true;
+    if (pinMatches(settings, _current.text)) {
+      // Build 2149 (audit A43-29): legacy migration, as
+      // on the lock page.
+      upgradeLegacyPinHash(settings, _current.text);
+      return true;
+    }
     final attempts = settings.appLockFailedAttempts + 1;
     final secs = lockCooldownSeconds(attempts);
     settings.update(
@@ -633,6 +740,9 @@ class _AppLockSettingsPageState extends State<AppLockSettingsPage> {
               ),
               const SizedBox(height: 16),
               MapGlass(
+                // Build 2149 (audit A43-31): explicit — the
+                // MapGlass default is now blur:false.
+                blur: true,
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -772,6 +882,9 @@ class _AppLockSettingsPageState extends State<AppLockSettingsPage> {
               if (locked) ...[
                 const SizedBox(height: 16),
                 MapGlass(
+                  // Build 2149 (audit A43-31): explicit —
+                  // the MapGlass default is now blur:false.
+                  blur: true,
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

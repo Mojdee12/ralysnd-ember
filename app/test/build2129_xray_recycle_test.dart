@@ -119,7 +119,13 @@ void main() {
       expect(c.deletedProfileCount, 1);
       final entry = c.deletedProfiles.single;
       expect(entry.subscription.id, sub.id);
-      expect(entry.label, contains('node.example.com:443'));
+      // PIN UPDATED by build 2149 (audit A43-11): the
+      // tombstone retains the profile's own JSON now, so
+      // the bin entry is labelled with the retained NAME
+      // (the endpoint key remains the fallback for
+      // pre-2149 tombstones) and restores immediately.
+      expect(entry.label, 'Node One');
+      expect(entry.restorableNow, isTrue);
     });
   });
 
@@ -135,12 +141,16 @@ void main() {
       final entry = c.deletedProfiles.single;
       await c.restoreDeletedProfile(entry.subscription, entry.key);
       expect(c.deletedProfileCount, 0);
-      expect(c.profilesOf(sub), hasLength(1),
-          reason: 'restore alone adds nothing — the tombstone '
-              'kept no copy of the profile');
+      // BEHAVIOUR CHANGED by build 2149 (audit A43-11):
+      // restore is REAL now — the tombstone retained the
+      // profile's JSON, so the profile is back at once,
+      // no refresh needed.
+      expect(c.profilesOf(sub), hasLength(2),
+          reason: 'restore re-adds the retained profile immediately');
       await c.updateSubscription(sub);
       expect(c.profilesOf(sub), hasLength(2),
-          reason: 'the refresh after a restore re-adds it');
+          reason: 'the refresh after a restore neither duplicates '
+              'nor re-deletes it');
     });
 
     test('the bin state persists across a store reload', () async {

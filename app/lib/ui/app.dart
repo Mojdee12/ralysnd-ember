@@ -496,6 +496,9 @@ class _LostBanner extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: MapGlass(
+        // Build 2149 (audit A43-31): explicit — the
+        // MapGlass default is now blur:false.
+        blur: true,
         radius: 16,
         tint: Ember.red.withValues(alpha: 0.12),
         child: Padding(

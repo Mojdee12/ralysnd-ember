@@ -401,6 +401,13 @@ void main() {
 
     test('the migration clears exactly the parser-filled '
         'population', () {
+      // SUPERSEDED by build 2149 (diagnosis D4): the
+      // clearing is retired — stored data cannot
+      // distinguish an explicit fp=chrome from the old
+      // parser fill, and the explicit population was the
+      // one being hurt (DPI-killed on strict networks).
+      // From 2149 the migration clears NOTHING and every
+      // stored fingerprint is left as-is.
       Profile prof(Protocol protocol, String security, String fp) =>
           Profile(
             id: 'x',
@@ -412,17 +419,17 @@ void main() {
             fingerprint: fp,
           );
       final profiles = [
-        prof(Protocol.vless, 'tls', 'chrome'), // filled → cleared
-        prof(Protocol.vless, 'reality', 'chrome'), // filled → cleared
-        prof(Protocol.vless, 'tls', 'firefox'), // user/link → kept
-        prof(Protocol.vless, 'tls', ''), // already empty → kept
-        prof(Protocol.trojan, 'tls', 'chrome'), // never filled → kept
-        prof(Protocol.vless, '', 'chrome'), // never filled → kept
+        prof(Protocol.vless, 'tls', 'chrome'),
+        prof(Protocol.vless, 'reality', 'chrome'),
+        prof(Protocol.vless, 'tls', 'firefox'),
+        prof(Protocol.vless, 'tls', ''),
+        prof(Protocol.trojan, 'tls', 'chrome'),
+        prof(Protocol.vless, '', 'chrome'),
       ];
       final cleared = clearParserDefaultFingerprints(profiles);
-      expect(cleared, 2);
-      expect(profiles[0].fingerprint, '');
-      expect(profiles[1].fingerprint, '');
+      expect(cleared, 0);
+      expect(profiles[0].fingerprint, 'chrome');
+      expect(profiles[1].fingerprint, 'chrome');
       expect(profiles[2].fingerprint, 'firefox');
       expect(profiles[3].fingerprint, '');
       expect(profiles[4].fingerprint, 'chrome');

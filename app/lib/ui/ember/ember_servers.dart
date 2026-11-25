@@ -3190,9 +3190,23 @@ class _GroupCardHead extends StatelessWidget {
                         // Build 2147 (strict-audit F4): a
                         // low/expired subscription's
                         // remaining figure turns red.
-                        style: trafficLow || trafficExpired
-                            ? Ember.numeral.copyWith(color: Ember.red)
-                            : Ember.numeral,
+                        // Build 2149 (owner expansion
+                        // 2026-11-25, un-holding the B3
+                        // density decision): this head repeats
+                        // once per subscription group, and the
+                        // pro6-servers sample shows the 100 pt
+                        // quota figure ONCE, as a single
+                        // group's head — so the repeated group
+                        // head steps down to the compact hero
+                        // step (44). The single-instance
+                        // Accounts hero keeps Ember.numeral
+                        // untouched.
+                        style: Ember.numeral.copyWith(
+                          fontSize: Ember.fontStat,
+                          color: trafficLow || trafficExpired
+                              ? Ember.red
+                              : null,
+                        ),
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
@@ -3680,6 +3694,7 @@ class _ProfileRow extends StatelessWidget {
                     ),
                   ),
                 ] else if (profile.lastSpeedBps >= 0 ||
+                    profile.lastSpeedUpBps >= 0 ||
                     profile.tcpPingMs >= 0 ||
                     profile.tcpPingFailed) ...[
                   const SizedBox(height: 2),
@@ -3689,7 +3704,16 @@ class _ProfileRow extends StatelessWidget {
                         'TCP connect ${latDigits(profile.tcpPingMs)} ms'
                       else if (profile.tcpPingFailed)
                         'TCP connect failed',
-                      if (profile.lastSpeedBps >= 0)
+                      // Build 2149: the node test reports
+                      // both directions — the row shows
+                      // ↓/↑ together when the upload was
+                      // measured; a pre-2149 download-only
+                      // result keeps its old wording.
+                      if (profile.lastSpeedBps >= 0 &&
+                          profile.lastSpeedUpBps >= 0)
+                        'Speed test ↓ ${fmtRate(profile.lastSpeedBps)}'
+                            ' · ↑ ${fmtRate(profile.lastSpeedUpBps)}'
+                      else if (profile.lastSpeedBps >= 0)
                         'Last speed test ${fmtRate(profile.lastSpeedBps)}',
                     ].join(' · '),
                     style: TextStyle(
@@ -3700,7 +3724,8 @@ class _ProfileRow extends StatelessWidget {
                       color:
                           profile.tcpPingFailed &&
                               profile.tcpPingMs < 0 &&
-                              profile.lastSpeedBps < 0
+                              profile.lastSpeedBps < 0 &&
+                              profile.lastSpeedUpBps < 0
                           ? Ember.red
                           : MapUi.dim,
                     ),
@@ -4011,12 +4036,20 @@ class _ProfileRow extends StatelessWidget {
           );
         }
       case 'speed':
+        // Build 2149: the full node test — the message
+        // reports all three measurements the run stamped
+        // on the profile (delay · download · upload).
         final bps = await xray.testSpeed(profile);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                bps >= 0 ? '${l.speedTest}: ${fmtRate(bps)}' : l.testFailed,
+                bps >= 0
+                    ? '${l.speedTest}: '
+                          '${profile.delayMs >= 0 ? '${latDigits(profile.delayMs)} ms · ' : ''}'
+                          '↓ ${fmtRate(bps)}'
+                          '${profile.lastSpeedUpBps >= 0 ? ' · ↑ ${fmtRate(profile.lastSpeedUpBps)}' : ''}'
+                    : l.testFailed,
               ),
             ),
           );

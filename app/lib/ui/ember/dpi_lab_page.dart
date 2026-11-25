@@ -154,7 +154,9 @@ class _DpiLabPageState extends State<DpiLabPage> {
         builder: (pageContext) => Scaffold(
           backgroundColor: Ember.bg,
           body: EmberBackground(
-            banded: true,
+            // Build 2149 (audit A48-02): the short band, as
+            // the main Lab page below.
+            bandShort: true,
             child: SafeArea(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -852,7 +854,11 @@ Widget build(BuildContext context) {
       foregroundColor: Ember.text,
     ),
     // Build 2147 (strict-audit F1): the banded ground.
-    body: EmberBackground(banded: true, child: ListView(
+    // Build 2149 (audit A48-02): the SHORT band — the
+    // pro6-dpilab sample's band is short and faint (dots
+    // in the top band only); the tall banded scrim kept
+    // prose sitting on dots to ≈55% of the viewport.
+    body: EmberBackground(bandShort: true, child: ListView(
       padding: EdgeInsets.fromLTRB(16, MediaQuery.of(context).padding.top + kToolbarHeight + 8, 16, 24),
       children: [
         // Build 2145 (composition rebuild, pro6-dpilab
@@ -1120,7 +1126,29 @@ Widget build(BuildContext context) {
                   'Strategies on this network',
                   style: Ember.microLabelOrange,
                 ),
-                const SizedBox(height: 6),
+                // Build 2149 (audit A48-03): the two
+                // explainer paragraphs move BELOW the
+                // result rows — between the section head
+                // and the first row they pushed the first
+                // result to ≈72% of the first screen; the
+                // pro6-dpilab sample puts its rows directly
+                // under the head. The copy is unchanged.
+                const SizedBox(height: 10),
+                for (final candidate in labCandidates)
+                  _ResultRow(
+                      candidate: candidate,
+                      xray: xray,
+                      results: results,
+                      runProfile: runProfile,
+                      selectedProfile: selectedProfile,
+                      running: running,
+                      runOrder: runOrder,
+                      acting: acting,
+                      pickedId: pickedId,
+                      ageLabel: ageLabel,
+                      onPickManually: onPickManually,
+                    ),
+                const SizedBox(height: 10),
                 Text(
                   'Tick the strategies a run tests. A '
                   'result stays saved for this config '
@@ -1143,21 +1171,6 @@ Widget build(BuildContext context) {
                   'not included.',
                   style: Ember.caption,
                 ),
-                const SizedBox(height: 6),
-                for (final candidate in labCandidates)
-                  _ResultRow(
-                      candidate: candidate,
-                      xray: xray,
-                      results: results,
-                      runProfile: runProfile,
-                      selectedProfile: selectedProfile,
-                      running: running,
-                      runOrder: runOrder,
-                      acting: acting,
-                      pickedId: pickedId,
-                      ageLabel: ageLabel,
-                      onPickManually: onPickManually,
-                    ),
               ],
             ),
         ],
@@ -1625,7 +1638,16 @@ Widget build(BuildContext context) {
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: const Text(
-                        'Works',
+                        // Build 2149 (owner expansion
+                        // 2026-11-25, un-holding the Lab badge
+                        // decision): the approved pro6-dpilab
+                        // sample's winner pill reads 'BEST' —
+                        // the pill takes the sample's word.
+                        // The verdict LINE below the row name
+                        // keeps its prose ('Works · 640 ms'):
+                        // it describes the measurement, it is
+                        // not the badge.
+                        'BEST',
                         style: TextStyle(
                           fontSize: Ember.fontMicro,
                           fontWeight: FontWeight.w700,

@@ -24,6 +24,7 @@ import 'package:flutter/material.dart';
 
 import '../../regionhop/regionhop_client.dart';
 import '../../regionhop/regionhop_defaults.dart';
+import '../../xray/problem_report.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import 'ember_format.dart';
@@ -104,6 +105,14 @@ class _RegionHopPageState extends State<RegionHopPage> {
   bool _loginBusy = false;
   bool _pollBusy = false;
   bool _stale = false;
+
+  /// Build 2149 (audit A43-01): the poll stopped itself
+  /// on a credential failure — the panel's password or
+  /// its lockout is the problem, and polling on would
+  /// only spend login attempts. The list stays visible
+  /// with the error and a manual Reconnect; nothing
+  /// resumes on its own.
+  bool _authStopped = false;
   String? _pageError;
   String? _rowError;
 
@@ -154,7 +163,12 @@ class _RegionHopPageState extends State<RegionHopPage> {
 
   Future<void> _persistFields() async {
     _settings
-      ..regionHopPanelUrl = _url.text.trim()
+      // Build 2149 (audit A43-26): the persisted URL is
+      // the MIGRATED one — the legacy-address migration
+      // applies at persist time, not only at field init,
+      // so the store itself converges to the live address
+      // instead of re-deriving it on every open.
+      ..regionHopPanelUrl = regionHopEffectivePanelUrl(_url.text.trim())
       ..regionHopPanelPassword = _password.text
       ..regionHopRelays = _relays.text;
     await widget.xray.save();
@@ -167,7 +181,11 @@ class _RegionHopPageState extends State<RegionHopPage> {
       if (!silent) _pageError = null;
     });
     final client = RegionHopClient(
-      panelUrl: _url.text,
+      // Build 2149 (audit A43-26): connect uses the
+      // migrated URL too, explicitly — not merely
+      // whatever the field happened to be initialised
+      // with.
+      panelUrl: regionHopEffectivePanelUrl(_url.text),
       password: _password.text,
       // Build 2141: the fetch's single retry journals its
       // transition (sanitized failure tokens only).
@@ -183,6 +201,7 @@ class _RegionHopPageState extends State<RegionHopPage> {
       if (!mounted) return;
       setState(() {
         _inList = true;
+        _authStopped = false;
         _pageError = null;
         // A fresh list session: until its first fetch
         // lands, the empty area may only say it is loading
@@ -230,6 +249,29 @@ class _RegionHopPageState extends State<RegionHopPage> {
     } on RegionHopException catch (e) {
       _journal.fetchFailed(e.kind, e.transport);
       if (!mounted) return;
+      // Build 2149 (audit A43-01): a credential failure
+      // inside the poll STOPS the poll. The client is
+      // blocked as well (it will not spend another login
+      // POST), but the timer itself must not keep waking
+      // the fetch up against a panel whose answer is the
+      // password or the lockout — the owner reconnects
+      // by hand when he has dealt with it.
+      if (e.kind == RegionHopErrorKind.loginFailed ||
+          e.kind == RegionHopErrorKind.lockout) {
+        _pollTimer?.cancel();
+        _pollTimer = null;
+        _authStopped = true;
+        // Build 2149 (expansion 4): a detected panel
+        // lockout lands in the day's problem report.
+        if (e.kind == RegionHopErrorKind.lockout) {
+          widget.xray.recordProblem(
+            type: ProblemTypes.regionHopLockout,
+            engine: 'RegionHop',
+            stage: 'panel login',
+            reason: 'the panel reported too many login attempts',
+          );
+        }
+      }
       setState(() {
         // Keep the last-known rows, greyed, behind the
         // unreachable state — never a blank page.
@@ -443,12 +485,24 @@ class _RegionHopPageState extends State<RegionHopPage> {
                       ),
                   ],
                 ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: regionHopSmallButton('Edit panel details', () {
-                    _pollTimer?.cancel();
-                    setState(() => _inList = false);
-                  }),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    // Build 2149 (audit A43-01): after an
+                    // auth-stopped poll, the way back is a
+                    // deliberate tap — a fresh client, one
+                    // login attempt, the owner's action.
+                    if (_authStopped)
+                      regionHopSmallButton('Reconnect', () {
+                        setState(() => _authStopped = false);
+                        unawaited(_connectToPanel());
+                      }),
+                    if (_authStopped) const SizedBox(width: 10),
+                    regionHopSmallButton('Edit panel details', () {
+                      _pollTimer?.cancel();
+                      setState(() => _inList = false);
+                    }),
+                  ],
                 ),
               ],
             ],

@@ -238,7 +238,13 @@ class MapGlass extends StatelessWidget {
     // Build 2074 (audit item 13): repeated list rows pass
     // blur: false — same fill/border/radius, no live
     // BackdropFilter stacked inside the scrolling list.
-    this.blur = true,
+    // Build 2149 (audit A43-31): the DEFAULT is now false
+    // — the safe thing is the default, and a future list
+    // row cannot stack BackdropFilters by forgetting the
+    // argument. Every pre-2149 surface that rendered with
+    // the old default passes blur: true explicitly, so
+    // no shipped surface changes.
+    this.blur = false,
   });
 
   final Widget child;
@@ -513,6 +519,9 @@ class MapBrandPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MapGlass(
+    // Build 2149 (audit A43-31): explicit — the default
+    // is now blur:false.
+    blur: true,
     radius: 14,
     rim: true,
     // Build 2121 (owner device verdict 2026-11-19 21:57):
@@ -805,6 +814,9 @@ class MapNavPill extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 9),
         child: MapGlass(
+          // Build 2149 (audit A43-31): explicit — the
+          // default is now blur:false.
+          blur: true,
           radius: 11,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
@@ -1365,6 +1377,9 @@ class MobileMapBar extends StatelessWidget {
         ),
         padding: const EdgeInsets.all(1),
         child: MapGlass(
+          // Build 2149 (audit A43-31): explicit — the
+          // default is now blur:false.
+          blur: true,
           radius: 24,
           borderColor: Colors.transparent,
           // Build 2074 (audit item 16): min-height, not a fixed

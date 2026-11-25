@@ -129,7 +129,10 @@ void main() {
         ],
         'lib/ui/ember/aether_pages.dart': ["'Close'"],
         'lib/ui/ember/lantern_pages.dart': ["'Close'"],
-        'lib/ui/ember/wireguard_pages.dart': ["'Close'"],
+        // PIN UPDATED by build 2149 (audit A48-04): the
+        // WireGuard configurations view's 'Close' button
+        // was removed — it duplicated the shell header's
+        // BACK; the page has no close button by design now.
         'lib/ui/ember/map_widgets.dart': ["'Close'"],
         'lib/ui/ember/dnstt_settings_page.dart': ["'Save'", "'Refresh'"],
         'lib/ui/ember/warp_settings_page.dart': ["'Save'"],

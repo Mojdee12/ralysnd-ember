@@ -318,6 +318,9 @@ class _SettingsPageState extends State<SettingsPage> {
               // its Card.
               if (Platform.isAndroid)
                 MapGlass(
+                  // Build 2149 (audit A43-31): explicit —
+                  // the MapGlass default is now blur:false.
+                  blur: true,
                   padding: EdgeInsets.zero,
                   child: Column(
                     children: [

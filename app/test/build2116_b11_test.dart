@@ -75,10 +75,16 @@ void main() {
         // PIN UPDATED by build 2147 (strict-audit F1): the
         // Lab page now sits on the BANDED background —
         // its call carries banded: true before child:.
+        // PIN UPDATED by build 2149 (audit A48-02): the Lab
+        // page's band became the SHORT band — its call
+        // carries bandShort: true; the other pages are
+        // unchanged.
         expect(
             _src(f).contains('EmberBackground(child: ListView(') ||
                 _src(f).contains(
-                    'EmberBackground(banded: true, child: ListView('),
+                    'EmberBackground(banded: true, child: ListView(') ||
+                _src(f).contains(
+                    'EmberBackground(bandShort: true, child: ListView('),
             isTrue,
             reason: f);
         expect(_src(f).contains('backgroundColor: Colors.transparent'),
