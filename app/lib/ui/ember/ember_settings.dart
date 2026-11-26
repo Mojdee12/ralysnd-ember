@@ -55,6 +55,7 @@ import 'openvpn_pages.dart';
 import 'psiphon_pages.dart';
 import 'dpi_lab_page.dart';
 import 'regionhop_page.dart';
+import 'urnetwork_page.dart';
 import 'senpai_page.dart';
 import 'smart_groups_page.dart';
 import 'sni_spoof_page.dart';
@@ -1927,6 +1928,21 @@ class _XraySection extends StatelessWidget {
                   trailing: _navChevron,
                   onTap: () => openRegionHop(context, xray),
                 ),
+              // Build 2154: the URnetwork source's entry.
+              // No enable toggle: the source holds nothing
+              // and contacts nothing until an account is
+              // added on its page (the account-less source
+              // is inert, which is the default-off law's
+              // shape for a keyed source — as the sync
+              // token's is).
+              MapSettingRow(
+                label: 'URnetwork',
+                subtitle: xray.urAccounts.isEmpty
+                    ? 'Residential exits — add an account'
+                    : 'Accounts, hosted proxies and balances',
+                trailing: _navChevron,
+                onTap: () => openUrNetwork(context, xray),
+              ),
               MapSettingRow(
                 label: 'ShadowTLS fronting (Shadowsocks)',
                 subtitle:

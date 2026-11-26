@@ -47,6 +47,7 @@ import 'singbox_config.dart';
 import 'sudoku_config.dart';
 import 'hwid.dart';
 import '../regionhop/regionhop_client.dart';
+import '../urnetwork/urnetwork_client.dart';
 import 'iran_features_2147.dart';
 import 'sub_fetcher.dart';
 import 'traffic_history.dart';
@@ -405,6 +406,16 @@ class XrayController extends ChangeNotifier {
   /// audit F-M20): the real fetcher in the app; tests inject a
   /// fake to drive the add/refresh flows without a network.
   SubscriptionFetcher subscriptionFetcher = fetchSubscription;
+
+  /// The URnetwork client factory (build 2154): the real
+  /// client in the app; tests inject a fake to drive the
+  /// account flows without a network. The factory takes
+  /// the account's vault key — the key exists only for
+  /// the client's life and is never stored here.
+  UrNetworkClient Function(String apiKey) urNetworkClientFactory =
+      (key) => UrNetworkClient(apiKey: key);
+
+  static int _urAccountCounter = 0;
 
   /// Disambiguates subscription ids minted in the same
   /// millisecond (build 2094): the id was the raw timestamp,
@@ -3885,6 +3896,356 @@ class XrayController extends ChangeNotifier {
     return (updated: updated, failed: failed);
   }
 
+  // ---- URnetwork source (build 2154) -------------------
+  //
+  // The owner's URnetwork accounts as a managed source,
+  // on the RegionHop/subscription precedents: account
+  // METADATA lives in the settings document
+  // (XraySettings.urNetworkAccounts, JSON), each
+  // account's `urn_` API key lives ONLY in the
+  // SecretStore vault (urNetworkVaultKey), and the
+  // account's hosted proxies become ordinary managed
+  // profiles with deterministic ids
+  // (urnetwork-<account>-<proxy>-<kind>), so a refresh
+  // replaces exactly this account's rows and a profile's
+  // measured state (delay, totals, speed) carries over
+  // by id. With no account added the source is inert:
+  // nothing is fetched, no profile exists, no config
+  // changes.
+
+  /// The URnetwork accounts, decoded from the settings
+  /// document. Fresh objects per read — the UR methods
+  /// below decode, mutate and re-encode in one call.
+  List<UrAccount> get urAccounts =>
+      decodeUrAccounts(settings.urNetworkAccounts);
+
+  Future<void> _saveUrAccounts(List<UrAccount> accounts) async {
+    settings.urNetworkAccounts = encodeUrAccounts(accounts);
+    await _save();
+    notifyListeners();
+  }
+
+  /// How an account is named in journal lines and page
+  /// copy: its label, or its position when unnamed.
+  String urAccountDisplayName(UrAccount account, List<UrAccount> accounts) {
+    if (account.label.isNotEmpty) return account.label;
+    final i = accounts.indexWhere((a) => a.id == account.id);
+    return 'Account ${i < 0 ? 1 : i + 1}';
+  }
+
+  /// Adds an account: the key goes to the vault FIRST —
+  /// if the vault refuses, nothing is recorded anywhere.
+  /// The caller refreshes afterwards; a bad key then
+  /// surfaces as the refresh's plain failure line.
+  Future<UrAccount> addUrNetworkAccount({
+    String label = '',
+    required String apiKey,
+  }) async {
+    final key = apiKey.trim();
+    if (key.isEmpty) {
+      throw StateError('Paste the account\u2019s API key first.');
+    }
+    final accounts = urAccounts;
+    final account = UrAccount(
+      id: urNewAccountId(
+        DateTime.now().millisecondsSinceEpoch,
+        _urAccountCounter++,
+      ),
+      label: label.trim(),
+    );
+    if (!await SecretStore.store(urNetworkVaultKey(account.id), key)) {
+      throw StateError(
+        'The API key could not be stored in the device vault.',
+      );
+    }
+    accounts.add(account);
+    await _saveUrAccounts(accounts);
+    return account;
+  }
+
+  /// Removes an account, its vault key and every managed
+  /// profile it owned. The live rule is deleteSubscription's:
+  /// a tunnel running (or starting) from one of the
+  /// account's profiles is disconnected first.
+  Future<void> removeUrNetworkAccount(String accountId) async {
+    if (state.running || connecting) {
+      final liveId = sessionProfile?.id ?? '';
+      final hitsLive = profiles.any(
+        (p) =>
+            urAccountIdOfProfileId(p.id) == accountId &&
+            (p.id == liveId || p.id == selectedProfileId),
+      );
+      if (hitsLive) await disconnect();
+    }
+    profiles.removeWhere((p) => urAccountIdOfProfileId(p.id) == accountId);
+    if (!profiles.any((p) => p.id == selectedProfileId)) {
+      selectedProfileId = profiles.isEmpty ? '' : profiles.first.id;
+    }
+    await SecretStore.delete(urNetworkVaultKey(accountId));
+    final accounts = urAccounts
+      ..removeWhere((a) => a.id == accountId);
+    await _saveUrAccounts(accounts);
+  }
+
+  /// Builds the API client for [account] from its vault
+  /// key. A missing key (a restored backup carries the
+  /// metadata, never the vault) is the key-refused state.
+  Future<UrNetworkClient> _urClientFor(UrAccount account) async {
+    final key = await SecretStore.load(urNetworkVaultKey(account.id));
+    if (key == null || key.isEmpty) {
+      throw const UrNetworkException(
+        UrErrorKind.keyRefused,
+        'No API key is stored for this account — remove it '
+            'and add it again with its key.',
+      );
+    }
+    return urNetworkClientFactory(key);
+  }
+
+  void _urJournalFailure(
+    UrAccount account,
+    List<UrAccount> accounts,
+    String action,
+    UrNetworkException e,
+  ) {
+    diagnostics.add(
+      'urnetwork',
+      'URnetwork ${urAccountDisplayName(account, accounts)}: '
+          '$action failed: ${e.message}',
+      ok: false,
+    );
+  }
+
+  /// Refreshes one account: re-reads its hosted proxies
+  /// and balance, and replaces its managed profiles
+  /// atomically — stale rows go, the owner's own profiles
+  /// are never touched, and a row's measured state
+  /// carries to its replacement by stable id. The
+  /// connect-in-flight rule is updateSubscription's:
+  /// refuse while a connection is starting from one of
+  /// this account's profiles (a running session keeps
+  /// its own snapshot and is not disturbed).
+  Future<void> refreshUrNetworkAccount(String accountId) async {
+    final accounts = urAccounts;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return;
+    if (connecting) {
+      final live = sessionProfile;
+      if (live != null && urAccountIdOfProfileId(live.id) == accountId) {
+        throw StateError(
+          'A connection is starting from this account — '
+          'wait for it to finish, then refresh.',
+        );
+      }
+    }
+    account.lastAttemptMs = DateTime.now().millisecondsSinceEpoch;
+    try {
+      final client = await _urClientFor(account);
+      final result = await client.fetchProxies();
+      final balance = await client.fetchBalanceOrNull();
+      _replaceUrProfiles(account, accounts.length > 1, result.proxies);
+      if (result.pro != null) account.pro = result.pro!;
+      if (balance != null) {
+        account.balanceBytes = balance.totalBytes;
+        account.balanceStartBytes = balance.startBytes;
+        account.balances = balance.entries;
+        if (balance.planName.isNotEmpty) {
+          account.planName = balance.planName;
+        }
+        if (balance.pro) account.pro = true;
+      }
+      // Country records for proxies the account no
+      // longer holds are dead weight — drop them.
+      final liveProxyIds = result.proxies.map((p) => p.proxyId).toSet();
+      account.proxyCountries.removeWhere(
+        (proxyId, _) => !liveProxyIds.contains(proxyId),
+      );
+      account.lastRefreshMs = DateTime.now().millisecondsSinceEpoch;
+      await _saveUrAccounts(accounts);
+    } on UrNetworkException catch (e) {
+      _urJournalFailure(account, accounts, 'refresh', e);
+      // The attempt stamp is what backs the sweep off —
+      // it persists even though the refresh failed.
+      await _saveUrAccounts(accounts);
+      rethrow;
+    }
+  }
+
+  /// The atomic replace behind a refresh (see
+  /// [refreshUrNetworkAccount]).
+  void _replaceUrProfiles(
+    UrAccount account,
+    bool multiAccount,
+    List<UrProxy> proxies,
+  ) {
+    final oldById = {
+      for (final p in profiles)
+        if (urAccountIdOfProfileId(p.id) == account.id) p.id: p,
+    };
+    final ordinals = <String, int>{};
+    final fresh = <Profile>[];
+    for (final proxy in proxies) {
+      final code = urProxyCountryCode(account, proxy);
+      final key = code.isEmpty ? '' : code.toUpperCase();
+      final ordinal = (ordinals[key] ?? 0) + 1;
+      ordinals[key] = ordinal;
+      for (final p in urProfilesForProxy(
+        account: account,
+        proxy: proxy,
+        multiAccount: multiAccount,
+        sameCountryOrdinal: ordinal,
+      )) {
+        final old = oldById[p.id];
+        if (old != null) {
+          // The volatile measured state (the stats
+          // sidecar's fields) and the owner's own marks
+          // ride to the replacement — the id is stable,
+          // so nothing he measured or named is lost.
+          p
+            ..delayMs = old.delayMs
+            ..delayFailed = old.delayFailed
+            ..delayStage = old.delayStage
+            ..totalDownBytes = old.totalDownBytes
+            ..totalUpBytes = old.totalUpBytes
+            ..statsUpdatedMs = old.statsUpdatedMs
+            ..exitIp = old.exitIp
+            ..exitCountryCode = old.exitCountryCode
+            ..lastSpeedBps = old.lastSpeedBps
+            ..lastSpeedUpBps = old.lastSpeedUpBps
+            ..speedTestedAtMs = old.speedTestedAtMs
+            ..dnsPingMs = old.dnsPingMs
+            ..dnsPingAtMs = old.dnsPingAtMs
+            ..localName = old.localName
+            ..quarantined = old.quarantined
+            ..quarantineStrikes = old.quarantineStrikes
+            ..quarantineNetwork = old.quarantineNetwork
+            ..quarantineReason = old.quarantineReason;
+        }
+        fresh.add(p);
+      }
+    }
+    profiles.removeWhere((p) => urAccountIdOfProfileId(p.id) == account.id);
+    profiles.addAll(fresh);
+    if (!profiles.any((p) => p.id == selectedProfileId)) {
+      selectedProfileId = profiles.isEmpty ? '' : profiles.first.id;
+    }
+  }
+
+  /// The account's live proxy list, read for the
+  /// URnetwork page's management rows (delete / rotate /
+  /// exit state). Read-only: the store's profiles stay
+  /// the connect surface; this list is the account's own
+  /// truth, fetched on demand.
+  Future<List<UrProxy>> urNetworkProxies(String accountId) async {
+    final accounts = urAccounts;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return const [];
+    try {
+      final client = await _urClientFor(account);
+      return (await client.fetchProxies()).proxies;
+    } on UrNetworkException catch (e) {
+      _urJournalFailure(account, accounts, 'proxy list', e);
+      rethrow;
+    }
+  }
+
+  /// The country catalogue for the create picker.
+  Future<List<UrCountry>> urNetworkCountries(String accountId) async {
+    final accounts = urAccounts;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return const [];
+    final client = await _urClientFor(account);
+    return client.fetchCountries();
+  }
+
+  /// Creates one hosted proxy on the account and
+  /// refreshes, so the new proxy's profiles land in the
+  /// store named by their country. The country chosen
+  /// here is recorded on the account — a plain proxy's
+  /// list row carries no location, so this record is
+  /// what its profiles are named from.
+  Future<void> createUrNetworkProxy(
+    String accountId, {
+    String? countryCode,
+    bool bestAvailable = false,
+    bool uniqueExit = false,
+  }) async {
+    final accounts = urAccounts;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return;
+    try {
+      final client = await _urClientFor(account);
+      final created = await client.createProxy(
+        countryCode: countryCode,
+        bestAvailable: bestAvailable,
+        uniqueExit: uniqueExit,
+      );
+      final exitCode = created.exit?.countryCode ?? '';
+      if (exitCode.isNotEmpty) {
+        account.proxyCountries[created.proxyId] = exitCode;
+      } else if (countryCode != null && countryCode.isNotEmpty) {
+        account.proxyCountries[created.proxyId] = countryCode.toUpperCase();
+      }
+      await _saveUrAccounts(accounts);
+    } on UrNetworkException catch (e) {
+      _urJournalFailure(account, accounts, 'proxy create', e);
+      rethrow;
+    }
+    await refreshUrNetworkAccount(accountId);
+  }
+
+  /// Deletes one hosted proxy from the account (the API
+  /// removal and the local rows together). The live rule
+  /// is deleteSubscription's, scoped to this proxy.
+  Future<void> deleteUrNetworkProxy(String accountId, UrProxy proxy) async {
+    final accounts = urAccounts;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return;
+    final prefix = '$urProfileIdPrefix$accountId-${proxy.proxyId}-';
+    if (state.running || connecting) {
+      final liveId = sessionProfile?.id ?? '';
+      final hitsLive = profiles.any(
+        (p) =>
+            p.id.startsWith(prefix) &&
+            (p.id == liveId || p.id == selectedProfileId),
+      );
+      if (hitsLive) await disconnect();
+    }
+    try {
+      final client = await _urClientFor(account);
+      await client.removeProxy(proxy.clientId);
+    } on UrNetworkException catch (e) {
+      _urJournalFailure(account, accounts, 'proxy delete', e);
+      rethrow;
+    }
+    profiles.removeWhere((p) => p.id.startsWith(prefix));
+    account.proxyCountries.remove(proxy.proxyId);
+    if (!profiles.any((p) => p.id == selectedProfileId)) {
+      selectedProfileId = profiles.isEmpty ? '' : profiles.first.id;
+    }
+    await _saveUrAccounts(accounts);
+  }
+
+  /// Rotates a unique-exit proxy to a new exit, then
+  /// refreshes so its profiles take the new exit's
+  /// country and city.
+  Future<void> rotateUrNetworkProxyExit(
+    String accountId,
+    UrProxy proxy,
+  ) async {
+    final accounts = urAccounts;
+    final account = accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null) return;
+    try {
+      final client = await _urClientFor(account);
+      await client.rotateExit(proxy.clientId);
+    } on UrNetworkException catch (e) {
+      _urJournalFailure(account, accounts, 'exit rotate', e);
+      rethrow;
+    }
+    await refreshUrNetworkAccount(accountId);
+  }
+
   bool _sweepRunning = false;
 
   Future<void> _autoUpdateStale() async {
@@ -3929,6 +4290,25 @@ class XrayController extends ChangeNotifier {
       } catch (_) {
         sub.failedAttempts += 1;
       }
+    }
+    // Build 2154: URnetwork accounts ride the same
+    // sweep, on the same cadence — an account is stale
+    // when its last successful refresh is a period old;
+    // a failed attempt backs off for a period (its stamp
+    // is persisted by the refresh itself) instead of
+    // retrying on every tick. Failures are journaled
+    // inside the refresh; one bad account never stops
+    // the others.
+    for (final account in urAccounts) {
+      if (periodMs > 0 && now - account.lastRefreshMs < periodMs) continue;
+      if (account.lastAttemptMs > account.lastRefreshMs &&
+          now - account.lastAttemptMs < periodMs) {
+        continue;
+      }
+      attempted = true;
+      try {
+        await refreshUrNetworkAccount(account.id);
+      } catch (_) {}
     }
     // The stamps are session truth the next launch needs;
     // a failed updateSubscription never reaches its own

@@ -2562,6 +2562,18 @@ class XraySettings {
   String regionHopPanelPassword = '';
   String regionHopRelays = '';
 
+  /// The URnetwork source's account records (build
+  /// 2154): a JSON list of UrAccount metadata (id, label,
+  /// balance snapshot, per-proxy chosen countries — see
+  /// urnetwork_client.dart). METADATA ONLY: an account's
+  /// `urn_` API key is never part of this document — it
+  /// lives in the SecretStore vault under
+  /// urNetworkVaultKey(accountId), so this field is safe
+  /// in backups and exports exactly as stored. '' = no
+  /// accounts; the source is inert until the owner adds
+  /// one on the URnetwork page.
+  String urNetworkAccounts = '';
+
   /// Build 2134 (leg 2): automatic per-device HWID on
   /// subscription fetches (see hwid.dart). DEFAULT OFF —
   /// with it off, fetches send exactly what build 2133
@@ -3121,6 +3133,7 @@ class XraySettings {
     'regionHopPanelUrl': regionHopPanelUrl,
     'regionHopPanelPassword': regionHopPanelPassword,
     'regionHopRelays': regionHopRelays,
+    'urNetworkAccounts': urNetworkAccounts,
     'subHwidEnabled': subHwidEnabled,
     'deviceHwid': deviceHwid,
     'wgWstunnel': wgWstunnel,
@@ -3428,6 +3441,11 @@ class XraySettings {
       s.regionHopPanelPassword,
     );
     s.regionHopRelays = _storedStr(j, 'regionHopRelays', s.regionHopRelays);
+    s.urNetworkAccounts = _storedStr(
+      j,
+      'urNetworkAccounts',
+      s.urNetworkAccounts,
+    );
     s.subHwidEnabled = _storedBool(j, 'subHwidEnabled', s.subHwidEnabled);
     s.deviceHwid = _storedStr(j, 'deviceHwid', s.deviceHwid);
     s.wgWstunnel = _storedBool(j, 'wgWstunnel', s.wgWstunnel);

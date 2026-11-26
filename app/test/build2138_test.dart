@@ -102,7 +102,9 @@ void main() {
       // the Daily problem report (expansion 4) and the
       // DNS preset picker (expansion 5) — follow the same
       // pattern → 46.
-      expect(count, 46);
+      // Build 2154 re-point: the new URnetworkPage follows
+      // the same pattern → 47.
+      expect(count, 47);
       expect(_src('ui/browser_signin_page.dart'),
           isNot(contains('extendBodyBehindAppBar')));
       expect(_src('ui/ember/qr_pages.dart'),
@@ -133,7 +135,7 @@ void main() {
     test('pubspec is 2.2.0+2148', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2152'),
+        contains('version: 2.2.0+2154'),
       );
     });
 

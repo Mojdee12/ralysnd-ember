@@ -214,10 +214,10 @@ void main() {
   });
 
   group('build 2151 — version', () {
-    test('pubspec carries 2.2.0+2152', () {
+    test('pubspec carries 2.2.0+2154', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2152'),
+        contains('version: 2.2.0+2154'),
       );
     });
   });

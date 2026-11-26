@@ -986,9 +986,19 @@ Map<String, dynamic>? buildOutbound(
       // IPv4-only pin by the owner's order (see
       // _streamSettings); the empty sockopt map stays as the
       // chain-merge surface.
-      out['streamSettings'] = <String, dynamic>{
-        'sockopt': <String, dynamic>{},
-      };
+      // Build 2154: an HTTP profile whose own security is
+      // TLS — the URnetwork source's HTTPS proxies, the
+      // one HTTP shape that names a TLS hop to the proxy
+      // (the link parser never sets it: an https:// proxy
+      // link names the protocol, not a hop) — emits the
+      // full stream settings, so the hop is real. Every
+      // other HTTP profile keeps the sockopt-only map
+      // byte-for-byte.
+      out['streamSettings'] = p.security == 'tls'
+          ? _streamSettings(p, fingerprintOverride: fingerprintOverride)
+          : <String, dynamic>{
+              'sockopt': <String, dynamic>{},
+            };
   }
 
   // ECH through the dedicated outbound (build 2029A): only
