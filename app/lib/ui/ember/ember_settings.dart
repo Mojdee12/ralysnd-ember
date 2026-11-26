@@ -1347,7 +1347,9 @@ class _MozillaSectionState extends State<_MozillaSection> {
                         onTap: b.busy
                             ? null
                             : () async {
-                                final verdict = await b.prepareIfNeeded();
+                                final verdict = await b.prepareIfNeeded(
+                                  force: true,
+                                );
                                 if (context.mounted && !verdict.cancelled) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(

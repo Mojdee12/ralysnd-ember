@@ -89,12 +89,36 @@ class MozillaBootstrap extends ChangeNotifier {
     _ => null,
   };
 
-  /// Whether the core holds a stored pass with more than a
-  /// minute of life — the connect then needs no handoff.
-  bool get passReady {
-    final exp = core.status?.passExpiresAt ?? 0;
-    return exp * 1000 > DateTime.now().millisecondsSinceEpoch + 60000;
+  /// Build 2152: the connect-time freshness floor. A stored
+  /// pass must have at least this much life left for a
+  /// session to start on it without a handoff first.
+  static const Duration freshPassMargin = Duration(minutes: 5);
+
+  /// Whether a pass expiring at [passExpiresAt] (unix
+  /// seconds) is fresh enough at [now] — it has at least
+  /// [freshPassMargin] of life left. Pure, so tests can pin
+  /// the boundary, and the ONE predicate both [passReady]
+  /// (the gate) and [statusLine] (the copy) consult, so the
+  /// two can never disagree.
+  ///
+  /// Build 2152: the floor rises from 60 s to 5 minutes.
+  /// The core's renewal loop fires at exp − 2 min, so a
+  /// session starting on a pass with less than that lead
+  /// plus working room begins already inside (or barely
+  /// ahead of) the renewal window, on a cold session whose
+  /// renewal fetch is least likely to land in time.
+  static bool passFreshEnough(int passExpiresAt, DateTime now) {
+    return passExpiresAt * 1000 >=
+        now.millisecondsSinceEpoch + freshPassMargin.inMilliseconds;
   }
+
+  /// Whether the core holds a stored pass with at least
+  /// [freshPassMargin] of life — the connect then needs no
+  /// handoff. (Up to build 2151 the floor was a minute;
+  /// build 2152 raises it to 5 minutes — see
+  /// [passFreshEnough].)
+  bool get passReady =>
+      passFreshEnough(core.status?.passExpiresAt ?? 0, DateTime.now());
 
   /// The honest status line for the Mozilla page, composed from
   /// the donor choice and the core's pass state. Pure, so tests
@@ -110,13 +134,18 @@ class MozillaBootstrap extends ChangeNotifier {
     if (busy) return busyLabel;
     if (connected) return 'Direct';
     // Build 2098 (post-2097 audit L25): the SAME freshness
-    // threshold passReady enforces (expiry more than a
-    // minute out) — the line used to say 'Pass ready' for
-    // any not-yet-expired pass, including one with seconds
-    // left that the next connect would still bootstrap
-    // for. Below the threshold the line names the coming
-    // bootstrap, like the expired case.
-    if (passExpiresAt * 1000 > now.millisecondsSinceEpoch + 60000) {
+    // threshold passReady enforces — the line used to say
+    // 'Pass ready' for any not-yet-expired pass, including
+    // one with seconds left that the next connect would
+    // still bootstrap for. Below the threshold the line
+    // names the coming bootstrap, like the expired case.
+    // Build 2152: both sides now consult the one shared
+    // predicate, [passFreshEnough], whose floor is 5
+    // minutes (it was a minute when the 2098 note was
+    // written) — the gate and this copy still cannot
+    // disagree, because there is only one threshold left
+    // in the file.
+    if (passFreshEnough(passExpiresAt, now)) {
       return 'Pass ready';
     }
     return switch (donor) {
@@ -170,8 +199,16 @@ class MozillaBootstrap extends ChangeNotifier {
   /// Runs the handoff when the chosen bootstrap needs one.
   /// Returns proceed when Mozilla may connect (pass already
   /// stored, bootstrap off, or the handoff just stored a pass).
-  Future<BootstrapVerdict> prepareIfNeeded() async {
-    if (donor == 'off' || passReady) {
+  ///
+  /// Build 2152: [force] skips the freshness gate, so a
+  /// manual Prepare (the card's "Prepare now", the Settings
+  /// Guardian-pass row — both of whose copy already promises
+  /// a refresh) re-fetches even while the stored pass is
+  /// still fresh. The connect toggle keeps the default
+  /// gated call. Donor 'off' still returns proceed at once
+  /// even with [force]: there is no route to force through.
+  Future<BootstrapVerdict> prepareIfNeeded({bool force = false}) async {
+    if (donor == 'off' || (!force && passReady)) {
       return const BootstrapVerdict.proceed();
     }
     final gen = ++_generation;
@@ -484,7 +521,9 @@ class _MozillaBootstrapCardState extends State<MozillaBootstrapCard> {
                   onTap: _b.busy
                       ? null
                       : () async {
-                          final verdict = await _b.prepareIfNeeded();
+                          final verdict = await _b.prepareIfNeeded(
+                            force: true,
+                          );
                           if (!context.mounted) return;
                           if (verdict.proceed) {
                             ScaffoldMessenger.of(context).showSnackBar(

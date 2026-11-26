@@ -93,6 +93,67 @@ func TestRenewalRetryDelayBacksOffTerminalFailures(t *testing.T) {
 	}
 }
 
+// Build 2152 (GO-1): RenewalRetryDelay's pure classification is
+// unchanged (the region case above still pins the terminal
+// delay), but the renewal loop's effective delay retries a
+// region failure at proxyPassRetryDelay while the current pass
+// is live or within regionUnavailableRenewalGrace past its
+// expiry — the terminal 15 min would otherwise outlive the pass
+// the renewal fires 2 min before expiry to save.
+func TestEffectiveRenewalRetryDelayRegionGrace(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	region := fmt.Errorf("x: %w", guardian.ErrRegionUnavailable)
+	tests := []struct {
+		name   string
+		err    error
+		expiry time.Time
+		want   time.Duration
+	}{
+		{"region, live pass", region, now.Add(5 * time.Minute), proxyPassRetryDelay},
+		{"region, just expired within grace", region, now.Add(-time.Minute), proxyPassRetryDelay},
+		{"region, at grace boundary", region, now.Add(-regionUnavailableRenewalGrace), terminalRenewalRetryDelay},
+		{"region, past expiry+grace", region, now.Add(-10 * time.Minute), terminalRenewalRetryDelay},
+		{"region, no current pass", region, time.Time{}, terminalRenewalRetryDelay},
+		{"reauth, live pass unchanged", fmt.Errorf("refresh: %w", fxa.ErrReauthRequired), now.Add(5 * time.Minute), terminalRenewalRetryDelay},
+		{"not entitled, live pass unchanged", fmt.Errorf("x: %w", guardian.ErrNotEntitled), now.Add(5 * time.Minute), terminalRenewalRetryDelay},
+		{"transient, past grace unchanged", errors.New("connection reset"), now.Add(-10 * time.Minute), proxyPassRetryDelay},
+	}
+	for _, tc := range tests {
+		if got := effectiveRenewalRetryDelay(tc.err, now, tc.expiry); got != tc.want {
+			t.Errorf("%s: delay %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The controller form reads the expiry from the live session:
+// a region failure against a session whose pass is still valid
+// schedules the next attempt in ~30 s, and the status file's
+// next_attempt_at recorded with that delay agrees; once the
+// pass is past expiry+grace the terminal delay stands.
+func TestControllerRenewalRetryDelayUsesCurrentExpiry(t *testing.T) {
+	t.Parallel()
+
+	region := fmt.Errorf("x: %w", guardian.ErrRegionUnavailable)
+	now := time.Now()
+
+	live := &Controller{current: &managedSession{expiresAt: now.Add(5 * time.Minute)}}
+	if got := live.renewalRetryDelay(region, now); got != proxyPassRetryDelay {
+		t.Fatalf("live pass: delay %s, want %s", got, proxyPassRetryDelay)
+	}
+	live.recordRenewalOutcome(region, now.Add(live.renewalRetryDelay(region, now)))
+	live.mu.Lock()
+	next := live.nextAttemptAt
+	live.mu.Unlock()
+	if !next.Equal(now.Add(proxyPassRetryDelay)) {
+		t.Fatalf("live pass: next_attempt_at %s, want %s", next, now.Add(proxyPassRetryDelay))
+	}
+
+	dead := &Controller{current: &managedSession{expiresAt: now.Add(-10 * time.Minute)}}
+	if got := dead.renewalRetryDelay(region, now); got != terminalRenewalRetryDelay {
+		t.Fatalf("past expiry+grace: delay %s, want %s", got, terminalRenewalRetryDelay)
+	}
+}
+
 func TestProxyControllerRebuildCooldownAvoidsGuardianStorm(t *testing.T) {
 	t.Parallel()
 

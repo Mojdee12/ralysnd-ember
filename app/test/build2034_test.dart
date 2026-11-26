@@ -121,6 +121,20 @@ void main() {
       expect(line(donor: 'off', passExpiresAt: future), 'Pass ready');
     });
 
+    test('a pass inside the freshness floor names the bootstrap', () {
+      // PIN UPDATED by build 2152 (DART-1): the freshness
+      // floor rises from 60 s to 5 minutes, so a pass with
+      // two minutes of life — 'Pass ready' under the
+      // pre-2152 threshold — now reads as the coming
+      // bootstrap, exactly as passReady's gate treats it.
+      // The boundary itself is pinned in build2152_test.dart.
+      final soon = now.millisecondsSinceEpoch ~/ 1000 + 120;
+      expect(
+        line(donor: 'psiphon', passExpiresAt: soon),
+        'Bootstrap via Psiphon on next connect',
+      );
+    });
+
     test('off with no usable pass is Direct', () {
       expect(line(passExpiresAt: past), 'Direct');
       expect(line(), 'Direct');

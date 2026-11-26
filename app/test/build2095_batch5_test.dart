@@ -65,7 +65,14 @@ void main() {
     test('Prepare now exists and the home wording names it', () {
       final bootstrap = _read('lib/ui/ember/mozilla_bootstrap.dart');
       expect(bootstrap, contains("'Prepare now'"));
-      expect(bootstrap, contains('await _b.prepareIfNeeded()'));
+      // PIN UPDATED by build 2152 (DART-1): Prepare now is
+      // a manual refresh, so its call now forces the
+      // handoff past the freshness gate — the pre-2152 pin
+      // expected the bare gated call.
+      expect(
+        bootstrap,
+        contains('await _b.prepareIfNeeded(\n                            force: true,'),
+      );
       final home = _read('lib/ui/ember/ember_home.dart');
       expect(home, contains('tap Prepare now in Account'));
     });

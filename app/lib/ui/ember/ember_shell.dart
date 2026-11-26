@@ -821,6 +821,17 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         // fetches and stores a Guardian pass through it, the
         // donor stops, and only then does Mozilla connect,
         // directly, on the stored pass.
+        // Build 2152 (DART-2): snapshot the gate BEFORE the
+        // call — donor chosen AND the stored pass below the
+        // freshness floor is exactly prepareIfNeeded's own
+        // early-return condition (the same shared predicate,
+        // passReady), so a proceed verdict after this
+        // snapshot can only mean a handoff actually ran.
+        // That is how the shell, which owns the journal
+        // wiring, learns a floor-triggered refresh happened
+        // without giving MozillaBootstrap journal access.
+        final floorRefresh =
+            _bootstrap.donor != 'off' && !_bootstrap.passReady;
         final verdict = await _bootstrap.prepareIfNeeded();
         if (verdict.cancelled) return;
         if (!verdict.proceed) {
@@ -830,6 +841,15 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
             );
           }
           return;
+        }
+        if (floorRefresh) {
+          // Through the same producer the pass-boundary
+          // lines use: core.journalLine, wired above to the
+          // diagnostics journal as source 'mozilla'.
+          core.journalLine?.call(
+            'Mozilla pass refreshed before connecting — '
+            'the stored pass was close to expiry.',
+          );
         }
         await stopXray();
       }
