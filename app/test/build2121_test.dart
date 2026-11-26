@@ -196,7 +196,7 @@ void main() {
   setUpAll(_loadRealFonts);
 
   test('pubspec is 2.2.0+2126', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2150'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2151'));
   });
 
   test('brand panel is back to the pre-2118 compact footprint', () {

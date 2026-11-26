@@ -350,7 +350,7 @@ void main() {
       final pubspec = File('pubspec.yaml').readAsStringSync();
       // Updated by build 2110 (the standing per-build pin:
       // it names the build the tree currently ships as).
-      expect(pubspec, contains('version: 2.2.0+2150'));
+      expect(pubspec, contains('version: 2.2.0+2151'));
     });
   });
 }

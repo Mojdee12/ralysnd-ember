@@ -2290,6 +2290,25 @@ class _XraySection extends StatelessWidget {
                   },
                 ),
               ),
+              // Build 2151 (item D): the connected-but-
+              // blocked alert — when a session is adopted
+              // but its background data-plane proof never
+              // lands, the journal says so plainly instead
+              // of leaving dead traffic to be discovered.
+              // DEFAULT ON by the owner's explicit order
+              // (2026-11-26) — the one exception to the
+              // features law's default-off rule.
+              MapSettingRow(
+                label: 'Connected-but-blocked alert',
+                subtitle: 'Journal a plain warning when a connected session carries no traffic',
+                trailing: MapToggle(
+                  value: s.blockedAlert,
+                  onChanged: (v) async {
+                    s.blockedAlert = v;
+                    await _saveSection();
+                  },
+                ),
+              ),
               // Smart dial racing (build 2075, feature item 5):
               // when the picked config fails, the next group
               // members' endpoints are probed in parallel and

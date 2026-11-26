@@ -98,7 +98,15 @@ void main() {
       final off = XraySettings()..ipv6Route = false;
       final note = ipv6UncoveredSessionNote(off);
       expect(note, isNotNull);
-      expect(note, contains('IPv6 stays outside this tunnel'));
+      // PIN UPDATED by build 2151 (item B): the wording
+      // is corrected to the platform truth — Android
+      // BLOCKS the unconfigured family for captured apps;
+      // the pre-2151 text falsely claimed the traffic
+      // "keeps your current IP address" (a leak that
+      // cannot happen with this Builder shape).
+      expect(note, contains('This tunnel carries no IPv6'));
+      expect(note, contains('blocks IPv6'));
+      expect(note, isNot(contains('keeps your current')));
       expect(note, contains('"IPv6 route"'));
       final on = XraySettings()..ipv6Route = true;
       expect(ipv6UncoveredSessionNote(on), isNull);

@@ -130,7 +130,7 @@ void main() {
     test('pubspec is 2.2.0+2119', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2150'),
+        contains('version: 2.2.0+2151'),
       );
     });
   });

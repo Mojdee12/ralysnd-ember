@@ -2063,18 +2063,23 @@ int healAddressDerivedNames(List<Profile> profiles) {
 /// the wgUncoveredFamilyNote pattern applied to the main
 /// path). With "IPv6 route" off — the owner's ordered
 /// v2rayNG default, kept — the TUN carries no IPv6
-/// address or route, so on an IPv6-capable network apps'
-/// v6 traffic stays on the physical link with the user's
-/// real address while the session shows Connected. The
-/// default does NOT change (2103's blackhole history is
-/// why it is off); what changes is that the fact is
-/// journaled at every adoption instead of staying silent.
+/// address or route. Build 2151 (TUN/IPv6 audit §1b):
+/// the wording is corrected to what Android actually
+/// does with that shape — a family the VPN adds nothing
+/// of is BLOCKED for the captured apps (the platform
+/// contract of VpnService.Builder), it does not leak
+/// onto the physical link; the pre-2151 line claimed the
+/// opposite ("keeps your current IP address") and
+/// steered diagnosis toward a leak that cannot happen.
+/// The default does NOT change; what is journaled at
+/// every adoption is the fact, stated accurately.
 String? ipv6UncoveredSessionNote(XraySettings settings) {
   if (settings.ipv6Route) return null;
-  return 'IPv6 stays outside this tunnel — the "IPv6 route" '
-      'setting is off (the v2rayNG default), so on an '
-      'IPv6-capable network, IPv6 traffic keeps your current '
-      'IP address. Turn the setting on to capture it.';
+  return 'This tunnel carries no IPv6 — the "IPv6 route" '
+      'setting is off (the v2rayNG default), so Android '
+      'blocks IPv6 for the apps in the tunnel and they '
+      'fall back to IPv4 through it. Turn the setting on '
+      'to capture IPv6.';
 }
 
 class XraySettings {
@@ -2848,6 +2853,17 @@ class XraySettings {
   /// file, no digest, no badge.
   bool dailyProblemReport = false;
 
+  /// Connected-but-blocked alert (build 2151, item D):
+  /// when a session is adopted but its background
+  /// data-plane proof never lands, the journal says so
+  /// plainly — one ✗ line per session — instead of
+  /// leaving the user to discover dead traffic. DEFAULT
+  /// ON: the owner's explicit exception to the features
+  /// law for this one toggle (2026-11-26, «بزار روشن
+  /// باشه این فقط»). Off restores build 2150's silence
+  /// exactly; nothing else changes either way.
+  bool blockedAlert = true;
+
   /// Feature #5: subscription group ids whose connect mode is
   /// the core Balancer (observatory + leastPing) instead of a
   /// single picked profile. Per-group opt-in; empty = none.
@@ -3034,6 +3050,7 @@ class XraySettings {
     'dpiLabRacing': dpiLabRacing,
     'sniScanEnabled': sniScanEnabled,
     'dailyProblemReport': dailyProblemReport,
+    'blockedAlert': blockedAlert,
     'balancerGroupIds': balancerGroupIds,
     'sidecarSshEnabled': sidecarSshEnabled,
     'stallFailover': stallFailover,
@@ -3434,6 +3451,10 @@ class XraySettings {
       'dailyProblemReport',
       s.dailyProblemReport,
     );
+    // Build 2151 (item D): an absent key keeps the
+    // DEFAULT ON in-memory value (the owner's ordered
+    // exception); a stored value is honoured verbatim.
+    s.blockedAlert = _storedBool(j, 'blockedAlert', s.blockedAlert);
     s.sidecarSshEnabled =
         _storedBool(j, 'sidecarSshEnabled', s.sidecarSshEnabled);
     s.stallFailover = _storedBool(j, 'stallFailover', s.stallFailover);

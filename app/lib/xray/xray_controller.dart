@@ -682,6 +682,38 @@ class XrayController extends ChangeNotifier {
   /// proof is not retried on every refresh.
   int _adoptionProofFor = 0;
 
+  /// The state.sinceMs the connected-but-blocked alert
+  /// has fired for (build 2151, item D): the alert is
+  /// once per session, however the proof machinery
+  /// re-enters around it.
+  int _blockedAlertFor = 0;
+
+  /// Build 2151 (item D): the connected-but-blocked
+  /// alert. Called from the adopted-session proof in
+  /// [refreshState] when that proof completes WITHOUT
+  /// carrying — the session is adopted and shows
+  /// Connected, yet no traffic is getting through. One
+  /// plain ✗ journal line per session (latched by
+  /// sinceMs), gated by [XraySettings.blockedAlert]
+  /// (DEFAULT ON, the owner's ordered exception; off =
+  /// build 2150's silence, byte-for-byte). The session
+  /// itself is untouched: it stays adopted and
+  /// unverified, and the re-proof cadence keeps
+  /// retrying — the alert only stops the failure from
+  /// being silent.
+  @visibleForTesting
+  void journalBlockedAlert(int sinceMs) {
+    if (!settings.blockedAlert) return;
+    if (sinceMs == 0 || _blockedAlertFor == sinceMs) return;
+    _blockedAlertFor = sinceMs;
+    diagnostics.add(
+      'connect',
+      'Connected but blocked — the tunnel is up, but no '
+          'traffic is getting through this config.',
+      ok: false,
+    );
+  }
+
   /// Stamps the data-plane proof flag onto a fresh sample
   /// when it belongs to the verified session.
   XrayState _stampVerified(XrayState s) =>
@@ -4861,6 +4893,11 @@ class XrayController extends ChangeNotifier {
                   stage: 'session proof',
                   reason: 'the session has not answered a proof yet',
                 );
+                // Build 2151 (item D): the proof window
+                // closed with nothing carried — say so
+                // plainly in the journal (once per
+                // session; the toggle gates it).
+                journalBlockedAlert(sinceMs);
               }
             }),
           );
@@ -8208,61 +8245,16 @@ class XrayController extends ChangeNotifier {
     switchingProfileId = next.id;
     switchNotice = '';
     notifyListeners();
-    // Build 2149 (audit A43-04): the switch rollback state —
-    // filled in at adoption inside the try, consumed by the
-    // proof-failure exit and the catch (both outside the
-    // try's scope, hence declared here). See the adoption
-    // site for the full note.
-    Profile? prevProfile;
-    var prevConnectedId = '';
-    Map<String, List<String>> prevProviderPins = const {};
-    Map<String, List<String>> prevServerPins = const {};
-    var prevWdShape = shapeStock;
-    var prevLabActive = false;
-    var prevLabCandidateId = '';
+    // Build 2151 (item C): `adopted` is the one piece of
+    // switch state the exits still need — it separates a
+    // failure BEFORE the rotation landed (nothing was
+    // adopted; the caller's full reconnect is the path)
+    // from one AFTER it (the session stays on the new
+    // config, stamped unverified — no rollback rotation).
+    // Build 2149's A43-04 rollback snapshot and
+    // rollbackSwitch are gone; see the proof-failure exit
+    // below for the reasoning.
     var adopted = false;
-    Future<void> rollbackSwitch() async {
-      final prev = prevProfile;
-      if (prev == null) return;
-      try {
-        // The previous session's egress, rebuilt from its
-        // profile and its OWN pins (the snapshot's, merged
-        // as at adoption). The dial plan is the profile's
-        // base plan — a shape/Lab variant the old session
-        // was dialed with is not replayed; the rollback's
-        // promise is the same exit answering again, not
-        // the same ClientHello.
-        final oldConfig = buildTunnelConfig(
-          prev,
-          settings,
-          serverHostPins: _mergedServerPins(prevServerPins, prevProviderPins),
-        );
-        if (!await XrayPlatform.rotateConfig(oldConfig)) return;
-      } catch (_) {
-        return;
-      }
-      // A superseding disconnect/connect owns the core now —
-      // restoring identity over it would corrupt its
-      // session. The interim state stands, exactly as a
-      // pre-2149 failed switch left it.
-      if (_tunnelGen != gen) return;
-      _connectedProfileId = prevConnectedId;
-      _sessionProviderPins = prevProviderPins;
-      _sessionServerPins = prevServerPins;
-      _wdShape = prevWdShape;
-      _labDialActive = prevLabActive;
-      _labDialCandidateId = prevLabCandidateId;
-      _labStandDownJournaled = false;
-      _resetWatchdogBases();
-      _adaptiveFails = 0;
-      await _save();
-      diagnostics.add(
-        'switch',
-        'Switch to ${next.name} did not prove — rolled '
-            'back to ${prev.name}; the session is unchanged.',
-        ok: false,
-      );
-    }
 
     try {
       if (networkFp.isEmpty) await refreshNetworkFingerprint();
@@ -8339,29 +8331,15 @@ class XrayController extends ChangeNotifier {
         if (!connecting) await _stopTunnel();
         return false;
       }
-      // Build 2149 (audit A43-04): the SESSION identity is
-      // snapshotted before adoption. Up to 2148 the switch
-      // adopted — and with the save below, persisted — the
-      // new profile the moment the rotation landed, before
-      // the proof ran; a proof failure then left the store
-      // claiming a live session for a profile that never
-      // carried traffic, and callers without a full-connect
-      // fallback (the stall failover) kept running the
-      // dead rotation under that identity. On proof
-      // failure the switch rolls back (rollbackSwitch,
-      // declared above): the previous profile's config
-      // rotates back in and this snapshot is restored, so
-      // a failed switch leaves the session exactly as it
-      // found it. The user's SELECTION is not part of the
-      // snapshot — the target stays selected, and a
-      // caller's fallback full-connect still aims at it.
-      prevProfile = _profileById(_connectedProfileId);
-      prevConnectedId = _connectedProfileId;
-      prevProviderPins = _sessionProviderPins;
-      prevServerPins = _sessionServerPins;
-      prevWdShape = _wdShape;
-      prevLabActive = _labDialActive;
-      prevLabCandidateId = _labDialCandidateId;
+      // Build 2151 (item C): adoption is immediate and
+      // final — there is no snapshot and no rollback
+      // rotation (build 2149's A43-04 machinery, removed).
+      // A proof failure below leaves the session exactly
+      // here, on the new profile, stamped unverified; the
+      // user's SELECTION likewise stays on the target, and
+      // no caller fallback runs for a post-adoption
+      // failure — the rotation was the one core restart
+      // this switch gets.
 
       // The rotated config is live from here: new bytes belong
       // to the new profile.
@@ -8427,25 +8405,61 @@ class XrayController extends ChangeNotifier {
         }
         await Future<void>.delayed(const Duration(milliseconds: 500));
       }
-      // Build 2149 (audit A43-04): proof failed — roll the
-      // session back to the profile that was live before
-      // the switch (a no-op when the rollback rotation
-      // itself fails), then let the caller's own fallback
-      // run as before.
-      await rollbackSwitch();
+      // Build 2151 (item C; supersedes build 2149's
+      // A43-04 rollback): the proof failed — and the
+      // switch STAYS on the new config. Up to 2150 a
+      // failed proof rotated the core BACK to the old
+      // profile (rollbackSwitch) and the caller then ran
+      // a full reconnect: up to three core restarts for
+      // one failed switch, every live flow severed at
+      // each one (diagnosis C2 — the mechanism is proven
+      // on device, refused-burst evidence in tunlink.log).
+      // The rotation was this switch's one restart; there
+      // are no more. The session is stamped unverified —
+      // the honest wording, never a verified claim — the
+      // background re-proof cadence keeps retrying, and
+      // the identity the store holds names the config
+      // actually running, which is the truth A43-04 was
+      // after, reached without the extra restarts.
+      _proofVerifiedSinceMs = 0;
+      _proofVerifiedAtMs = 0;
+      state = state.withVerified(false);
+      _exitGen++;
+      exitInfo = null;
+      // Build 2050: a fresh exit gets a fresh backoff too.
+      _exitFailures = 0;
+      _exitNextTryAt = null;
+      _fetchExitInfo();
+      switchNotice = 'Switched to ${next.name} — not answering yet.';
       diagnostics.add(
         'switch',
-        'Switched to ${next.name} but the new exit never '
-            'answered; falling back to a full reconnect.',
+        'Switched to ${next.name} — the new exit never '
+            'answered; staying on this config, unverified.',
         ok: false,
       );
-      return false;
+      notifyListeners();
+      return true;
     } catch (e) {
-      // Build 2149 (audit A43-04): a failure AFTER adoption
-      // gets the same rollback — the session must not keep
-      // an identity the failure orphaned. Before adoption
-      // nothing was adopted, so there is nothing to undo.
-      if (adopted && _tunnelGen == gen) await rollbackSwitch();
+      // Build 2151 (item C): the same no-rollback rule
+      // after adoption — an error past the rotation leaves
+      // the session on the new config, stamped unverified.
+      // Before adoption nothing was rotated in, so there
+      // is nothing to stay on and the caller's full
+      // reconnect remains the path.
+      if (adopted && _tunnelGen == gen) {
+        _proofVerifiedSinceMs = 0;
+        _proofVerifiedAtMs = 0;
+        state = state.withVerified(false);
+        diagnostics.add(
+          'switch',
+          'Switch to ${next.name} hit an error after the '
+              'rotation landed ($e) — staying on it, '
+              'unverified.',
+          ok: false,
+        );
+        notifyListeners();
+        return true;
+      }
       diagnostics.add(
         'switch',
         'Switch to ${next.name} failed ($e); falling back to a '
@@ -8460,9 +8474,12 @@ class XrayController extends ChangeNotifier {
     }
   }
 
-  /// Tries the seamless switch; when it is impossible or the
-  /// new exit never answered, the full connect path (with its
-  /// group fallback) takes over.
+  /// Tries the seamless switch; when it is impossible, the
+  /// full connect path (with its group fallback) takes over.
+  /// A switch whose rotation landed but whose proof failed
+  /// is NOT impossible (build 2151, item C): switchServer
+  /// stays on the new config, unverified, and returns true,
+  /// so no second restart happens here either.
   Future<void> _switchOrConnect(Profile next) async {
     final gen = _tunnelGen;
     selectedProfileId = next.id;
