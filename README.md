@@ -1,17 +1,18 @@
 <p align="center">
-  <img src="images/logo.png" width="120" alt="Ralysnd Ember logo">
+  <img src="assets/banner.png" alt="Ralysnd Ember — multi-engine VPN client for Android">
 </p>
 
 <h1 align="center">Ralysnd Ember</h1>
 
 <p align="center">
-  A personal multi-engine VPN client for Android with a signature <b>Map Control</b> design —<br>
+  <b>Eight engines. One map. Your exit, lit.</b><br>
+  A multi-engine VPN client for Android with a signature <b>Map Control</b> design —
   black glass panels over a living dotted world map, one ember-orange accent, a glowing arc to your exit.
 </p>
 
 <p align="center">
   <a href="https://github.com/Mojdee12/ralysnd-ember/releases/latest"><b>⬇ Download the latest build</b></a>
-  &nbsp;·&nbsp; Version 2.2.0 (build 2117) &nbsp;·&nbsp; Android 8.0+ (arm64) &nbsp;·&nbsp; 15 UI languages
+  &nbsp;·&nbsp; Version 2.2.0 (build 2151) &nbsp;·&nbsp; Android 8.0+ (arm64) &nbsp;·&nbsp; 15 UI languages
 </p>
 
 <p align="center">
@@ -22,7 +23,8 @@
 
 ## What is it?
 
-Ralysnd Ember is not one VPN protocol — it is **eight engines in one app**, sharing one design
+Ralysnd Ember is not one VPN protocol — it is **eight engines in one app**, plus a client for
+self-hosted RegionHop panels and a built-in DPI Strategy Lab, sharing one design
 language and one home screen: a dotted world map that lights up with your home marker, the exit
 pin, and a glowing arc while you are connected. Pick the engine that works on your network;
 Ember keeps your configs, subscriptions and traffic stats per engine, can chain engines
@@ -31,34 +33,31 @@ Exactly one tunnel is ever up: starting any engine cleanly stops the others firs
 
 ## Screenshots
 
-The actual app UI — widget captures rendered from the shipped **build 2117** code itself
+The actual app UI — renders captured from the shipped **build 2150** code itself
 (real screens with sample configs), not mockups or design renders.
 
 <p align="center">
-  <img src="docs/screenshots/ui-mozilla.png" width="270" alt="Mozilla home — the Map Control shell, connected, with the glowing arc to the exit">
-  <img src="docs/screenshots/ui-home.png" width="270" alt="Home in V2Ray mode — engine rail over the dotted world map">
-  <img src="docs/screenshots/ui-servers.png" width="270" alt="V2Ray configurations with real delay results">
+  <img src="assets/screenshots/home.png" width="270" alt="Home — Map Control over the dotted world map, engine chips, connect pill">
+  <img src="assets/screenshots/v2ray-configs.png" width="270" alt="V2Ray configurations with per-config ping and speed-test results">
+  <img src="assets/screenshots/subscriptions.png" width="270" alt="Subscriptions with traffic quota and expiry">
 </p>
 <p align="center">
-  <img src="docs/screenshots/ui-subscriptions.png" width="270" alt="Subscriptions with traffic quota and expiry">
-  <img src="docs/screenshots/ui-engine.png" width="270" alt="WARP MASQUE engine page (Aether core)">
-  <img src="docs/screenshots/ui-settings.png" width="270" alt="V2Ray settings">
-</p>
-<p align="center">
-  <img src="docs/screenshots/ui-dpi-lab.png" width="270" alt="DPI Strategy Lab">
+  <img src="assets/screenshots/dpi-lab.png" width="270" alt="DPI Strategy Lab — per-config strategy discovery with honest verdicts">
+  <img src="assets/screenshots/dns-presets.png" width="270" alt="DNS presets — global resolvers and Iran anti-sanctions resolvers">
 </p>
 
 ## Engines
 
 | Engine | What it is |
 |---|---|
-| **Mozilla VPN** | Mozilla VPN via the Kumiho core — Firefox Account sign-in (native OAuth or browser), locations fetched live from Mozilla with real through-tunnel delay tests, multi-account quota failover, Guardian pass renewal through the live tunnel |
+| **Mozilla** | Firefox IP Protection (Guardian) — Firefox Account sign-in (native OAuth or browser), locations fetched live from Mozilla with real through-tunnel delay tests, multi-account quota failover, Guardian pass renewal through the live tunnel |
 | **V2Ray** | Full Xray-core client: VLESS / VMess / Trojan / Shadowsocks / WireGuard / Hysteria2 / SOCKS5 / HTTP, REALITY (incl. `mldsa65Verify`), XHTTP, gRPC, WebSocket, HTTPUpgrade, mKCP, QUIC, ECH, uTLS fingerprints, fragment, mux, fakeDNS |
 | **Sidecar (sing-box / Mieru)** | TUIC, AnyTLS, Snell, NaiveProxy and Mieru profiles — which Xray cannot serve — connect through the bundled sidecar instead of being refused |
 | **WireGuard** | WireGuard + AmneziaWG obfuscation (Jc/Jmin/Jmax, S1/S2, H1–H4, I1) on the WG Tunnel backend (amneziawg-go), per-peer handshake/traffic stats, profile MTU honoured, endpoint scanner |
 | **OpenVPN** | .ovpn profiles (file or paste) with real LZO compression and an encrypted credential vault |
 | **Lantern** | Lantern (Radiance) with CDN-fronted server list, cached-list fallback, private-server import |
 | **Psiphon** | Psiphon in its own process: exit regions, transports, paired/fronted connection methods, bridge mode, custom CDN edges, per-network winner memory |
+| **RegionHop** | Client for self-hosted RegionHop panels: locations with per-location delay, one-tap connect through per-location bridge relays, TLS-pinned panel connection |
 | **WARP** | Cloudflare WARP via warp-plus (EmberWarp) as a local SOCKS tunnel, with endpoint scanning |
 | **WARP MASQUE** | Cloudflare MASQUE via the Aether core — WireGuard and MASQUE modes, multi-rung registration ladder (incl. TLS-identity and tlshello), per-network memory, automatic HTTP/3 ↔ HTTP/2 learning, aethernoize shaping |
 | **Underlays & chains** | DNSTT (DNS tunnel) and wstunnel (WireGuard-over-WebSocket) underlays, V2Ray-over-underlay chaining, and a chain builder for named custom multi-hop chains |
@@ -68,9 +67,11 @@ The actual app UI — widget captures rendered from the shipped **build 2117** c
 *(default OFF)* marks toggles that ship off — Ember's extras never change v2rayNG-parity defaults behind your back.
 
 ### Connection & verification
-- **Proven "Connected"** — a connect is only adopted after data-plane proof: an exit lookup through the tunnel for Xray, end-to-end validation for WARP/Aether; a fresh engine validation can no longer be vetoed by a slow re-probe
-- **Honest exit verification** — if data flows but the exit trace never lands, the connection stands labelled **"exit unverified"** (persisted across restarts) instead of being torn down; an answered `warp=off` is still fatal
+- **Honest "Connected"** — a session is adopted when its core is up; a background exit lookup through the tunnel then stamps it **verified**, and if the trace never lands the connection stands labelled **"exit unverified"** (persisted across restarts) instead of being torn down; an answered `warp=off` is still fatal
+- **Connected-but-blocked alert** — if the tunnel is up but no traffic is getting through the config, the journal says so plainly instead of leaving a silent "connected" (on by default; toggle in V2Ray settings)
 - **Real delay test & Test All** — measured proxied requests through throwaway cores (not bare TCP ping), bulk funnels with 1–8 parallelism, adjustable test timeout (3–20 s, default 8 s)
+- **Per-config diagnostics** — every V2Ray config carries its own measured ping, a full speed test, and a per-DNS ping run *through that config*, all persisted on its row; ping colour follows health everywhere, not just on one tab
+- **Ping sweep & auto-quarantine** — one sweep pings *every* config; configs that stay dead are disabled and quarantined — restorable, never hard-deleted — so the list stays honest
 - **Sandbox config test** — dry-run a config before trusting it, without touching the live tunnel
 - **Exit IP / endpoint display, leak test, filtering probe, service reachability checks** (Google, YouTube, Instagram, Telegram, X)
 - **Emergency connect & quick presets** — one tap walks the engines until one proves a working connection
@@ -82,6 +83,7 @@ The actual app UI — widget captures rendered from the shipped **build 2117** c
 
 ### Subscriptions & config management
 - **Subscriptions with auto-update** (adjustable interval, on-launch refresh), traffic quota and expiry from provider headers, per-subscription custom headers and TLS certificate pinning
+- **Built-in starter subscriptions** — two public aggregators ship as default subscriptions and refresh daily, so a fresh install has something to test immediately
 - **Import everywhere** — paste, clipboard, file, QR scan; share links for every supported protocol, raw JSON, and Clash YAML conversion
 - **Share back out** as share link or QR; **full profile editor** for every field
 - **Search, protocol filter, sort** (incl. by country and measured delay); **fastest prune** keeps a subscription's fastest N
@@ -93,6 +95,7 @@ The actual app UI — widget captures rendered from the shipped **build 2117** c
 - **Mozilla smart routing** — region presets (Iran, China, Russia, Afghanistan, Türkiye, Indonesia, Brazil), editable direct/block rules, downloadable routing lists that retry on failure instead of silently riding the proxy
 - **V2Ray routing presets + your own custom rules**, routing by network type *(default OFF)*, **per-app proxy / bypass list**
 - **Remote DNS over DoH** — default is v2rayNG's own Cloudflare DoH value, verbatim; **DoQ, DNS-over-TCP and DNSCrypt** transports also available
+- **DNS preset catalogue** — one tap fills the remote DNS field: global resolvers (Cloudflare, Google, Quad9, AdGuard, Control D) plus Iran anti-sanctions resolvers (Shecan, Electro, 403.online, RadarGame, Begzar), each probeable before you commit
 - **DNS group, DNS fallback, ad-blocking DNS, custom DNS hosts, provider DNS for server names, disable DNS cache** *(default OFF)*
 - **fakeDNS** *(default OFF)*, per-protocol **sniffing controls** (HTTP / TLS / QUIC), **Block QUIC** *(default OFF)*, IPv6 route and domain strategy at v2rayNG parity, **Mux** *(default OFF)*
 - **Hysteria2 port hopping works** — a profile's `mport` range is emitted to the sidecar; XHTTP `extra`, WebSocket early-data, TCP header camouflage and custom transport headers survive import and generation
@@ -115,11 +118,12 @@ The actual app UI — widget captures rendered from the shipped **build 2117** c
 ### Interface & Map Control
 - **Map Control home** — black glass over a living dotted world map, home marker, exit pin, glowing arc; one ember-orange accent
 - **Engine rail** — all engines one tap apart in one shell; bottom status bar with endpoint / exit-IP / up-down cells
-- **15 languages** — Persian and Arabic render right-to-left; Persian localisation is complete (build 2117)
+- **15 languages** — Persian and Arabic render right-to-left; Persian localisation is complete
 - Welcome flow, notification controls (live speeds, actions), bundled SVG country flags
 
 ### Diagnostics & maintenance
 - **Diagnostics export** — one text bundle: connect journal, engine logs, settings state
+- **Daily problem report** *(default OFF)* — when enabled, a 7-day on-device log of connection problems (names and event types only — never credentials or configs) that you share out yourself; nothing leaves the phone on its own
 - **Connect journal** — every engine's steps and failures with reasons, including watchdog, failover, Lab actions — and every Mozilla Guardian-pass renewal attempt and outcome, so a mid-session degradation leaves evidence by itself
 - **Mozilla status honesty** — the shell shows Connected only when the core confirms it; repeated core errors surface as a lost connection instead of a frozen "Connected"
 - Per-engine log viewers, live connections view, traffic history chart *(recording default OFF)*, battery usage report *(default OFF)*, settings-integrity surfacing
@@ -137,14 +141,16 @@ The actual app UI — widget captures rendered from the shipped **build 2117** c
 2. Download `RalysndEmber2.apk` (check the SHA-256 in the release notes if you like).
 3. Install it — Android will ask once to allow installs from your browser/files app.
 
-Current release: **2.2.0, build 2117** — Android 8.0+ (arm64).
+Once installed, the app **updates itself from these same releases** — no need to come back here for new builds.
+
+Current release: **2.2.0, build 2151** — Android 8.0+ (arm64).
 
 ## Honest notes
 
 - This is a personal project, built for one person's networks (including heavily filtered
   ones). It is source-available here; the Android app in Releases is the supported artifact.
-- The screenshots above are rendered from the app code itself (widget captures with sample
-  configs) — what you see is the shipped UI.
+- The screenshots above are renders captured from the shipped build 2150 code itself,
+  with sample configs — what you see is the shipped UI.
 - The native engine cores ship prebuilt in `app/android/app/src/main/jniLibs/`; the Flutter
   app is in `app/` and the Go mobile core sources are in `core/`.
 
@@ -165,11 +171,11 @@ AGPL — its license text and source link are also shown inside the app under Se
 
 ### اسکرین‌شات‌ها
 
-رابط واقعی خود اپ — کپچرهای ویجتی که از کد منتشرشدهٔ **بیلد ۲۱۱۷** رندر شده‌اند (صفحه‌های واقعی با کانفیگ‌های نمونه)، نه ماکاپ و نه رندر طراحی. گالری در بخش انگلیسی بالای همین صفحه است.
+رابط واقعی خود اپ — رندرهایی که از کد منتشرشدهٔ **بیلد ۲۱۵۰** گرفته شده‌اند (صفحه‌های واقعی با کانفیگ‌های نمونه)، نه ماکاپ و نه رندر طراحی. گالری در بخش انگلیسی بالای همین صفحه است.
 
 ### موتورها
 
-- **موزیلا (هستهٔ Kumiho)** — با حساب فایرفاکس وصل می‌شود (ورود OAuth داخل اپ یا ورود با مرورگر)؛ لوکیشن‌ها زنده از موزیلا گرفته می‌شوند با تست تأخیر واقعی از داخل تونل، چند حساب با جابه‌جایی خودکار وقتی حجم حساب فعال به آستانه (پیش‌فرض ۹۵٪) نزدیک شود، و تمدید پس Guardian از داخل تونل زنده.
+- **موزیلا (Firefox IP Protection)** — با حساب فایرفاکس وصل می‌شود (ورود OAuth داخل اپ یا ورود با مرورگر)؛ لوکیشن‌ها زنده از موزیلا گرفته می‌شوند با تست تأخیر واقعی از داخل تونل، چند حساب با جابه‌جایی خودکار وقتی حجم حساب فعال به آستانه (پیش‌فرض ۹۵٪) نزدیک شود، و تمدید پس Guardian از داخل تونل زنده.
 - **V2Ray (هستهٔ Xray)** — کلاینت کامل Xray: ‏VLESS ،VMess ،Trojan ،Shadowsocks ،WireGuard ،Hysteria2 ،SOCKS5 و HTTP؛ ‏REALITY (از جمله کلید پس‌کوانتومی `mldsa65Verify`)، ‏XHTTP ،gRPC ،WebSocket ،HTTPUpgrade ،mKCP ،QUIC، ‏ECH، فینگرپرینت uTLS، فرگمنت، mux و fakeDNS.
 - **سایدکار (sing-box / Mieru)** — کانفیگ‌های TUIC ،AnyTLS ،Snell ،NaiveProxy و Mieru که Xray ندارد، از سایدکار داخلی وصل می‌شوند.
 - **وایرگارد (بک‌اند WG Tunnel)** — وایرگارد و مبهم‌سازی AmneziaWG (پکت‌های جانک Jc/Jmin/Jmax، ‏S1/S2، هدرهای H1 تا H4 و پکت I1) روی بک‌اند WG Tunnel؛ آمار زندهٔ هندشیک و ترافیک هر پیر، MTU خود پروفایل اعمال می‌شود، اسکنر اندپوینت.
@@ -185,7 +191,7 @@ AGPL — its license text and source link are also shown inside the app under Se
 مواردی که با *(پیش‌فرض خاموش)* مشخص شده‌اند، کلیدهایی‌اند که خاموش عرضه می‌شوند — اضافات امبر هیچ‌وقت پیش‌فرض‌های هم‌تراز v2rayNG را پشت سرت عوض نمی‌کنند.
 
 **اتصال و راستی‌آزمایی**
-- «متصل» اثبات‌شده — اتصال فقط بعد از اثبات ردشدن دیتا قبول می‌شود: لوکاپ خروجی از داخل تونل برای Xray و اعتبارسنجی سرتاسری برای WARP/Aether؛ اعتبارسنجی تازهٔ موتور دیگر با تایم‌اوت یک پروب تکراری روی اندپوینت کند وتو نمی‌شود.
+- «متصل» صادقانه — سشن وقتی هسته بالاست قبول می‌شود و لوکاپ خروجی از داخل تونل در پس‌زمینه مهر «تأییدشده» می‌زند؛ اگر تریس نیاید، اتصال با برچسب «خروجی تأییدنشده» وصل می‌ماند. هشدار «متصل ولی مسدود» هم اگر تونل بالا باشد ولی هیچ ترافیکی از کانفیگ رد نشود، رک در ژورنال می‌گوید.
 - راستی‌آزمایی صادقانهٔ خروجی — اگر دیتا رد شود ولی تریس خروجی نیاید، اتصال با برچسب «خروجی تأییدنشده» وصل می‌ماند (با ری‌استارت هم نمی‌پرد)؛ جواب warp=off هنوز کشنده است.
 - تست تأخیر واقعی و تست همه — درخواست واقعی از داخل پروکسی با هستهٔ موقت (نه پینگ سادهٔ TCP)، تست پلکانی با موازی‌سازی ۱ تا ۸ و مهلت قابل تنظیم (۳ تا ۲۰ ثانیه، پیش‌فرض ۸).
 - تست سندباکس کانفیگ، نمایش آی‌پی خروجی و اندپوینت، تست نشت، پروب فیلترینگ و چک دسترسی سرویس‌ها (Google ،YouTube ،Instagram ،Telegram و X).
@@ -231,7 +237,7 @@ AGPL — its license text and source link are also shown inside the app under Se
 **رابط و Map Control**
 - هوم Map Control — شیشهٔ مشکی روی نقشهٔ جهانی نقطه‌ای زنده، نشان خانه، پین خروجی و کمان نورانی؛ یک رنگ تاکیدی نارنجی امبر.
 - ریل موتورها — همهٔ موتورها در یک پوسته یک لمس فاصله دارند؛ نوار وضعیت پایین با سلول‌های اندپوینت / آی‌پی خروجی / آپلود و دانلود.
-- ۱۵ زبان — فارسی و عربی راست‌به‌چپ رندر می‌شوند؛ فارسی اپ کامل است (بیلد ۲۱۱۷).
+- ۱۵ زبان — فارسی و عربی راست‌به‌چپ رندر می‌شوند؛ فارسی اپ کامل است.
 - فلو خوش‌آمد، کنترل‌های نوتیفیکیشن (سرعت زنده و اکشن‌ها) و پرچم‌های SVG داخلی کشورها.
 
 **عیب‌یابی و نگهداری**
@@ -253,7 +259,7 @@ AGPL — its license text and source link are also shown inside the app under Se
 ۲. فایل `RalysndEmber2.apk` را دانلود کن (اگر خواستی SHA-256 داخل یادداشت ریلیز را چک کن).
 ۳. نصبش کن — اندروید یک بار اجازهٔ نصب از مرورگر/فایل‌ها را می‌خواهد.
 
-نسخهٔ فعلی: **۲.۲.۰، بیلد ۲۱۱۷** — اندروید ۸ به بالا (arm64).
+نسخهٔ فعلی: **۲.۲.۰، بیلد ۲۱۵۱** — اندروید ۸ به بالا (arm64). بعد از نصب، اپ خودش از همین ریلیزها آپدیت می‌شود.
 
 ### نکته‌های صادقانه
 
