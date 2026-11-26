@@ -320,6 +320,10 @@ class XrayPlatform {
     // list rides along for supervision + respawn, like
     // dnsttArgs above.
     List<String> olcrtcArgs = const [],
+    // Tunnel bridge (build 2155, the 2153 swap):
+    // XraySettings.v2rayBridge — 'hev' (hev-socks5-tunnel,
+    // in-process) or 'tunlink' (the legacy subprocess).
+    String bridge = 'hev',
   }) => _channel.invokeMethod('xraySetOn', {
     'on': true,
     'config': config,
@@ -340,6 +344,7 @@ class XrayPlatform {
     'wgWstunnel': wgWstunnel,
     'wstunnelArgs': wstunnelArgs,
     'olcrtcArgs': olcrtcArgs,
+    'bridge': bridge,
   });
 
   /// Starts the standalone WARP tunnel (build 2030): the

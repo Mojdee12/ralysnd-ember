@@ -2327,6 +2327,38 @@ class _XraySection extends StatelessWidget {
                   },
                 ),
               ),
+              // Build 2155 (the 2153 bridge swap): the
+              // V2Ray path's TUN bridge. Hev
+              // (hev-socks5-tunnel) forwards packets
+              // without terminating TCP in a userspace
+              // stack; Legacy tunlink is the pre-2155
+              // gVisor subprocess, kept as the on-device
+              // A/B fallback. Applies at the next connect,
+              // like every session argument.
+              _ChipGroupRow(
+                label: 'Tunnel bridge',
+                subtitle: 'How tunnel packets reach the V2Ray core. Hev is the new bridge; Legacy tunlink is the pre-2155 one. Applies at next connect.',
+                chips: [
+                  EmberChip(
+                    label: 'Hev',
+                    compact: true,
+                    selected: s.v2rayBridge != 'tunlink',
+                    onTap: () async {
+                      s.v2rayBridge = 'hev';
+                      await _saveSection();
+                    },
+                  ),
+                  EmberChip(
+                    label: 'Legacy tunlink',
+                    compact: true,
+                    selected: s.v2rayBridge == 'tunlink',
+                    onTap: () async {
+                      s.v2rayBridge = 'tunlink';
+                      await _saveSection();
+                    },
+                  ),
+                ],
+              ),
               // Smart dial racing (build 2075, feature item 5):
               // when the picked config fails, the next group
               // members' endpoints are probed in parallel and

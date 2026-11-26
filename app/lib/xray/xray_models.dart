@@ -2876,6 +2876,20 @@ class XraySettings {
   /// exactly; nothing else changes either way.
   bool blockedAlert = true;
 
+  /// Tunnel bridge (build 2155 — the 2153 bridge swap,
+  /// shipped under the 2155 number): which TUN → SOCKS
+  /// bridge the V2Ray path runs. 'hev' is
+  /// hev-socks5-tunnel (C + lwIP, in-process, no gVisor —
+  /// TCP is not terminated in a userspace stack), the new
+  /// default; 'tunlink' is the legacy gVisor subprocess,
+  /// kept in the APK as the on-device A/B fallback. The
+  /// choice rides xraySetOn's 'bridge' argument into
+  /// XrayVpnService and applies at the next connect, like
+  /// every session argument. Any other stored value reads
+  /// as 'hev' at the service; the field itself round-trips
+  /// verbatim.
+  String v2rayBridge = 'hev';
+
   /// Feature #5: subscription group ids whose connect mode is
   /// the core Balancer (observatory + leastPing) instead of a
   /// single picked profile. Per-group opt-in; empty = none.
@@ -3063,6 +3077,7 @@ class XraySettings {
     'sniScanEnabled': sniScanEnabled,
     'dailyProblemReport': dailyProblemReport,
     'blockedAlert': blockedAlert,
+    'v2rayBridge': v2rayBridge,
     'balancerGroupIds': balancerGroupIds,
     'sidecarSshEnabled': sidecarSshEnabled,
     'stallFailover': stallFailover,
@@ -3473,6 +3488,9 @@ class XraySettings {
     // DEFAULT ON in-memory value (the owner's ordered
     // exception); a stored value is honoured verbatim.
     s.blockedAlert = _storedBool(j, 'blockedAlert', s.blockedAlert);
+    // Build 2155 (the 2153 swap): an absent or wrong-typed
+    // key keeps the 'hev' default.
+    s.v2rayBridge = _storedStr(j, 'v2rayBridge', s.v2rayBridge);
     s.sidecarSshEnabled =
         _storedBool(j, 'sidecarSshEnabled', s.sidecarSshEnabled);
     s.stallFailover = _storedBool(j, 'stallFailover', s.stallFailover);

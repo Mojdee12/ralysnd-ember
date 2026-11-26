@@ -40,7 +40,7 @@ String _between(String text, String from, String to) {
 
 void main() {
   test('pubspec is 2.2.0+2119', () {
-    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2154'));
+    expect(_read('pubspec.yaml'), contains('version: 2.2.0+2155'));
   });
 
   test('backdrop asset is a 3200px WebP over 600 KB', () {

@@ -117,6 +117,6 @@ void main() {
   });
 
   test('pubspec is build 2130', () {
-    expect(pubspec, contains('version: 2.2.0+2154'));
+    expect(pubspec, contains('version: 2.2.0+2155'));
   });
 }

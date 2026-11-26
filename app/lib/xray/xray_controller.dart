@@ -10773,6 +10773,9 @@ class XrayController extends ChangeNotifier {
         olcrtcArgs: olcrtcArgs,
         wgWstunnel: wgWstunnelOn,
         wstunnelArgs: wstunnelArgs,
+        // Build 2155 (the 2153 bridge swap): the session
+        // runs on the Settings bridge choice.
+        bridge: settings.v2rayBridge,
       );
       startIssued = true;
       // The service reports itself once the tunnel is really up.

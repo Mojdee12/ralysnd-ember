@@ -160,6 +160,9 @@ class XrayVpnService : VpnService() {
         super.onCreate()
         getSharedPreferences("ember_widget", Context.MODE_PRIVATE)
             .registerOnSharedPreferenceChangeListener(lockMarkerListener)
+        // Build 2155: the hev bridge's session log sink —
+        // its start/stop lines join the service's log.
+        HevTunManager.logger = { line -> Log.i(TAG, line) }
     }
 
     @Volatile
@@ -231,6 +234,17 @@ class XrayVpnService : VpnService() {
     // client's argument list (one YAML config path), kept
     // for supervision + respawn like the DNSTT args above.
     private var sessionOlcrtcArgs: List<String> = emptyList()
+
+    // Tunnel bridge session state (build 2155, the 2153
+    // bridge swap): which TUN → SOCKS bridge the V2Ray
+    // session runs — "hev" (hev-socks5-tunnel, in-process)
+    // or "tunlink" (the legacy subprocess). Kept like the
+    // other session args so a notification Resume restarts
+    // the session on the same bridge, and so the watch loop
+    // knows which liveness proof applies. Written only by
+    // startTunnel; the WARP / SOCKS starts never touch it
+    // (their sessions always carry a bridge subprocess).
+    private var sessionBridge = "hev"
     private var wstunnelFails = 0
     private var wstunnelRespawns = 0
 
@@ -459,6 +473,11 @@ class XrayVpnService : VpnService() {
                 val socksPass = intent.getStringExtra(EXTRA_SOCKS_PASS) ?: ""
                 // Kill switch (build 2063, feature queue #3).
                 killSwitch = intent.getBooleanExtra(EXTRA_KILL_SWITCH, false)
+                // Tunnel bridge (build 2155, the 2153 swap):
+                // 'hev' or 'tunlink'; an intent from before
+                // the swap carries no extra and reads 'hev',
+                // the new default.
+                val bridge = intent.getStringExtra(EXTRA_BRIDGE) ?: "hev"
                 // Build 2110 (wg-start diagnosis, defect 3):
                 // the validity check moves BELOW
                 // startInForeground. This intent arrived via
@@ -492,7 +511,7 @@ class XrayVpnService : VpnService() {
                             underlayProtocols, warpArgs,
                             socksUser, socksPass,
                             dnsttArgs, wgWstunnel, wstunnelArgs,
-                            olcrtcArgs,
+                            olcrtcArgs, bridge,
                         )
                     } catch (e: Throwable) {
                         startFailed("XrayVpnService.startTunnel", e)
@@ -633,6 +652,11 @@ class XrayVpnService : VpnService() {
         wstunnelArgs: List<String> = emptyList(),
         // OLCRTC underlay (build 2134).
         olcrtcArgs: List<String> = emptyList(),
+        // Tunnel bridge (build 2155, the 2153 swap): 'hev'
+        // (hev-socks5-tunnel, in-process) or 'tunlink' (the
+        // legacy subprocess). Applies to this path only —
+        // the WARP / SOCKS starts keep their subprocess.
+        bridge: String = "hev",
     ) {
         // Build 2068 breadcrumb (control trail): the worker
         // reached the tunnel builder.
@@ -658,6 +682,7 @@ class XrayVpnService : VpnService() {
         sessionWgWstunnel = wgWstunnel
         sessionWstunnelArgs = wstunnelArgs
         sessionOlcrtcArgs = olcrtcArgs
+        sessionBridge = bridge
         wstunnelFails = 0
         wstunnelRespawns = 0
         sessionWarpMode = false
@@ -739,58 +764,85 @@ class XrayVpnService : VpnService() {
             }
             val pfd = tunPfd ?: return
 
-            // 3. The fd listener the helper connects to — it receives
-            //    the same socket string below (see createFdListener
-            //    for the namespace both sides agree on).
-            val socketFile = File(dir, "tun.sock")
-            socketFile.delete()
-            val server = createFdListener(socketFile)
-            serverSocket = server
-
-            // 4. The tun2socks helper subprocess.
-            // LAN sharing (build 2062): with credentials the bridge
-            // authenticates to the password-protected SOCKS inbound
-            // — userinfo is percent-encoded (URLEncoder's '+' becomes
-            // %20) so any password survives the URL. Without them,
-            // today's plain URL.
-            val proxyUrl = if (socksUser.isNotEmpty() && socksPass.isNotEmpty()) {
-                val encUser = java.net.URLEncoder.encode(socksUser, "UTF-8")
-                    .replace("+", "%20")
-                val encPass = java.net.URLEncoder.encode(socksPass, "UTF-8")
-                    .replace("+", "%20")
-                "socks5://$encUser:$encPass@127.0.0.1:$socksPort"
+            if (bridge == "hev") {
+                // 3–5 (build 2155, the 2153 bridge swap): the
+                // TUN reader is hev-socks5-tunnel, in-process
+                // via JNI — no fd listener, no helper
+                // subprocess, no SCM_RIGHTS handoff. The hev
+                // config is this same session in hev's YAML:
+                // the Builder's address plan and MTU, the
+                // core's SOCKS port (TCP + UDP ASSOCIATE),
+                // and the LAN credentials when the session
+                // carries them (the legacy branch passes the
+                // same pair in its proxy URL). The manager
+                // dups the fd — hev closes the one it is
+                // handed — so the service's pfd stays the
+                // session's own, exactly as on the legacy
+                // path.
+                val hevConfig = File(dir, "hev.yml")
+                AtomicFile.writeText(
+                    hevConfig,
+                    hevConfigYaml(mtu, ipv6, socksPort, socksUser, socksPass),
+                )
+                if (!HevTunManager.start(hevConfig, pfd)) {
+                    Log.e(TAG, "the hev bridge did not start")
+                    fail()
+                    return
+                }
             } else {
-                "socks5://127.0.0.1:$socksPort"
-            }
-            val tunLog = File(dir, "tunlink.log")
-            rotateLogPerSession(tunLog)
-            tunProcess = ProcessBuilder(
-                libPath("libtunlink.so"),
-                "-socket", socketFile.absolutePath,
-                "-proxy", proxyUrl,
-                "-mtu", mtu.toString(),
-                "-loglevel", "warn",
-            )
-                .directory(dir)
-                .redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(tunLog))
-                .start()
+                // 3. The fd listener the helper connects to — it receives
+                //    the same socket string below (see createFdListener
+                //    for the namespace both sides agree on).
+                val socketFile = File(dir, "tun.sock")
+                socketFile.delete()
+                val server = createFdListener(socketFile)
+                serverSocket = server
 
-            // 5. Hand the TUN fd over (blocking accept with a timeout set
-            //    by the socket's soTimeout through a watcher thread).
-            val accepted = acceptWithTimeout(server, 15000)
-            if (accepted == null) {
-                Log.e(TAG, "the helper did not connect for the TUN fd")
-                fail()
-                return
+                // 4. The tun2socks helper subprocess.
+                // LAN sharing (build 2062): with credentials the bridge
+                // authenticates to the password-protected SOCKS inbound
+                // — userinfo is percent-encoded (URLEncoder's '+' becomes
+                // %20) so any password survives the URL. Without them,
+                // today's plain URL.
+                val proxyUrl = if (socksUser.isNotEmpty() && socksPass.isNotEmpty()) {
+                    val encUser = java.net.URLEncoder.encode(socksUser, "UTF-8")
+                        .replace("+", "%20")
+                    val encPass = java.net.URLEncoder.encode(socksPass, "UTF-8")
+                        .replace("+", "%20")
+                    "socks5://$encUser:$encPass@127.0.0.1:$socksPort"
+                } else {
+                    "socks5://127.0.0.1:$socksPort"
+                }
+                val tunLog = File(dir, "tunlink.log")
+                rotateLogPerSession(tunLog)
+                tunProcess = ProcessBuilder(
+                    libPath("libtunlink.so"),
+                    "-socket", socketFile.absolutePath,
+                    "-proxy", proxyUrl,
+                    "-mtu", mtu.toString(),
+                    "-loglevel", "warn",
+                )
+                    .directory(dir)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.appendTo(tunLog))
+                    .start()
+
+                // 5. Hand the TUN fd over (blocking accept with a timeout set
+                //    by the socket's soTimeout through a watcher thread).
+                val accepted = acceptWithTimeout(server, 15000)
+                if (accepted == null) {
+                    Log.e(TAG, "the helper did not connect for the TUN fd")
+                    fail()
+                    return
+                }
+                accepted.use { socket ->
+                    socket.setFileDescriptorsForSend(arrayOf(pfd.fileDescriptor))
+                    socket.outputStream.write(1)
+                    socket.outputStream.flush()
+                }
+                server.close()
+                serverSocket = null
             }
-            accepted.use { socket ->
-                socket.setFileDescriptorsForSend(arrayOf(pfd.fileDescriptor))
-                socket.outputStream.write(1)
-                socket.outputStream.flush()
-            }
-            server.close()
-            serverSocket = null
 
             running = true
             profileName = name
@@ -810,6 +862,54 @@ class XrayVpnService : VpnService() {
             fail()
         }
     }
+
+    /**
+     * The hev-socks5-tunnel config for a V2Ray session
+     * (build 2155, the 2153 bridge swap): the same session
+     * the Builder and the core already run, in hev's YAML.
+     * The tunnel block mirrors establishTun's address plan
+     * exactly — 10.10.14.1 always, the IPv6 address ONLY
+     * when the session's IPv6 flag is on (the Builder
+     * installs no IPv6 then, and hev must not expect any),
+     * and the session MTU, the value the interface itself
+     * was built with (the Tun2SocksManager trap: a bridge
+     * MTU that differs from the interface's produces wrong
+     * packets, not smaller ones). The socks5 block points
+     * at the core's inbound with UDP relay in 'udp' mode
+     * (SOCKS5 UDP ASSOCIATE — the mode the core speaks;
+     * 'tcp' would relay UDP over TCP connections), plus
+     * the LAN-sharing credentials when the session carries
+     * them, the same pair the legacy branch puts in its
+     * proxy URL.
+     */
+    private fun hevConfigYaml(
+        mtu: Int,
+        ipv6: Boolean,
+        socksPort: Int,
+        socksUser: String,
+        socksPass: String,
+    ): String {
+        val sb = StringBuilder()
+        sb.append("tunnel:\n")
+        sb.append("  mtu: ").append(mtu).append('\n')
+        sb.append("  ipv4: 10.10.14.1\n")
+        if (ipv6) sb.append("  ipv6: 'fdfe:dcba:9876::1'\n")
+        sb.append("socks5:\n")
+        sb.append("  address: 127.0.0.1\n")
+        sb.append("  port: ").append(socksPort).append('\n')
+        sb.append("  udp: 'udp'\n")
+        if (socksUser.isNotEmpty() && socksPass.isNotEmpty()) {
+            sb.append("  username: '").append(yamlSingleQuoted(socksUser)).append("'\n")
+            sb.append("  password: '").append(yamlSingleQuoted(socksPass)).append("'\n")
+        }
+        sb.append("misc:\n")
+        sb.append("  log-level: warn\n")
+        return sb.toString()
+    }
+
+    /** YAML single-quote escaping: a quote doubles. */
+    private fun yamlSingleQuoted(value: String): String =
+        value.replace("'", "''")
 
     /**
      * Builds and establishes the session's TUN (build
@@ -1283,6 +1383,19 @@ class XrayVpnService : VpnService() {
                     if (t != null && !t.isAlive) {
                         Log.e(TAG, "tunlink exited (${t.exitValue()})")
                         onSessionDied("the tunnel bridge exited (${t.exitValue()})")
+                        return@execute
+                    }
+                    // Build 2155: a hev session has no bridge
+                    // subprocess to poll (t is null there, and
+                    // only there — the WARP / SOCKS sessions
+                    // always carry one) — the bridge's own
+                    // running flag is its liveness proof.
+                    if (t == null && sessionBridge == "hev" &&
+                        !sessionWarpMode && !sessionSocksMode &&
+                        !HevTunManager.isRunning
+                    ) {
+                        Log.e(TAG, "hev bridge stopped")
+                        onSessionDied("the tunnel bridge stopped")
                         return@execute
                     }
                     // A real greeting every tick (~5 s): process
@@ -2196,7 +2309,7 @@ class XrayVpnService : VpnService() {
                 sessionUnderlayUpstream, sessionUnderlayProtocols,
                 sessionWarpArgs, sessionSocksUser, sessionSocksPass,
                 sessionDnsttArgs, sessionWgWstunnel, sessionWstunnelArgs,
-                sessionOlcrtcArgs,
+                sessionOlcrtcArgs, sessionBridge,
             )
         } catch (e: Throwable) {
             startFailed("XrayVpnService.resumeTunnel", e)
@@ -2271,6 +2384,17 @@ class XrayVpnService : VpnService() {
             // Best effort only.
         }
         // The bridge first, so no new flows start while the core goes.
+        // Build 2155: the hev bridge is in-process — its stop
+        // quit+joins the tunnel thread synchronously, so it is
+        // fully dead before the TUN closes below (hev closes
+        // the dup'd fd it was handed; the service's own pfd
+        // close is separate). Every stop path funnels through
+        // here, which is what makes the single-instance guard
+        // hold across engine switches. A no-op in every
+        // session that never started hev (legacy bridge, WARP,
+        // SOCKS): its running flag is only ever set by a hev
+        // start.
+        if (HevTunManager.isRunning) HevTunManager.stop()
         tunProcess?.let { ProcessKill.kill(it) }
         tunProcess = null
         xrayProcess?.let { ProcessKill.kill(it) }
@@ -2496,6 +2620,7 @@ class XrayVpnService : VpnService() {
         private const val EXTRA_DNSTT_ARGS = "dnsttArgs"
         // OLCRTC underlay (build 2134).
         private const val EXTRA_OLCRTC_ARGS = "olcrtcArgs"
+        private const val EXTRA_BRIDGE = "bridge"
         private const val EXTRA_WG_WSTUNNEL = "wgWstunnel"
         private const val EXTRA_WSTUNNEL_ARGS = "wstunnelArgs"
         private const val EXTRA_ENGINE = "engine"
@@ -2664,6 +2789,10 @@ class XrayVpnService : VpnService() {
             // OLCRTC underlay (build 2134): the client's
             // argument list, kept for supervision + respawn.
             olcrtcArgs: List<String> = emptyList(),
+            // Tunnel bridge (build 2155, the 2153 swap):
+            // 'hev' or 'tunlink' — XraySettings.v2rayBridge
+            // via the xraySetOn 'bridge' argument.
+            bridge: String = "hev",
         ) {
             val intent = Intent(context, XrayVpnService::class.java).apply {
                 action = ACTION_START
@@ -2686,6 +2815,7 @@ class XrayVpnService : VpnService() {
                 putStringArrayListExtra(EXTRA_WARP_ARGS, ArrayList(warpArgs))
                 putStringArrayListExtra(EXTRA_DNSTT_ARGS, ArrayList(dnsttArgs))
                 putStringArrayListExtra(EXTRA_OLCRTC_ARGS, ArrayList(olcrtcArgs))
+                putExtra(EXTRA_BRIDGE, bridge)
                 putExtra(EXTRA_WG_WSTUNNEL, wgWstunnel)
                 putStringArrayListExtra(
                     EXTRA_WSTUNNEL_ARGS,

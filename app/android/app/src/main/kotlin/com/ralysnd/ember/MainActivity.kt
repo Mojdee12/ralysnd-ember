@@ -708,6 +708,9 @@ class MainActivity : FlutterActivity() {
                                 // OLCRTC underlay (build 2134).
                                 call.argument<List<String>>("olcrtcArgs")
                                     ?: emptyList(),
+                                // Tunnel bridge (build 2155, the
+                                // 2153 swap): 'hev' or 'tunlink'.
+                                call.argument<String>("bridge") ?: "hev",
                             )
                         }
                         // Build 2067: guarded start handoff
