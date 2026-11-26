@@ -146,7 +146,7 @@ void main() {
     test('the JNI holder matches the vendored registration', () {
       final holder = javaSrc('hev/htproxy/TProxyService.java');
       expect(holder, contains('package hev.htproxy;'));
-      expect(holder, contains('System.loadLibrary("hev-socks5-tunnel")'));
+      expect(holder, contains('System.loadLibrary("hevbridge")'));
       expect(
         holder,
         contains(
@@ -166,13 +166,25 @@ void main() {
       expect(manager, contains('TProxyService.TProxyIsRunning()'));
     });
 
-    test('libhev-socks5-tunnel.so ships in jniLibs (arm64)', () {
+    test('libhevbridge.so ships in jniLibs (arm64)', () {
       final so = File(
-        'android/app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so',
+        'android/app/src/main/jniLibs/arm64-v8a/libhevbridge.so',
       );
       expect(so.existsSync(), isTrue);
       // The 2.17.1 NDK build of record: 321,184 B.
       expect(so.lengthSync(), 321184);
+    });
+
+    test('jniLibs does not shadow the wgtunnel hev library', () {
+      // com.wgtunnel:backend-android-jni ships its own
+      // libhev-socks5-tunnel.so (for com.wgtunnel.hevtunnel,
+      // the WireGuard engine's data path). Shipping ours under
+      // that name would replace it in the APK and break the
+      // WireGuard engine — ours ships as libhevbridge.so.
+      final shadow = File(
+        'android/app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so',
+      );
+      expect(shadow.existsSync(), isFalse);
     });
 
     test('the legacy bridge library still ships', () {

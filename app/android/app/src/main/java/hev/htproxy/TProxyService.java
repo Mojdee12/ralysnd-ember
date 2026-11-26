@@ -1,9 +1,16 @@
 package hev.htproxy;
 
 /**
- * JNI holder for libhev-socks5-tunnel.so — hev-socks5-tunnel
+ * JNI holder for libhevbridge.so — hev-socks5-tunnel
  * 2.17.1 (heiher, MIT), vendored at native-src/hev-socks5-tunnel
  * and NDK-built in build 2155 (the 2153 bridge swap).
+ *
+ * The .so ships under the name libhevbridge.so, NOT upstream's
+ * libhev-socks5-tunnel.so: the WireGuard engine's dependency
+ * com.wgtunnel:backend-android-jni already ships its own build
+ * under that exact APK path (for com.wgtunnel.hevtunnel), and
+ * the two must coexist — registration here is by class in
+ * JNI_OnLoad, so the file name is free to differ.
  *
  * The native side (src/hev-jni.c) registers its natives on
  * exactly this class in JNI_OnLoad — PKGNAME/CLSNAME default to
@@ -23,7 +30,7 @@ package hev.htproxy;
 public final class TProxyService {
 
     static {
-        System.loadLibrary("hev-socks5-tunnel");
+        System.loadLibrary("hevbridge");
     }
 
     private TProxyService() {
