@@ -97,7 +97,7 @@ object HevTunManager {
             // without closing) — so the detached dup is ours
             // to close here rather than leak the descriptor.
             try {
-                android.system.Os.close(fd)
+                ParcelFileDescriptor.adoptFd(fd).close()
             } catch (_: Throwable) {
                 // Already gone.
             }
