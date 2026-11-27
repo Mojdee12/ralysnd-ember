@@ -33,6 +33,7 @@ import '../../xray/hwid.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../../xray/xray_platform.dart';
+import '../../xray/zapret_args.dart';
 import '../bypass_apps_page.dart';
 import '../logs_page.dart';
 import '../settings_page.dart';
@@ -2430,6 +2431,31 @@ class _XraySection extends StatelessWidget {
                       await _saveSection();
                     },
                   ),
+                ],
+              ),
+              // Build 2157 (feature pick 4): the ByeDPI
+              // desync hop — the DPI Lab's zap strategies
+              // (ciadpi) as a hand-picked chain hop in front
+              // of the proxy, no Lab run needed. DEFAULT
+              // OFF (the features law); the pick applies at
+              // the next connect, like the bridge above.
+              _ChipGroupRow(
+                label: 'ByeDPI desync hop',
+                subtitle: 'Dial through the ByeDPI desync proxy in front of the proxy server — the DPI Lab\u2019s zap strategies, picked by hand. Applies at next connect.',
+                chips: [
+                  EmberChip(
+                    label: 'Off',
+                    compact: true,
+                    selected: s.byedpiHop.isEmpty,
+                    onTap: () => xray.setByedpiHop(''),
+                  ),
+                  for (final id in zapretCandidateIds)
+                    EmberChip(
+                      label: zapretStrategyLabels[id]!,
+                      compact: true,
+                      selected: s.byedpiHop == id,
+                      onTap: () => xray.setByedpiHop(id),
+                    ),
                 ],
               ),
               // Smart dial racing (build 2075, feature item 5):

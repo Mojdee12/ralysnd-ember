@@ -161,6 +161,72 @@ String problemShapeOf(Profile p) {
   return '$proto · $net+$sec';
 }
 
+/// The detailed-logging window's length (build 2157,
+/// feature pick 3): how long a "collect detailed logs"
+/// run lasts before the previous log level is restored.
+const detailedLogWindow = Duration(minutes: 10);
+
+/// The one-tap problem report (build 2157, feature pick
+/// 3): the share payload of the Daily report page's Send
+/// action — header, the last 7 days' per-day counts, the
+/// window's crash lines, and today's full digest (the
+/// test-pinned [ProblemJournal.digestText], unchanged).
+/// Built ONLY from the problem journal, so the privacy
+/// contract above covers every line: names, types and
+/// counts, never an address, a link or a credential. The
+/// raw core/engine logs are NOT part of it — they can
+/// carry endpoints and stay on the device's Logs page.
+String oneTapReportText(
+  ProblemJournal journal, {
+  required DateTime now,
+  required String appLine,
+}) {
+  String two(int v) => v.toString().padLeft(2, '0');
+  String dateOf(DateTime d) => '${d.year}-${two(d.month)}-${two(d.day)}';
+  final today = DateTime(now.year, now.month, now.day);
+  final days = [
+    for (var i = 6; i >= 0; i--) today.subtract(Duration(days: i)),
+  ];
+  final weekTotal = days.fold(0, (sum, d) => sum + journal.countForDay(d));
+  final windowFloor = now.millisecondsSinceEpoch - ProblemJournal.retentionMs;
+  final crashes = journal.events
+      .where(
+        (e) =>
+            e.type == ProblemTypes.previousSessionCrash &&
+            e.atMs >= windowFloor,
+      )
+      .toList();
+  final b = StringBuffer()
+    ..writeln('Ember problem report — ${dateOf(now)}')
+    ..writeln(appLine)
+    ..writeln();
+  if (weekTotal == 0) {
+    b.writeln('No problems recorded in the last 7 days.');
+  } else {
+    b.writeln('Problems in the last 7 days: $weekTotal');
+    for (final d in days) {
+      final c = journal.countForDay(d);
+      if (c > 0) b.writeln('  ${dateOf(d)}: $c');
+    }
+    if (crashes.isNotEmpty) {
+      b
+        ..writeln()
+        ..writeln('— crashes (last 7 days) —');
+      for (final e in crashes) {
+        final d = DateTime.fromMillisecondsSinceEpoch(e.atMs);
+        b.writeln(
+          '${dateOf(d)} ${e.timeLabel} · ${e.engine}'
+          '${e.reason.isEmpty ? '' : ' · ${e.reason}'}',
+        );
+      }
+    }
+  }
+  b
+    ..writeln()
+    ..write(journal.digestText(now));
+  return b.toString().trimRight();
+}
+
 /// The persisted journal: an ordered event list with
 /// rolling 7-day retention. Pure data + (de)serialization;
 /// the controller owns the file and the gate.

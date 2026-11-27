@@ -40,6 +40,20 @@ const zapretCandidateIds = <String>[
 bool isZapretCandidate(String candidateId) =>
     zapretCandidateIds.contains(candidateId);
 
+/// Short plain labels for the strategies (build 2157,
+/// feature pick 4): the Settings hop picker's chips and
+/// the connect journal's name for a hand-picked hop. The
+/// DPI Lab's candidate list carries the long labels; these
+/// are the same six strategies in picker-sized words.
+const zapretStrategyLabels = <String, String>{
+  'zap-split': 'SNI split',
+  'zap-tlsrec': 'TLS record split',
+  'zap-fake': 'Fake first packet',
+  'zap-disorder': 'Disorder',
+  'zap-oob': 'OOB byte',
+  'zap-disoob': 'Disorder + OOB',
+};
+
 /// The desync flags per candidate (the shapes proven
 /// against a live ClientHello on the host — see the
 /// build 2127 progress file's H1 host-proof record).

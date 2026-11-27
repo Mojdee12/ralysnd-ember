@@ -556,6 +556,19 @@ class UrVpnService : VpnService() {
             loc
         } else {
             val loc = ConnectLocation()
+            // Build 2157 (item 5, diagnosis 2026-11-27
+            // Gap 2): the SDK selects through
+            // ConnectLocationId — CountryLocationId is
+            // display metadata only, and a null
+            // ConnectLocationId is rejected as an invalid
+            // connect location (silently, by
+            // SetConnectLocation). The picked row's
+            // location_id therefore goes into
+            // ConnectLocationId.locationId; the country
+            // fields stay as display metadata.
+            val id = ConnectLocationId()
+            id.locationId = Sdk.parseId(locationId)
+            loc.connectLocationId = id
             loc.countryLocationId = Sdk.parseId(locationId)
             loc.countryCode = locationCode
             loc.country = locationName
@@ -647,6 +660,23 @@ class UrVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
+        // Build 2157 (item 5, diagnosis 2026-11-27 Gap 1 —
+        // the "waiting for a provider" root cause): exclude
+        // Ember itself from its own TUN. The SDK has no
+        // VpnService.protect() bridge; its egress (provider
+        // discovery, the platform session, the provider
+        // transports) is dialed from this app's UID, so
+        // without the exclusion the TUN captures the SDK's
+        // own traffic and drops it as user traffic for
+        // providers that do not exist yet — the connect
+        // grid retries into the blackhole forever. Every
+        // other Ember engine excludes the app in exactly
+        // this spot (XrayVpnService, CoreService,
+        // PsiphonVpnService), and so does the official
+        // URnetwork app. This service is all-apps only (no
+        // per-app mode), so the self-exclusion is the
+        // whole handling.
+        builder.addDisallowedApplication(packageName)
         val heldPfd = tunPfd
         val pfd = builder.establish()
         if (pfd == null) {

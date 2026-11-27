@@ -590,6 +590,9 @@ class XrayController extends ChangeNotifier {
     _housekeepingTimer2147?.cancel();
     _poll?.cancel();
     _statsFlushTimer?.cancel();
+    // Build 2157 (feature pick 3): the detailed-logging
+    // window's timer — the 2148 leak class if left running.
+    _detailedLogTimer?.cancel();
     // Build 2125 (audit A25-30 / P-35): the reconnect
     // countdown timer was the one timer dispose() never
     // cancelled — a controller disposed mid-countdown kept
@@ -853,6 +856,11 @@ class XrayController extends ChangeNotifier {
   /// first pending consume now schedules the flush on the
   /// same 30 s cadence, traffic or no traffic.
   Timer? _statsFlushTimer;
+
+  /// The detailed-logging window's end timer (build 2157,
+  /// feature pick 3) — armed by startDetailedLogging and
+  /// by load()'s reconciliation, cancelled on end/dispose.
+  Timer? _detailedLogTimer;
 
   void _scheduleStatsFlush() {
     _statsFlushTimer ??= Timer(const Duration(seconds: 30), () {
@@ -1217,6 +1225,16 @@ class XrayController extends ChangeNotifier {
   /// once per Lab-dialed session, not on every stall cycle.
   bool _labStandDownJournaled = false;
 
+  /// Build 2157 (feature pick 4): the live session was
+  /// dialed through the owner's hand-picked ByeDPI hop
+  /// (settings.byedpiHop) — the watchdog's shape escalation
+  /// stands down for it exactly as for a Lab dial (its
+  /// shapes are computed from the stored profile and would
+  /// silently discard the desync stamp). Cleared with the
+  /// Lab-dial state at every session end.
+  bool _hopDialActive = false;
+  bool _hopStandDownJournaled = false;
+
   /// The Lab-dial candidate restored from the store document
   /// at load (build 2107, verification iteration 2): a
   /// Lab-dialed session that survives an app restart is
@@ -1247,6 +1265,10 @@ class XrayController extends ChangeNotifier {
     _labDialCandidateId = '';
     _labStandDownJournaled = false;
     _storedLabDialCandidate = '';
+    // Build 2157: the ByeDPI hop's session flags end with
+    // the session too (see _hopDialActive).
+    _hopDialActive = false;
+    _hopStandDownJournaled = false;
   }
 
   /// The live session's connected profile id, for surfaces
@@ -1789,7 +1811,7 @@ class XrayController extends ChangeNotifier {
     String stage = '',
     required String reason,
   }) {
-    if (_disposed || !problemReportOn) return;
+    if (_disposed || !_problemRecordingActive) return;
     problemJournal.record(
       ProblemEvent(
         atMs: DateTime.now().millisecondsSinceEpoch,
@@ -1819,6 +1841,91 @@ class XrayController extends ChangeNotifier {
   Future<void> clearProblemJournal() async {
     problemJournal.clear();
     await _saveProblemJournal();
+    notifyListeners();
+  }
+
+  // ---- one-tap problem report (build 2157, feature
+  // pick 3): the detailed-logging window. The one-tap
+  // SEND itself is a pure composer over the journal
+  // (problem_report.dart's oneTapReportText) + the share
+  // sheet; what lives here is the window's state machine.
+
+  /// True while a detailed-logging window is armed and
+  /// unexpired (see [startDetailedLogging]).
+  bool get detailedLogActive =>
+      settings.detailedLogUntilMs >
+      DateTime.now().millisecondsSinceEpoch;
+
+  /// Milliseconds left in the window (0 when inactive) —
+  /// the report page's countdown.
+  int get detailedLogRemainingMs => detailedLogActive
+      ? settings.detailedLogUntilMs -
+            DateTime.now().millisecondsSinceEpoch
+      : 0;
+
+  /// Recording is live while the daily-report toggle is
+  /// on OR a detailed-logging window is armed — the
+  /// window's whole point is capturing a problem on
+  /// demand, so it must not depend on the standing
+  /// toggle's state mid-window.
+  bool get _problemRecordingActive =>
+      problemReportOn || detailedLogActive;
+
+  void _armDetailedLogTimer() {
+    _detailedLogTimer?.cancel();
+    _detailedLogTimer = null;
+    if (!detailedLogActive) return;
+    _detailedLogTimer = Timer(
+      Duration(milliseconds: detailedLogRemainingMs),
+      () => unawaited(endDetailedLogging()),
+    );
+  }
+
+  /// Opens a detailed-logging window
+  /// ([detailedLogWindow], 10 minutes): the core log
+  /// level goes to 'debug' (from the next connect — a
+  /// running session keeps the config it started with)
+  /// and the problem journal records for the report.
+  /// The pre-window log level is restored when the
+  /// window ends, by timer, by the page's Stop, or by
+  /// load()'s reconciliation after a process death.
+  Future<void> startDetailedLogging() async {
+    if (detailedLogActive) return;
+    await _loadProblemJournal();
+    settings.detailedLogPrevLogLevel = settings.logLevel;
+    settings.logLevel = 'debug';
+    settings.detailedLogUntilMs =
+        DateTime.now().millisecondsSinceEpoch +
+        detailedLogWindow.inMilliseconds;
+    _armDetailedLogTimer();
+    diagnostics.add(
+      'report',
+      'Detailed logging on for 10 minutes: problems are '
+          'being recorded for the report and the core log '
+          'level is debug from the next connect.',
+    );
+    await _save();
+    notifyListeners();
+  }
+
+  /// Ends the window (its timer, or the page's Stop):
+  /// restores the pre-window log level and disarms. A
+  /// no-op when no window state is persisted.
+  Future<void> endDetailedLogging() async {
+    _detailedLogTimer?.cancel();
+    _detailedLogTimer = null;
+    if (settings.detailedLogUntilMs == 0) return;
+    settings.detailedLogUntilMs = 0;
+    if (settings.detailedLogPrevLogLevel.isNotEmpty) {
+      settings.logLevel = settings.detailedLogPrevLogLevel;
+      settings.detailedLogPrevLogLevel = '';
+    }
+    diagnostics.add(
+      'report',
+      'Detailed logging ended — the core log level is '
+          'back to ${settings.logLevel}.',
+    );
+    await _save();
     notifyListeners();
   }
 
@@ -2122,8 +2229,31 @@ class XrayController extends ChangeNotifier {
     // the last process ended without recording a
     // disconnect (crash, OS kill, force-stop). An adopted
     // (still running) session records nothing.
-    if (problemReportOn) {
+    // Build 2157 (feature pick 3): a detailed-logging
+    // window persisted by a previous process is
+    // reconciled in the same block — re-armed when still
+    // live, restored (pre-window log level back, window
+    // cleared) when it expired while the app was gone,
+    // so the log level can never stick at debug. A live
+    // window also loads the journal and lets the crash
+    // marker record, toggle or not (recordProblem's gate
+    // is the recording gate; an expired window restores
+    // silently and the marker stays the toggle's).
+    final detailedWindowPersisted = settings.detailedLogUntilMs > 0;
+    if (problemReportOn || detailedWindowPersisted) {
       await _loadProblemJournal();
+      if (detailedWindowPersisted) {
+        if (detailedLogActive) {
+          _armDetailedLogTimer();
+        } else {
+          settings.detailedLogUntilMs = 0;
+          if (settings.detailedLogPrevLogLevel.isNotEmpty) {
+            settings.logLevel = settings.detailedLogPrevLogLevel;
+            settings.detailedLogPrevLogLevel = '';
+          }
+          unawaited(_save());
+        }
+      }
       if (_connectedProfileId.isNotEmpty && !state.running) {
         recordProblem(
           type: ProblemTypes.previousSessionCrash,
@@ -6615,6 +6745,28 @@ class XrayController extends ChangeNotifier {
       _resetWatchdogBases();
       return;
     }
+    // Build 2157 (feature pick 4): the same stand-down for
+    // a session dialed through the owner's hand-picked
+    // ByeDPI hop — the escalation's shapes are computed
+    // from the stored profile, which never carries the
+    // desync stamp, so escalating would silently drop
+    // the hop. The stand-down holds only while the hop
+    // is still picked (unpicking it mid-session restores
+    // the normal watchdog for that session).
+    if (_hopDialActive && isZapretCandidate(settings.byedpiHop)) {
+      if (!_hopStandDownJournaled) {
+        _hopStandDownJournaled = true;
+        diagnostics.add(
+          'watchdog',
+          'This session was dialed through the ByeDPI hop '
+              '(${zapretStrategyLabels[settings.byedpiHop]}); '
+              'shape escalation stands down'
+              '${settings.adaptiveFailover ? ' and adaptive failover takes it from here.' : '.'}',
+        );
+      }
+      _resetWatchdogBases();
+      return;
+    }
     final p = _profileById(_connectedProfileId) ?? selected;
     if (p == null) return;
     final shapes = shapesFor(p);
@@ -6842,6 +6994,29 @@ class XrayController extends ChangeNotifier {
         'Underlay off: the next V2Ray session connects '
             'directly.',
     });
+    await _save();
+    notifyListeners();
+  }
+
+  /// Sets the ByeDPI desync hop (build 2157, feature pick
+  /// 4): '' = OFF, otherwise one of the zapret candidate
+  /// ids — anything else reads as OFF, so a phantom
+  /// strategy can never be armed. Applies to the NEXT
+  /// V2Ray session (and to a switch's re-dial): a running
+  /// session keeps the shape it started with, like the
+  /// chain underlay.
+  Future<void> setByedpiHop(String value) async {
+    settings.byedpiHop = isZapretCandidate(value) ? value : '';
+    diagnostics.add(
+      'chain',
+      settings.byedpiHop.isEmpty
+          ? 'ByeDPI hop off: the next V2Ray session dials '
+                'the proxy directly.'
+          : 'ByeDPI hop set to '
+                '${zapretStrategyLabels[settings.byedpiHop]}: the '
+                'next V2Ray session will dial through the '
+                'desync proxy first.',
+    );
     await _save();
     notifyListeners();
   }
@@ -8659,6 +8834,21 @@ class XrayController extends ChangeNotifier {
           }
         }
       }
+      // Build 2157 (feature pick 4): the hand-picked ByeDPI
+      // hop stamps the switch's re-dial under the same rule
+      // as connect — without it, every rotation on a hop
+      // session would read as a strategy change and refuse
+      // (the zapret-mismatch check below), and a hop picked
+      // mid-session would never reach a re-dial. When the
+      // stamp differs from the RUNNING proxy's strategy the
+      // refusal below still fires and the caller falls back
+      // to a full connect, which restarts the proxy with
+      // the new flags.
+      if (isZapretCandidate(settings.byedpiHop) &&
+          dialProfile.zapretStrategy != settings.byedpiHop) {
+        dialProfile = dialProfile.copy()
+          ..zapretStrategy = settings.byedpiHop;
+      }
       // Build 2105: the switched-to profile's provider-DNS
       // pins — computed now for the config, but only ADOPTED
       // as the session's once the rotation is live (below): a
@@ -10455,6 +10645,45 @@ class XrayController extends ChangeNotifier {
       final warpChained = settings.underlay == 'warp' && !sidecarServed;
       final dnsttChained = settings.underlay == 'dnstt' && !sidecarServed;
       final olcrtcChained = settings.underlay == 'olcrtc' && !sidecarServed;
+      // Build 2157 (feature pick 4): the owner's hand-picked
+      // ByeDPI desync hop — a chain hop in front of the
+      // proxy, distinct from the DPI Lab (no Lab run, no
+      // network memory): the dial copy is stamped with the
+      // picked ciadpi strategy and the existing zapret
+      // machinery (the proxy start below, the builder's
+      // zapret underlay chain) does the rest. An explicit
+      // owner pick outranks a Lab zap stamp on the same
+      // dial. A sidecar-served profile cannot ride it (the
+      // sidecar is the dialer — the underlay precedent
+      // above), and the journal says so. The stamp lands
+      // on a copy: the stored profile never carries it
+      // (Profile.zapretStrategy stays runtime-only).
+      if (isZapretCandidate(settings.byedpiHop)) {
+        if (sidecarServed) {
+          diagnostics.add(
+            'connect',
+            'The ByeDPI hop is on, but ${p.protocol.label} '
+                'runs on its sidecar engine — this session '
+                'does not ride the desync hop.',
+          );
+        } else if (dialProfile.zapretStrategy != settings.byedpiHop) {
+          dialProfile = dialProfile.copy()
+            ..zapretStrategy = settings.byedpiHop;
+          _hopDialActive = true;
+          diagnostics.add(
+            'connect',
+            'ByeDPI hop: this session dials through the '
+                'desync proxy '
+                '(${zapretStrategyLabels[settings.byedpiHop]}) '
+                'in front of ${p.name}.',
+            ok: true,
+          );
+        } else {
+          // The Lab dialed the very strategy the owner
+          // picked — the session is a hop session too.
+          _hopDialActive = true;
+        }
+      }
       ({String region, String upstream, List<String> protocols})? chainParams;
       if (chained) {
         chainNotice = '';

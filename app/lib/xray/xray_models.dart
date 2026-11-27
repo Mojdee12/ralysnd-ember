@@ -9,6 +9,7 @@ import 'dns_hosts.dart';
 import 'profile_validation.dart';
 import 'smart_groups.dart';
 import 'sni_spoof.dart';
+import 'zapret_args.dart';
 
 enum Protocol {
   vless,
@@ -980,6 +981,37 @@ class Profile {
   /// instead of dropped silently (build 2116, S-02).
   bool get hasUnappliedNaivePadding =>
       protocol == Protocol.naive && naiveExtras.containsKey('padding');
+
+  /// Build 2157 (feature pick 2): why this proxy is NOT
+  /// secure — its traffic crosses the network path in a
+  /// form anyone on that path can read — or null when it
+  /// is not. The set is the plain shapes: an HTTP or
+  /// SOCKS proxy without a TLS wrap (the proxy leg itself
+  /// is cleartext, credentials included), and Shadowsocks
+  /// with the 'none' method (no cipher at all). Protocols
+  /// with their own cryptography (VMess, Trojan, TUIC,
+  /// Hysteria2, WireGuard…) are never in this set, and a
+  /// TLS-wrapped HTTP/SOCKS proxy is not either. The
+  /// config list's "Not secure" badge reads this; it is
+  /// display-only — nothing about the profile or its
+  /// connect changes.
+  String? get insecureProxyReason {
+    if (protocol == Protocol.http && security != 'tls') {
+      return 'an HTTP proxy with no encryption';
+    }
+    if (protocol == Protocol.socks && security != 'tls') {
+      return 'a SOCKS proxy with no encryption';
+    }
+    if (protocol == Protocol.shadowsocks &&
+        (method.isEmpty || method.toLowerCase() == 'none')) {
+      return 'Shadowsocks with the "none" method — no encryption';
+    }
+    return null;
+  }
+
+  /// True when the config list marks this profile
+  /// "Not secure" (see [insecureProxyReason]).
+  bool get isInsecureProxy => insecureProxyReason != null;
 
   /// Sudoku options (build 2127, H2) as JSON text: the
   /// protocol's tuning (aeadMethod, paddingMin/Max,
@@ -2500,6 +2532,20 @@ class XraySettings {
   /// DNSTT DNS tunnel. Global, not per-profile.
   String underlay = 'none';
 
+  /// The ByeDPI desync hop (build 2157, feature pick 4):
+  /// '' = OFF (the default, the features law). Otherwise a
+  /// zapret candidate id (zapret_args.dart): every V2Ray
+  /// session's dial copy is stamped with it, so the
+  /// session chains through the ciadpi (ByeDPI) desync
+  /// proxy in front of the proxy server — the chain hop
+  /// the DPI Lab's zap candidates proved, picked by hand
+  /// here instead of by a Lab run. A settings value, never
+  /// a stored profile field (Profile.zapretStrategy stays
+  /// runtime-only; the stamp is re-derived per connect,
+  /// exactly like the Lab's). Composes with the chain
+  /// underlay above via the builder's dialerProxy merge.
+  String byedpiHop = '';
+
   /// The DNSTT underlay's fields (build 2072): the resolver
   /// transport ('doh' | 'dot' | 'udp') and address, the
   /// tunnel domain, and the dnstt-server public key (64 hex
@@ -2865,6 +2911,19 @@ class XraySettings {
   /// file, no digest, no badge.
   bool dailyProblemReport = false;
 
+  /// The detailed-logging window (build 2157, feature
+  /// pick 3): while [detailedLogUntilMs] is in the future,
+  /// the problem journal records even if the daily report
+  /// toggle is off, and the core log level is 'debug' —
+  /// the pre-window level is kept in
+  /// [detailedLogPrevLogLevel] and restored when the
+  /// window ends (XrayController.startDetailedLogging).
+  /// 0 = no window. Both fields persist so a window armed
+  /// before a process death is reconciled on load, never
+  /// left with the log level stuck at debug.
+  int detailedLogUntilMs = 0;
+  String detailedLogPrevLogLevel = '';
+
   /// Connected-but-blocked alert (build 2151, item D):
   /// when a session is adopted but its background
   /// data-plane proof never lands, the journal says so
@@ -3076,6 +3135,8 @@ class XraySettings {
     'dpiLabRacing': dpiLabRacing,
     'sniScanEnabled': sniScanEnabled,
     'dailyProblemReport': dailyProblemReport,
+    'detailedLogUntilMs': detailedLogUntilMs,
+    'detailedLogPrevLogLevel': detailedLogPrevLogLevel,
     'blockedAlert': blockedAlert,
     'v2rayBridge': v2rayBridge,
     'balancerGroupIds': balancerGroupIds,
@@ -3120,6 +3181,7 @@ class XraySettings {
     'fragmentEnabled': fragmentEnabled,
     'adaptiveFailover': adaptiveFailover,
     'underlay': underlay,
+    'byedpiHop': byedpiHop,
     'dnsttResolverType': dnsttResolverType,
     'dnsttResolver': dnsttResolver,
     'dnsttDomain': dnsttDomain,
@@ -3388,6 +3450,14 @@ class XraySettings {
       'olcrtc' => 'olcrtc',
       _ => 'none',
     };
+    // Build 2157 (feature pick 4): only a real zapret
+    // candidate survives a store read — anything else
+    // reads as OFF rather than stamping a phantom desync
+    // strategy onto a session.
+    final storedHop = j['byedpiHop'];
+    s.byedpiHop = storedHop is String && isZapretCandidate(storedHop)
+        ? storedHop
+        : '';
     // DNSTT + WireGuard-over-WebSocket fields (build 2072),
     // read field-defensively like every other setting (build
     // 2066): one bad field never discards the whole store.
@@ -3483,6 +3553,18 @@ class XraySettings {
       j,
       'dailyProblemReport',
       s.dailyProblemReport,
+    );
+    // Build 2157 (feature pick 3): the detailed-logging
+    // window's persisted state (see the field doc).
+    s.detailedLogUntilMs = _storedInt(
+      j,
+      'detailedLogUntilMs',
+      s.detailedLogUntilMs,
+    );
+    s.detailedLogPrevLogLevel = _storedStr(
+      j,
+      'detailedLogPrevLogLevel',
+      s.detailedLogPrevLogLevel,
     );
     // Build 2151 (item D): an absent key keeps the
     // DEFAULT ON in-memory value (the owner's ordered

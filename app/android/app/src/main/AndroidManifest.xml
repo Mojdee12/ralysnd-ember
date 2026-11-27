@@ -113,6 +113,13 @@
                 <data android:scheme="ss" />
                 <data android:scheme="wireguard" />
                 <data android:scheme="wg" />
+                <!-- Build 2157 (feature pick 1): OpenVPN
+                     profile links — the payload form and
+                     the official import-profile form; the
+                     Dart side routes them to the OpenVPN
+                     importer (ovpn_link.dart). -->
+                <data android:scheme="ovpn" />
+                <data android:scheme="openvpn" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

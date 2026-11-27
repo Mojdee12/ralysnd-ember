@@ -22,6 +22,7 @@ import '../../lantern/lantern_controller.dart';
 import '../../l10n/app_localizations.dart';
 import '../../net/network_info.dart';
 import '../../openvpn/openvpn_controller.dart';
+import '../../openvpn/ovpn_link.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../urnetwork/ur_engine_controller.dart';
 import '../../xray/fallback_groups.dart';
@@ -2479,7 +2480,61 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       _pendingDeepLinks.add(link);
       return;
     }
+    // Build 2157 (feature pick 1): an ovpn:// link routes
+    // to the OpenVPN importer — the generic link parser
+    // below cannot read it and would only fail.
+    if (isOvpnLink(link)) {
+      await _importOvpnLink(link);
+      return;
+    }
     await importScannedCode(context, _xray, link);
+  }
+
+  /// An ovpn:// / openvpn:// link opened from another app
+  /// (build 2157, feature pick 1): the payload form imports
+  /// directly; the official import-profile form downloads
+  /// its profile first (https only, the file intake's
+  /// 256 KB cap). Either way the profile lands through the
+  /// same import path as a picked file, on the OpenVPN
+  /// list, with the same plain failure sentences.
+  Future<void> _importOvpnLink(String link) async {
+    if (!mounted) return;
+    final payload = parseOvpnLink(link);
+    if (payload == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('That link is not an OpenVPN profile link'),
+        ),
+      );
+      return;
+    }
+    if (_pausedMode != null) _cancelPause();
+    _bootstrap.cancel();
+    final name = payload.name.isEmpty ? 'Imported profile' : payload.name;
+    switch (payload) {
+      case OvpnLinkText(:final text):
+        setState(() {
+          mode = 4;
+          _tab = 1;
+        });
+        await importOpenVpnText(context, _openvpn, name, text);
+      case OvpnLinkFetch(:final url):
+        final text = await fetchOvpnProfileText(url);
+        if (!mounted) return;
+        if (text == null || !isOvpnProfileText(text)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not download that OpenVPN profile'),
+            ),
+          );
+          return;
+        }
+        setState(() {
+          mode = 4;
+          _tab = 1;
+        });
+        await importOpenVpnText(context, _openvpn, name, text);
+    }
   }
 
   Future<void> _importOpenVpnIntent(OvpnIntentFile file) async {

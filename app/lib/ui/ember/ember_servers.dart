@@ -3683,6 +3683,41 @@ class _ProfileRow extends StatelessWidget {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
+                // Build 2157 (feature pick 2): the "Not
+                // secure" mark — a plain proxy whose traffic
+                // anyone on the path can read (see
+                // Profile.insecureProxyReason). Its own line
+                // under the protocol line, in the failure
+                // colour; the explanation rides the tooltip.
+                // Display-only: the row's taps are unchanged.
+                if (profile.isInsecureProxy) ...[
+                  const SizedBox(height: 2),
+                  Tooltip(
+                    message:
+                        'Not secure — this is '
+                        '${profile.insecureProxyReason}. Anyone on '
+                        'the network path can read the traffic '
+                        'through it.',
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.lock_open_rounded,
+                          size: 12,
+                          color: Ember.red,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Not secure',
+                          style: const TextStyle(
+                            fontSize: Ember.fontMicro,
+                            color: Ember.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 // Build 2074 (audit item 16): the per-config
                 // totals are their own line, never folded into
                 // the ellipsis above — on a narrow screen the

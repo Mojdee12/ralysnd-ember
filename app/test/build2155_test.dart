@@ -199,7 +199,7 @@ void main() {
     test('pubspec carries 2155', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2156'),
+        contains('version: 2.2.0+2157'),
       );
     });
   });
