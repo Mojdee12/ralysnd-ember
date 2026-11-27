@@ -564,7 +564,7 @@ void main() {
 
     test('the pubspec carries the 2154 build number', () {
       final pubspec = File('pubspec.yaml').readAsStringSync();
-      expect(pubspec, contains('version: 2.2.0+2155'));
+      expect(pubspec, contains('version: 2.2.0+2156'));
     });
   });
 }

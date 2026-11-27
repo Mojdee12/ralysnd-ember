@@ -195,6 +195,8 @@ Future<bool> runEmergencyAttempt({
       return (1, 'Try a V2Ray config');
     case 0: // Mozilla blocked → V2Ray.
       return (1, 'Try a V2Ray config');
+    case 8: // URnetwork blocked → V2Ray (build 2156).
+      return (1, 'Try a V2Ray config');
     default:
       return null;
   }

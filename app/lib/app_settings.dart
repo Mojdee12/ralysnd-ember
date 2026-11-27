@@ -533,9 +533,12 @@ class AppSettings extends ChangeNotifier {
       if (j['ember_mode'] case final int v) {
         // 2024: Lantern is back as mode 3 (its pre-2023 stored
         // values are valid again); WARP (4) stays gone. A stored
-        // mode pointing outside 0..3 falls back to Mozilla,
-        // never a crash or a dead page.
-        emberMode = v >= 0 && v <= 7 ? v : 0;
+        // mode pointing outside the valid range falls back to
+        // Mozilla, never a crash or a dead page. Build 2156:
+        // URnetwork joins as mode 8. (The fallback chain below
+        // stays 0..7 — the chain editor offers the classic
+        // engines only.)
+        emberMode = v >= 0 && v <= 8 ? v : 0;
       }
       if (j['mozilla_bootstrap'] case final String v
           when bootstrapChoices.contains(v)) {

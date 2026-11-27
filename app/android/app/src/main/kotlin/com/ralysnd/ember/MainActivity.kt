@@ -65,6 +65,12 @@ class MainActivity : FlutterActivity() {
     /** The Lantern start to run once the permission is given. */
     private var pendingLanternStart: (() -> Unit)? = null
 
+    /** The same wait for the URnetwork engine's VPN permission. */
+    private var pendingUrOn: Result? = null
+
+    /** The URnetwork start to run once the permission is given. */
+    private var pendingUrStart: (() -> Unit)? = null
+
     /** The same wait for the OpenVPN engine's VPN permission. */
     private var pendingOpenVpnOn: Result? = null
 
@@ -1816,6 +1822,70 @@ class MainActivity : FlutterActivity() {
                     )
                     result.success(null)
                 }
+                // The URnetwork engine (UrVpnService.kt):
+                // build 2156 — the URnetwork SDK's DeviceLocal
+                // core in the :urnetwork process; state arrives
+                // via the service's published snapshot. The
+                // client JWT rides the start as an argument
+                // (the Lantern private-token precedent): a
+                // credential, held by the service in memory
+                // only, never written to disk there.
+                "urSetOn" -> {
+                    if (call.argument<Boolean>("on") != true) {
+                        UrVpnService.stop(this)
+                        result.success(null)
+                    } else {
+                        askForNotifications()
+                        val start = {
+                            UrVpnService.start(
+                                this,
+                                call.argument<String>("jwt") ?: "",
+                                call.argument<String>("locationId") ?: "",
+                                call.argument<String>("locationName") ?: "",
+                                call.argument<String>("locationCode") ?: "",
+                                call.argument<Int>("mtu") ?: 1500,
+                                call.argument<Boolean>("killSwitch") ?: false,
+                            )
+                        }
+                        // Guarded start handoff (see
+                        // startVpnGuarded), as for Lantern.
+                        startVpnGuarded(
+                            result,
+                            needsConsent = true,
+                            park = { parkedResult, parkedStart ->
+                                pendingUrOn?.error("vpn_denied", "superseded", null)
+                                pendingUrOn = parkedResult
+                                pendingUrStart = parkedStart
+                            },
+                            unpark = {
+                                pendingUrOn = null
+                                pendingUrStart = null
+                            },
+                            start = start,
+                        )
+                    }
+                }
+                "urStop" -> {
+                    UrVpnService.stop(this)
+                    result.success(null)
+                }
+                "urState" -> {
+                    // The service runs in its own process
+                    // (:urnetwork), so its state arrives via
+                    // the snapshot it publishes to its state
+                    // file on every change (the lanternState
+                    // shape). "available" is answered here: the
+                    // shaded SDK library in nativeLibraryDir.
+                    val published = UrStateStore.publishedState(this)
+                    result.success(
+                        published + mapOf(
+                            "available" to java.io.File(
+                                applicationInfo.nativeLibraryDir,
+                                "liburcore.so",
+                            ).exists(),
+                        ),
+                    )
+                }
                 // The OpenVPN engine (OpenVpnService.kt): the
                 // OpenVPN 3 core rebuilt from source behind Ember's
                 // own JNI bridge; profiles are generic .ovpn text.
@@ -2732,6 +2802,17 @@ class MainActivity : FlutterActivity() {
             val start = pendingLanternStart
             pendingLanternOn = null
             pendingLanternStart = null
+            if (resultCode == RESULT_OK) {
+                runDeferredVpnStart(pending, start)
+            } else {
+                pending.error("vpn_denied", "the VPN was not allowed", null)
+            }
+            return
+        }
+        pendingUrOn?.let { pending ->
+            val start = pendingUrStart
+            pendingUrOn = null
+            pendingUrStart = null
             if (resultCode == RESULT_OK) {
                 runDeferredVpnStart(pending, start)
             } else {

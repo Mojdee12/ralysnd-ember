@@ -230,6 +230,33 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="A VPN that carries the device's traffic through the Lantern core." />
         </service>
+        <!-- The URnetwork engine's VPN (build 2156): the
+             URnetwork SDK's gomobile core (liburcore.so — the
+             vendor libgojni.so, shaded) runs in-process
+             through the DeviceLocal API; this service
+             establishes the TUN and hands the SDK a duplicate
+             of its fd. Like Lantern and Psiphon, the service
+             runs in its OWN process (:urnetwork) — two
+             gomobile Go runtimes in one process are
+             unsupported, and Mozilla's already lives in the
+             main process. All main-process interaction is
+             intent- and file-based (see UrVpnService's
+             published state file). Never up at the same time
+             as the other engines; the app turns one off before
+             another on. -->
+        <service
+            android:name=".UrVpnService"
+            android:process=":urnetwork"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="A VPN that carries the device's traffic through the URnetwork core." />
+        </service>
         <!-- The OpenVPN engine's VPN (build 2025): the OpenVPN 3
              core, rebuilt from source behind Ember's own JNI
              bridge, drives this service's TUN through its

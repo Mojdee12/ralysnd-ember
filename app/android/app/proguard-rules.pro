@@ -58,3 +58,13 @@
 # The sidecar (build 2089) is retired from the start path;
 # its fork and PsiphonBoxCore stay on disk as the documented
 # fallback, so no dontwarn of theirs is needed here.
+
+# Build 2156 (URnetwork engine): the vendor SDK's gomobile
+# classes are proxied and called BY NAME from native code
+# (the whole com.bringyour.sdk surface plus the shaded ur.*
+# runtime) — R8 must not rename or strip any of it, exactly
+# as with the Psiphon AAR above. The vendor AAR's own
+# proguard.txt carries the same keeps (rewritten for the
+# shaded package); this is the belt-and-braces copy.
+-keep class com.bringyour.sdk.** { *; }
+-keep class ur.** { *; }

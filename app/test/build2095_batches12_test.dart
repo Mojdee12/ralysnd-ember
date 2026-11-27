@@ -119,9 +119,10 @@ void main() {
     test('every toggle checks for a VPN-permission denial', () {
       expect(
         'context.mounted && _showVpnDenied(context, e)'.allMatches(shell).length,
-        7,
+        8,
         reason: 'one per engine toggle (Mozilla, Xray, Psiphon, '
-            'Lantern, OpenVPN, WireGuard, Aether)',
+            'Lantern, OpenVPN, WireGuard, Aether, URnetwork) '
+            '— build 2156 re-point for the UR toggle',
       );
       expect(shell, contains("e.code == 'vpn_denied'"));
       expect(shell, contains('vpnNotAllowed'));

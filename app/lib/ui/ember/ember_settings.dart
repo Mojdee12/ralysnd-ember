@@ -56,6 +56,8 @@ import 'psiphon_pages.dart';
 import 'dpi_lab_page.dart';
 import 'regionhop_page.dart';
 import 'urnetwork_page.dart';
+import '../../urnetwork/ur_engine_controller.dart';
+import 'urnetwork_engine_pages.dart';
 import 'senpai_page.dart';
 import 'smart_groups_page.dart';
 import 'sni_spoof_page.dart';
@@ -77,6 +79,7 @@ class EmberSettings extends StatelessWidget {
     this.warp,
     this.masque,
     this.bootstrap,
+    this.ur,
   });
 
   final CoreController core;
@@ -85,6 +88,11 @@ class EmberSettings extends StatelessWidget {
   final LanternController lantern;
   final OpenVpnController openvpn;
   final AppSettings settings;
+
+  /// The URnetwork engine (build 2156): without it the
+  /// URnetwork mode could only fall through to Mozilla's
+  /// section. Null in tests that do not cover the mode.
+  final UrEngineController? ur;
 
   /// The Aether engines (build 2056, audit A-H5): without them
   /// the WARP/MASQUE modes could only fall through to Mozilla's
@@ -107,6 +115,7 @@ class EmberSettings extends StatelessWidget {
     final wgMode = settings.emberMode == 5;
     final warpMode = settings.emberMode == 6;
     final masqueMode = settings.emberMode == 7;
+    final urMode = settings.emberMode == 8;
     return ListView(
       // Build 2074 (audit item 26): the bottom padding was
       // 8 dp — the last rows and the credit sat flush against
@@ -141,6 +150,8 @@ class EmberSettings extends StatelessWidget {
           _WarpSection(xray: xray, name: 'WARP', controller: warp)
         else if (masqueMode)
           _WarpSection(xray: xray, name: 'MASQUE', controller: masque)
+        else if (urMode)
+          _UrSection(ur: ur)
         else
           _MozillaSection(core: core, bootstrap: bootstrap),
         // Build 2147: the Iran-features panel — every gate
@@ -792,7 +803,8 @@ class _WarpSection extends StatelessWidget {
               'Block all traffic while the tunnel is down, '
               'including the auto-reconnect wait. Psiphon, '
               'Lantern and OpenVPN sessions are covered too '
-              '(build 2125); Mozilla and AmneziaWG are not.',
+              '(build 2125), URnetwork sessions since build '
+              '2156; Mozilla and AmneziaWG are not.',
           trailing: MapToggle(
             value: xray.settings.killSwitch,
             onChanged: (v) async {
@@ -1041,6 +1053,67 @@ class _LanternSection extends StatelessWidget {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => LanternLogsPage(lantern: lantern),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The URnetwork engine's section (build 2156): a summary
+/// card into the engine's page and its log viewer — the
+/// _LanternSection shape. The accounts themselves are
+/// managed on the build-2154 URnetwork page (in the
+/// general list below); this section is the ENGINE's.
+class _UrSection extends StatelessWidget {
+  const _UrSection({required this.ur});
+  final UrEngineController? ur;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final controller = ur;
+    if (controller == null) {
+      return MapSettingsPanel(
+        title: l.connectionSection,
+        children: [
+          MapSettingRow(
+            label: 'URnetwork',
+            trailing: _valueTrailing(l.statusDisconnected),
+            divider: false,
+          ),
+        ],
+      );
+    }
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) => MapSettingsPanel(
+        title: l.connectionSection,
+        children: [
+          MapSettingRow(
+            label: 'URnetwork',
+            trailing: _valueTrailing(
+              controller.state.connected
+                  ? l.statusConnected
+                  : controller.state.running
+                  ? l.stateConnecting
+                  : l.statusDisconnected,
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => UrEngineSettingsPage(ur: controller),
+              ),
+            ),
+          ),
+          MapSettingRow(
+            label: 'Engine logs',
+            trailing: _navChevron,
+            divider: false,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => UrLogsPage(ur: controller),
               ),
             ),
           ),
@@ -2583,7 +2656,7 @@ class _XraySection extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Text(
-                    'While on, a dropped or failed tunnel blocks all traffic until it reconnects or you disconnect. This covers every engine: V2Ray/WARP, Psiphon, Lantern, OpenVPN, Mozilla and AmneziaWG.',
+                    'While on, a dropped or failed tunnel blocks all traffic until it reconnects or you disconnect. This covers every engine: V2Ray/WARP, Psiphon, Lantern, OpenVPN, Mozilla, AmneziaWG and URnetwork.',
                     style: Ember.caption,
                   ),
                 ),

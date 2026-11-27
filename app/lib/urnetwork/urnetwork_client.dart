@@ -792,6 +792,110 @@ Future<UrHttpResponse> _ioUrTransport(
 
 /// The URnetwork API client for ONE account. Holds the
 /// account's key in memory only, for the client's life.
+/// Build 2156 (URnetwork engine): one device session as
+/// the auth-client exchange mints it — the client JWT the
+/// SDK's DeviceLocal constructor takes, the client id the
+/// exchange created on the account, and the JWT's expiry
+/// (parsed from the token itself; the spike measured a
+/// 30-day lifetime). The JWT is a credential: it is only
+/// ever held in memory or in the SecretStore vault, never
+/// in settings/state JSON and never in a journal line.
+class UrClientSession {
+  const UrClientSession({
+    required this.jwt,
+    required this.clientId,
+    required this.expMs,
+  });
+
+  final String jwt;
+  final String clientId;
+
+  /// JWT `exp`, milliseconds since epoch; 0 when the
+  /// token carried no readable expiry (treated as stale
+  /// by the cache policy, so the next connect re-exchanges).
+  final int expMs;
+}
+
+/// The vault key of one account's cached engine session
+/// (build 2156). Beside the API-key entry
+/// ([urNetworkVaultKey]) in the SecretStore vault — a JWT
+/// is a credential and gets the same storage, never the
+/// settings JSON.
+String urClientJwtVaultKey(String accountId) =>
+    'urnetwork_client_jwt_$accountId';
+
+/// How much lifetime a cached client JWT must still have
+/// before a connect reuses it instead of re-exchanging
+/// (build 2156). The token lives 30 days; a day of margin
+/// means a connect never starts on a token that dies
+/// mid-session, and re-exchanges stay rare — each one
+/// mints a NEW client on the account, so the cache is
+/// what keeps the account's client list clean.
+const int urClientJwtRefreshMarginMs = 24 * 60 * 60 * 1000;
+
+/// Parses a JWT's `exp` claim (seconds) to milliseconds.
+/// Null when the token is not a readable three-part JWT
+/// or carries no numeric exp — the caller treats that as
+/// already stale.
+int? urJwtExpiryMs(String jwt) {
+  final parts = jwt.split('.');
+  if (parts.length != 3) return null;
+  try {
+    var payload = parts[1].replaceAll('-', '+').replaceAll('_', '/');
+    while (payload.length % 4 != 0) {
+      payload += '=';
+    }
+    final decoded = jsonDecode(utf8.decode(base64Decode(payload)));
+    if (decoded is! Map) return null;
+    final exp = decoded['exp'];
+    if (exp is num) return (exp * 1000).round();
+    return null;
+  } on FormatException {
+    return null;
+  }
+}
+
+/// Encodes a cached engine session for the vault. Only
+/// the three session fields — no account data, no key.
+String encodeUrClientJwtCache(UrClientSession session) => jsonEncode({
+  'jwt': session.jwt,
+  'clientId': session.clientId,
+  'expMs': session.expMs,
+});
+
+/// Decodes a cached engine session; null on anything
+/// malformed or incomplete (a cache that will not parse
+/// is simply re-exchanged).
+UrClientSession? decodeUrClientJwtCache(String? text) {
+  if (text == null || text.isEmpty) return null;
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is! Map) return null;
+    // Strict on the token itself: a cache entry whose jwt
+    // is not a string is corruption, not a session.
+    final jwt = decoded['jwt'];
+    if (jwt is! String || jwt.isEmpty) return null;
+    final clientId = decoded['clientId'];
+    return UrClientSession(
+      jwt: jwt,
+      clientId: clientId is String ? clientId : '',
+      expMs: (decoded['expMs'] as num?)?.toInt() ?? 0,
+    );
+  } on FormatException {
+    return null;
+  }
+}
+
+/// The cache policy (build 2156): a cached session is
+/// reusable only while it still has the full refresh
+/// margin of lifetime left. Anything else — no cache, no
+/// readable expiry, inside the margin — re-exchanges.
+bool urClientJwtCacheFresh(UrClientSession? session, int nowMs) {
+  if (session == null || session.jwt.isEmpty) return false;
+  if (session.expMs <= 0) return false;
+  return session.expMs - nowMs > urClientJwtRefreshMarginMs;
+}
+
 class UrNetworkClient {
   UrNetworkClient({required String apiKey, UrTransport? transport})
       : _apiKey = apiKey,
@@ -943,6 +1047,33 @@ class UrNetworkClient {
       wgConfigText: proxy.wgConfigText,
       exit: exit,
       proFeatures: proxy.proFeatures,
+    );
+  }
+
+  /// Build 2156 (URnetwork engine): exchanges the API
+  /// key for a device session — the same auth-client
+  /// endpoint [createProxy] uses, but WITHOUT a
+  /// proxy_config, so no hosted proxy is created: the
+  /// answer is a plain client ({by_client_jwt, client_id})
+  /// for the SDK engine. Verified live by the 2156 spike:
+  /// the key alone mints a client JWT with a 30-day
+  /// lifetime. NOTE: every exchange mints a NEW client on
+  /// the account — callers cache the session (see
+  /// [urClientJwtCacheFresh]) and re-exchange only on
+  /// expiry or rejection.
+  Future<UrClientSession> exchangeClientSession() async {
+    final decoded = await _request(
+      'POST',
+      '/network/auth-client',
+      jsonBody: const {},
+    );
+    if (decoded is! Map) throw _badResponse;
+    final jwt = decoded['by_client_jwt']?.toString() ?? '';
+    if (jwt.isEmpty) throw _badResponse;
+    return UrClientSession(
+      jwt: jwt,
+      clientId: decoded['client_id']?.toString() ?? '',
+      expMs: urJwtExpiryMs(jwt) ?? 0,
     );
   }
 

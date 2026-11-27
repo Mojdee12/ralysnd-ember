@@ -147,7 +147,8 @@ void main() {
           .allMatches(mainActivity)
           .length;
       // OpenVPN, Psiphon, WARP, AWG, Xray, Lantern.
-      expect(count, 6);
+      // Build 2156 re-point: + URnetwork's deferred start.
+      expect(count, 7);
       // The only start?.invoke() left in the file is the one
       // inside runDeferredVpnStart itself.
       expect('start?.invoke()'.allMatches(mainActivity).length, 1);

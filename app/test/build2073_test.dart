@@ -67,8 +67,13 @@ void main() {
       // android:process=":lantern" (the gomobile core runs in
       // its own process, mirroring :psiphon) — the set is
       // {:psiphon, :lantern}.
-      expect(occurrences(manifest, 'android:process'), 2,
-          reason: ':psiphon and :lantern carry process attributes');
+      // Build 2156 re-point: UrVpnService joins with
+      // android:process=":urnetwork" (its gomobile core's
+      // own process, same reasoning) — the set is
+      // {:psiphon, :lantern, :urnetwork}.
+      expect(occurrences(manifest, 'android:process'), 3,
+          reason: ':psiphon, :lantern and :urnetwork carry '
+              'process attributes');
     });
   });
 

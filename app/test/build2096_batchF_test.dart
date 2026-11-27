@@ -242,7 +242,9 @@ void main() {
     test('eleven offer sites: both branches of every '
         'toggle', () {
       final shell = File('lib/ui/ember/ember_shell.dart').readAsStringSync();
-      expect('_offerAlternative(context'.allMatches(shell).length, 11);
+      // Build 2156 re-point: 11 -> 13 — the URnetwork
+      // toggle adds its two branches like every toggle.
+      expect('_offerAlternative(context'.allMatches(shell).length, 13);
     });
   });
 

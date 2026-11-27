@@ -159,7 +159,9 @@ void main() {
       // Build 2129: LanternVpnService gained :lantern (the
       // gomobile core's own process, mirroring :psiphon);
       // :awg stays retired.
-      expect(processes, [':lantern', ':psiphon']);
+      // Build 2156 re-point: UrVpnService gained
+      // :urnetwork (its gomobile core's own process).
+      expect(processes, [':lantern', ':psiphon', ':urnetwork']);
       expect(manifest, isNot(contains('android:name=".AwgVpnService"')));
       expect(manifest, contains('android:name=".PsiphonVpnService"'));
     });

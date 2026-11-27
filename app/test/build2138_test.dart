@@ -104,7 +104,10 @@ void main() {
       // pattern → 46.
       // Build 2154 re-point: the new URnetworkPage follows
       // the same pattern → 47.
-      expect(count, 47);
+      // Build 2156 re-point: the UR engine's two pushed
+      // pages (engine settings + logs) follow the same
+      // pattern → 49.
+      expect(count, 49);
       expect(_src('ui/browser_signin_page.dart'),
           isNot(contains('extendBodyBehindAppBar')));
       expect(_src('ui/ember/qr_pages.dart'),
@@ -135,7 +138,7 @@ void main() {
     test('pubspec is 2.2.0+2148', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2155'),
+        contains('version: 2.2.0+2156'),
       );
     });
 

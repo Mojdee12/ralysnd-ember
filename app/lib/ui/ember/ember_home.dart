@@ -15,6 +15,7 @@ import '../../l10n/app_localizations.dart';
 import '../../openvpn/openvpn_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../psiphon/psiphon_platform.dart';
+import '../../urnetwork/ur_engine_controller.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../../net/exit_quality.dart';
@@ -29,6 +30,7 @@ import 'map_widgets.dart';
 import 'quick_presets.dart';
 import 'openvpn_pages.dart';
 import 'psiphon_pages.dart';
+import 'urnetwork_engine_pages.dart';
 import 'warp_settings_page.dart';
 import 'wireguard_pages.dart';
 
@@ -42,6 +44,7 @@ class EmberHome extends StatelessWidget {
     required this.openvpn,
     required this.warp,
     required this.masque,
+    this.ur,
     required this.mode,
     required this.onModeChanged,
     required this.onOpenServers,
@@ -57,6 +60,12 @@ class EmberHome extends StatelessWidget {
   final OpenVpnController openvpn;
   final AetherController warp;
   final AetherController masque;
+
+  /// The URnetwork engine (build 2156, mode 8). Optional:
+  /// tests construct EmberHome directly; mode 8 without a
+  /// controller falls back to the Mozilla home rather than
+  /// crashing.
+  final UrEngineController? ur;
   final int mode;
   final ValueChanged<int> onModeChanged;
   final VoidCallback onOpenServers;
@@ -95,6 +104,7 @@ class EmberHome extends StatelessWidget {
         5 => xray,
         6 => warp,
         7 => masque,
+        8 => ur ?? core,
         _ => core,
       },
       builder: (context, _) => switch (mode) {
@@ -112,6 +122,10 @@ class EmberHome extends StatelessWidget {
         5 => WireGuardHomePage(xray: xray, onOpenServers: onOpenServers),
         6 => WarpHomePage(warp: warp),
         7 => MasqueHomePage(masque: masque),
+        8 =>
+          ur == null
+              ? _MozillaHome(core: core, onOpenAccounts: onOpenAccounts)
+              : UrHomePage(ur: ur!),
         _ => _MozillaHome(core: core, onOpenAccounts: onOpenAccounts),
       },
     );

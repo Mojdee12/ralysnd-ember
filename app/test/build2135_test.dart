@@ -101,7 +101,7 @@ void main() {
     test('pubspec is build 2135', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2155'),
+        contains('version: 2.2.0+2156'),
       );
     });
   });

@@ -116,7 +116,9 @@ void main() {
           .toList();
       // Build 2129: LanternVpnService gained :lantern (the
       // gomobile core's own process, mirroring :psiphon).
-      expect(processes, [':psiphon', ':lantern']);
+      // Build 2156 re-point: UrVpnService gained
+      // :urnetwork (its gomobile core's own process).
+      expect(processes, [':psiphon', ':lantern', ':urnetwork']);
     });
   });
 
@@ -331,7 +333,7 @@ void main() {
     test('pubspec is 2.2.0+2119', () {
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 2.2.0+2155'),
+        contains('version: 2.2.0+2156'),
       );
     });
   });

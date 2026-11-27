@@ -47,6 +47,11 @@ object EngineClaim {
     const val OPENVPN = "openvpn"
     const val PSIPHON = "psiphon"
 
+    // Build 2156: the URnetwork engine (UrVpnService, its
+    // own :urnetwork process — the SDK's gomobile runtime
+    // gets the same isolation as Lantern's and Psiphon's).
+    const val URNETWORK = "urnetwork"
+
     // Build 2119 (audit F-04): the two XrayVpnService-hosted
     // session kinds get their own identities. Up to 2118 a
     // standalone-WARP start and an Aether (SOCKS) start both
@@ -277,6 +282,11 @@ object EngineClaim {
                 context,
                 Intent(context, PsiphonVpnService::class.java)
                     .setAction(PsiphonVpnService.ACTION_STOP),
+            )
+            URNETWORK -> stopByIntent(
+                context,
+                Intent(context, UrVpnService::class.java)
+                    .setAction(UrVpnService.ACTION_STOP),
             )
         }
     }

@@ -69,6 +69,14 @@ android {
             // — see SenpaiCore.kt) — no strip, so the packaged
             // bytes stay hash-verifiable against the extract.
             keepDebugSymbols += "**/libsenpai_lml.so"
+            // Build 2156 (URnetwork engine): the vendor SDK's
+            // gomobile lib, shaded (go/ -> ur/, libgojni.so ->
+            // liburcore.so, the 6 shared Java_go_* JNI exports
+            // renamed to Java_ur_* with rebuilt hash tables —
+            // build2156-progress.md), ships BYTE-EXACT as
+            // patched: AGP's strip would trim bytes the
+            // recorded sha256 (057bf715…) is verified against.
+            keepDebugSymbols += "**/liburcore.so"
         }
     }
 
@@ -151,6 +159,13 @@ dependencies {
     // engines/psiphonbox/build-android/ as the documented
     // fallback); libs/psiphon.aar is restored.
     implementation(files("libs/psiphon.aar"))
+    // Build 2156 (URnetwork engine): the URnetwork SDK
+    // (com.bringyour.sdk, vendor AAR v2026.11.22, MPL-2.0),
+    // shaded so its gomobile runtime coexists with the cores
+    // above — classes go/ -> ur/, libgojni.so -> liburcore.so,
+    // Java_go_* exports renamed (see build2156-progress.md).
+    // Runs in the :urnetwork process (UrVpnService).
+    implementation(files("libs/urnetwork.aar"))
     // Build 2123 (S-1): the classes the Psiphon AAR references but
     // does not contain — the wf.* JSON mini-library (extracted
     // byte-faithful from MLM 1.2.46) plus the R8 outline-host shims

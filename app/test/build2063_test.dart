@@ -290,9 +290,11 @@ void main() {
       // Psiphon start now take the flag too.
       // Build 2127 re-point (H4): 6 -> 8 — the Mozilla
       // setOn mirror and the WG Tunnel setOn take it too.
+      // Build 2156 re-point: 8 -> 9 — the URnetwork setOn
+      // takes the flag too.
       expect('call.argument<Boolean>("killSwitch") ?: false'
           .allMatches(src)
-          .length, 8);
+          .length, 9);
     });
   });
 

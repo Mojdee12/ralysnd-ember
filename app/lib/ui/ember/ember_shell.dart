@@ -23,6 +23,7 @@ import '../../l10n/app_localizations.dart';
 import '../../net/network_info.dart';
 import '../../openvpn/openvpn_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
+import '../../urnetwork/ur_engine_controller.dart';
 import '../../xray/fallback_groups.dart';
 import '../../xray/wg_conf.dart';
 import '../../xray/xray_controller.dart';
@@ -46,6 +47,7 @@ import 'map_widgets.dart';
 import 'openvpn_pages.dart';
 import 'profile_country.dart';
 import 'psiphon_pages.dart';
+import 'urnetwork_engine_pages.dart';
 import 'wireguard_pages.dart';
 import 'world_map.dart';
 
@@ -152,6 +154,10 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
   // WARP slot and the MASQUE slot.
   late final AetherController _warp = AetherController('cfwarp');
   late final AetherController _masque = AetherController('masque');
+  // Build 2156: the URnetwork engine (SDK DeviceLocal core
+  // in the :urnetwork process; the build-2154 accounts are
+  // its sign-in — no login UI of its own).
+  late final UrEngineController _ur = UrEngineController();
 
   /// The Mozilla bootstrap helper (build 2034): runs the
   /// one-handoff pass fetch before a Mozilla connect when the
@@ -205,6 +211,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     _openvpn.setForeground(_foreground);
     _warp.setForeground(_foreground);
     _masque.setForeground(_foreground);
+    _ur.setForeground(_foreground);
     core.setForeground(_foreground);
     core.setEngineFocus(mode == 0);
   }
@@ -259,12 +266,13 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
   /// era now opens OpenVPN, the same benign resurrection
   /// Lantern's 3 had. Build 2032 adds 5 = WireGuard (the Xray
   /// carrier's own section), 6 = WARP and 7 = MASQUE (the
-  /// ralysnd Aether engines). A stored value outside 0..7
-  /// reads as Mozilla here too (AppSettings.load already
-  /// clamps it), never a dead page.
+  /// ralysnd Aether engines). Build 2156 adds 8 = URnetwork
+  /// (the SDK engine). A stored value outside 0..8 reads as
+  /// Mozilla here too (AppSettings.load already clamps it),
+  /// never a dead page.
   int get mode {
     final m = widget.settings.emberMode;
-    return m >= 0 && m <= 7 ? m : 0;
+    return m >= 0 && m <= 8 ? m : 0;
   }
 
   set mode(int value) => widget.settings.update(emberMode: value);
@@ -322,6 +330,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       await _stopLantern();
       await _stopOpenVpn();
       await _stopAether();
+      await _stopUr();
     };
     // Build 2116 (audit AB-04): Mozilla pass boundaries
     // land in the connect journal the Diagnostics export
@@ -349,6 +358,13 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     _lantern.tunnelMtu = () => _xray.settings.tunnelMtu;
     _warp.tunnelMtu = () => _xray.settings.tunnelMtu;
     _masque.tunnelMtu = () => _xray.settings.tunnelMtu;
+    // Build 2156: the URnetwork engine reads the same
+    // globals at connect time, and its accounts are the
+    // build-2154 URnetwork accounts the Xray controller
+    // owns (labels + ids; the keys stay in the vault).
+    _ur.tunnelMtu = () => _xray.settings.tunnelMtu;
+    _ur.killSwitchEnabled = () => _xray.settings.killSwitch;
+    _ur.accountsProvider = () => _xray.urAccounts;
     // Build 2097 (post-2096 audit C7): the kill switch
     // reaches the Aether slots' TUN starts the same way —
     // its Settings copy has promised WARP coverage since
@@ -395,6 +411,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       await _stopLantern();
       await _stopOpenVpn();
       await _stopAether();
+      await _stopUr();
     };
     _lantern.stopOtherEngine = () async {
       await _stopMozilla(cascadeFrom: 'lantern');
@@ -402,12 +419,22 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       await _stopPsiphon();
       await _stopOpenVpn();
       await _stopAether();
+      await _stopUr();
     };
     _openvpn.stopOtherEngine = () async {
       await _stopMozilla(cascadeFrom: 'openvpn');
       if (_xray.state.running || _xray.connecting) await _xray.disconnect();
       await _stopPsiphon();
       await _stopLantern();
+      await _stopAether();
+      await _stopUr();
+    };
+    _ur.stopOtherEngine = () async {
+      await _stopMozilla(cascadeFrom: 'urnetwork');
+      if (_xray.state.running || _xray.connecting) await _xray.disconnect();
+      await _stopPsiphon();
+      await _stopLantern();
+      await _stopOpenVpn();
       await _stopAether();
     };
     // Build 2125 (audit A25-04): the kill switch reaches
@@ -419,6 +446,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       await _stopPsiphon();
       await _stopLantern();
       await _stopOpenVpn();
+      await _stopUr();
       if (_masque.state.running || _masque.tunRunning) {
         await _masque.disconnect();
       }
@@ -429,6 +457,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       await _stopPsiphon();
       await _stopLantern();
       await _stopOpenVpn();
+      await _stopUr();
       if (_warp.state.running || _warp.tunRunning) {
         await _warp.disconnect();
       }
@@ -457,6 +486,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     _openvpn.load();
     _warp.load();
     _masque.load();
+    _ur.load();
     // Build 2065: per-network winner memory, auto-connect
     // triggers and the scheduled-health tick all ride the
     // platform network callback armed here.
@@ -515,6 +545,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     _openvpn.dispose();
     _warp.dispose();
     _masque.dispose();
+    _ur.dispose();
     super.dispose();
   }
 
@@ -777,6 +808,15 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     }
   }
 
+  /// The URnetwork engine goes off (the other engines'
+  /// hooks pass through here).
+  Future<void> _stopUr() async {
+    // The connecting window counts too (build 2096, H6).
+    if (_ur.state.running || _ur.connecting) {
+      await _ur.disconnect();
+    }
+  }
+
   /// The Mozilla engine's matching hook, used by the home page:
   /// all other engines go off before Mozilla starts.
   Future<void> stopXray() async {
@@ -785,6 +825,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     await _stopLantern();
     await _stopOpenVpn();
     await _stopAether();
+    await _stopUr();
   }
 
   // ------------------------------------------------------------ toggles
@@ -961,6 +1002,38 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         // alternative is offered from the generic catch
         // too, not only the StateError branch.
         _offerAlternative(context, 3, '$e');
+      }
+    }
+  }
+
+  /// The URnetwork engine's toggle (build 2156): the
+  /// Lantern shape — loud failure with the platform's own
+  /// words, the log tail on the engine's page.
+  Future<void> _toggleUr(BuildContext context) async {
+    try {
+      if (_ur.state.running) {
+        await _ur.disconnect();
+      } else {
+        await _ur.connect();
+      }
+    } on StateError catch (e) {
+      if (!context.mounted) return;
+      final message = _ur.lastError ?? e.message;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            message.length > 160 ? '${message.substring(0, 160)}…' : message,
+          ),
+        ),
+      );
+      _offerAlternative(context, 8, message);
+    } catch (e) {
+      if (context.mounted && _showVpnDenied(context, e)) return;
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).startFailed)),
+        );
+        _offerAlternative(context, 8, '$e');
       }
     }
   }
@@ -1176,6 +1249,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         return _warp.connected;
       case 7:
         return _masque.connected;
+      case 8:
+        return _ur.state.connected;
     }
     return false;
   }
@@ -1232,6 +1307,9 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       case 7:
         return _masque.connecting ||
             (_masque.state.running && !_masque.connected);
+      case 8:
+        return _ur.connecting ||
+            (_ur.state.running && !_ur.state.connected);
     }
     return false;
   }
@@ -1305,6 +1383,12 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         return _warp.upBytes + _warp.downBytes;
       case 7:
         return _masque.upBytes + _masque.downBytes;
+      case 8:
+        // Build 2156: the same M19 rule as Lantern — no
+        // counters in the snapshot, no verdict.
+        return _ur.state.countersReported
+            ? _ur.state.upBytes + _ur.state.downBytes
+            : null;
       default:
         return null;
     }
@@ -1365,7 +1449,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       );
     }
     String? label;
-    for (var m = 0; m < 8; m++) {
+    for (var m = 0; m <= 8; m++) {
       if (_engineActive(m)) {
         label = _engineLabel(m);
         break;
@@ -1649,6 +1733,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         return _toggleAether(context, _warp);
       case 7:
         return _toggleAether(context, _masque);
+      case 8:
+        return _toggleUr(context);
     }
     return Future<void>.value();
   }
@@ -1663,7 +1749,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       // chip split, so it must be counted here explicitly.
       _engineActive(5) ||
       _engineActive(6) ||
-      _engineActive(7);
+      _engineActive(7) ||
+      _engineActive(8);
 
   /// Build 2095 (verification loop, third-pass audit 2.2
   /// shell half): an engine CONNECTING counts for the
@@ -1682,7 +1769,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       _engineConnecting(4) ||
       _engineConnecting(5) ||
       _engineConnecting(6) ||
-      _engineConnecting(7);
+      _engineConnecting(7) ||
+      _engineConnecting(8);
 
   /// Build 2095 (whole-app journey audit #1): the mode whose
   /// engine is actually carrying (or starting) a session, or
@@ -1707,6 +1795,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     if (_engineActive(2) || _engineConnecting(2)) return 2;
     if (_engineActive(3) || _engineConnecting(3)) return 3;
     if (_engineActive(4) || _engineConnecting(4)) return 4;
+    if (_engineActive(8) || _engineConnecting(8)) return 8;
     return null;
   }
 
@@ -1746,6 +1835,9 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
       'psiphon': {2},
       'lantern': {3},
       'openvpn': {4},
+      // Build 2156: the URnetwork engine claims under its
+      // EngineClaim name, like the other own-process engines.
+      'urnetwork': {8},
     };
     final family = families[owner];
     if (family == null) {
@@ -1801,6 +1893,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     if (_engineActive(2)) return 'psiphon';
     if (_engineActive(3)) return 'lantern';
     if (_engineActive(4)) return 'openvpn';
+    if (_engineActive(8)) return 'urnetwork';
     return null;
   }
 
@@ -1869,6 +1962,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     5 => 'WireGuard',
     6 => 'WARP',
     7 => 'MASQUE',
+    8 => 'URnetwork',
     _ => 'Engine',
   };
 
@@ -2080,6 +2174,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         case 6:
         case 7:
           await _stopAether();
+        case 8:
+          await _stopUr();
       }
     } catch (_) {
       // A failed stop must not wedge the chain; the next engine's
@@ -3008,6 +3104,22 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
           connected: c.connected,
           badge: badge,
         );
+      case 8:
+        // Build 2156: the pin is the SDK device's own exit
+        // readback once connected (the Lantern shape).
+        final state = _ur.state;
+        final code = state.connected && state.exitCode.isNotEmpty
+            ? state.exitCode
+            : null;
+        final badge = !state.connected || state.exitLine.isEmpty
+            ? null
+            : 'EXIT • ${state.exitLine.toUpperCase()}';
+        return (
+          pins: <String>{},
+          selected: code,
+          connected: state.connected,
+          badge: badge,
+        );
     }
     return home;
   }
@@ -3025,6 +3137,9 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     3 => _lantern,
     4 => _openvpn,
     6 => _warp,
+    // Build 2156: URnetwork gets its own listenable — the
+    // wildcard below means MASQUE and must not swallow it.
+    8 => _ur,
     _ => _masque,
   };
 
@@ -3359,6 +3474,44 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
               : 'MASQUE • ${c.options.protocol.toUpperCase()}',
           onToggle: () => unawaited(_powerToggle(context, mode)),
         );
+      case 8:
+        // Build 2156: the URnetwork bar — the Lantern
+        // shape, with the session's location in place of
+        // a server count.
+        final state = _ur.state;
+        final on = state.connected;
+        final busy = _ur.connecting || (state.running && !on);
+        return (
+          on: on,
+          busy: busy,
+          stateWord: on
+              ? 'Connected via URnetwork'
+              : busy
+              ? 'Connecting…'
+              : 'Not connected',
+          cells: [
+            (
+              label: 'EXIT',
+              value: state.exitLine.isEmpty ? '—' : state.exitLine,
+            ),
+            (
+              label: 'LOCATION',
+              value: state.reqName.isNotEmpty
+                  ? state.reqName
+                  : 'Best Available',
+            ),
+            (
+              label: 'UP',
+              value: state.running ? fmtRate(_ur.upRate) : '—',
+            ),
+            (
+              label: 'DOWN',
+              value: state.running ? fmtRate(_ur.downRate) : '—',
+            ),
+          ],
+          microLine: 'URNETWORK',
+          onToggle: () => unawaited(_powerToggle(context, mode)),
+        );
     }
     throw StateError('unknown mode $mode');
   }
@@ -3375,11 +3528,14 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     'WireGuard',
     'WARP',
     'MASQUE',
+    // Build 2156: the URnetwork engine joins the board.
+    'URnetwork',
   ];
 
   /// The samples' engine order for the Home switcher
-  /// (pro3 line / pro5 chip row), MASQUE last.
-  static const _homeEngineOrder = [1, 0, 3, 5, 6, 2, 4, 7];
+  /// (pro3 line / pro5 chip row), MASQUE last until build
+  /// 2156 appended URnetwork after it.
+  static const _homeEngineOrder = [1, 0, 3, 5, 6, 2, 4, 7, 8];
 
   /// Home fidelity round R1 (owner order 2026-11-23, restated
   /// 20:17 — functionality preserved, appearance rebuilt 0–100
@@ -3644,6 +3800,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         _openvpn,
         _warp,
         _masque,
+        _ur,
       ]),
       builder: (context, _) {
         // R1 (2026-11-23): the Home tab wears the samples'
@@ -3693,6 +3850,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
     final wgMode = mode == 5;
     final warpMode = mode == 6;
     final masqueMode = mode == 7;
+    final urMode = mode == 8;
     final pages = [
       EmberHome(
         core: core,
@@ -3702,6 +3860,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         openvpn: _openvpn,
         warp: _warp,
         masque: _masque,
+        ur: _ur,
         mode: mode,
         onModeChanged: (m) {
           setState(() => mode = m);
@@ -3732,6 +3891,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         AetherServersView(controller: _warp)
       else if (masqueMode)
         AetherServersView(controller: _masque)
+      else if (urMode)
+        UrServersView(ur: _ur)
       else
         EmberServers(
           core: core,
@@ -3753,6 +3914,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         AetherAboutView(controller: _warp)
       else if (masqueMode)
         AetherAboutView(controller: _masque)
+      else if (urMode)
+        UrAboutView(ur: _ur)
       else
         EmberAccounts(
           core: core,
@@ -3776,6 +3939,8 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
         warp: _warp,
         masque: _masque,
         bootstrap: _bootstrap,
+        // Build 2156: the URnetwork engine's Settings section.
+        ur: _ur,
       ),
     ];
     // Build 2050 (battery): hidden tabs get no tickers.
@@ -3863,6 +4028,7 @@ class _EmberShellState extends State<EmberShell> with WidgetsBindingObserver {
                         _openvpn,
                         _warp,
                         _masque,
+                        _ur,
                       ]),
                       builder: (context, _) {
                         final bar = _barModel(context);
