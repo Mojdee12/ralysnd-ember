@@ -361,6 +361,13 @@ try {
             $env:CC_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-gcc.exe')
             $env:CXX_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-g++.exe')
             $env:AR_x86_64_pc_windows_gnu = $arExe
+            # boring-sys drives CMake: left to itself it picks
+            # the "MSYS Makefiles" generator on the CI runner
+            # and a stale C:\mingw64 make that cannot read the
+            # generated build files (CI run 46054304209). The
+            # MinGW Makefiles generator + the winlibs
+            # mingw32-make first on PATH is the working pair.
+            $env:CMAKE_GENERATOR = 'MinGW Makefiles'
             & rustup target add x86_64-pc-windows-gnu
             & cargo build --release --locked --target x86_64-pc-windows-gnu --bin aether
             if ($LASTEXITCODE -ne 0) {
@@ -374,7 +381,7 @@ try {
             }
         } finally {
             Pop-Location
-            Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER, Env:CC_x86_64_pc_windows_gnu, Env:CXX_x86_64_pc_windows_gnu, Env:AR_x86_64_pc_windows_gnu -ErrorAction SilentlyContinue
+            Remove-Item Env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER, Env:CC_x86_64_pc_windows_gnu, Env:CXX_x86_64_pc_windows_gnu, Env:AR_x86_64_pc_windows_gnu, Env:CMAKE_GENERATOR -ErrorAction SilentlyContinue
         }
     } else {
         Write-Warning 'No Rust/mingw toolchain on this machine: aether.exe not built — the EmberWarp and MASQUE engines will report unavailable. (Install rustup + mingw-w64 + NASM and re-run.)'
@@ -467,7 +474,9 @@ try {
         SponsorId                              = PsiConst 'sponsorId'
         RemoteServerListSignaturePublicKey     = PsiConst 'remoteServerListSignaturePublicKey'
         ServerEntrySignaturePublicKey          = PsiConst 'serverEntrySignaturePublicKey'
-        AdditionalParameters                   = PsiConst 'additionalParameters'
+        # No AdditionalParameters: the MLM identity set the
+        # app ships since the W2 Psiphon port carries none
+        # (the constant no longer exists in the bootstrap).
         DataRootDirectory                      = $smokeData
         LocalSocksProxyPort                    = 11808
         LocalHttpProxyPort                     = 11809
