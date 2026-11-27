@@ -337,3 +337,62 @@ back-to-back in ONE build. Running record:
   pkg-win-2040/. The windows.yml RegionHop-secret env change
   remains unapplied (workflow scope) — this package carries
   the placeholder defaults, honestly noticied in-app.
+
+## Rebuild — 2.2.0+2041 (2026-11-28): Electron shell + Go service (Milestone 1)
+
+- The owner's 2040 verdict («۱۰۰ تا مشکل», WARP/MASQUE/Lantern broken,
+  appearance rejected) rebuilt the Windows app on his approved
+  programme: the Flutter shell is replaced by an Electron shell
+  implementing the approved render set (264px rail — tabs + all
+  engines + protection/Account foot — and a FULL page per engine);
+  the win-work Flutter tree remains as the feature/content reference.
+- A new Go Windows service, RalysndEmberService (core/cmd/
+  ember-service, all our own code), owns the TUN adapter and engine
+  process lifecycles behind a versioned named-pipe IPC (v1, JSON
+  lines). It self-installs (elevated verb, %ProgramFiles% +
+  %ProgramData%\Ralysnd Ember\service.json), reaps orphans with an
+  owned-PID exclusion, and surfaces failures as plain state words.
+- Lantern: full-VPN radiance (pin e28b971 — Lantern v10.0.5-beta.1's
+  own pin; tag set with_gvisor,with_quic,with_dhcp,with_wireguard,
+  with_utls,with_acme,with_clash_api; built under GOTOOLCHAIN=
+  go1.26.10 because the pin's sing-box-minimal predates Go 1.27),
+  supervised with _LANTERND_CHILD=1; the service is the only caller
+  of the daemon's pipe (\\.\pipe\Lantern\lantern, plain HTTP),
+  behind a six-endpoint allowlist + PID/image pipe authentication.
+  The 2040 novpn build and lantern-bridge are gone.
+- OpenVPN: driven by the service over the management interface —
+  real byte counters (the 2040 unmeasured-bytes gap is closed).
+- WARP: warp-plus RETIRED. The service mints the WARP identity
+  itself (wgcf-style registration, identity in %ProgramData%) and
+  WARP runs as an ordinary WireGuard profile.
+- MASQUE/EmberWarp: usque v4.2.1 (MIT, vendored at vendor/usque
+  with a PIN file) — one-time `register` from the shell, then
+  loopback `socks` under the TUN bridge. aether.exe still ships as
+  the fallback core; its settings pick is not wired in the new
+  shell yet.
+- Psiphon bumped v2.0.42 → v2.0.43 (its Go pin moves to go1.26.10
+  per upstream's go.mod + Dockerfile). sing-box stays v1.14.4.
+  Xray stays on the patterniha fork pin (no verified v26.11.9 fork
+  commit — not guessed). URnetwork ships the managed-profiles
+  mode; the SDK compile probe passed (CGO off, Go ≥ 1.27.4) and
+  the in-service engine is the next step. WG/AWG keep the proven
+  amneziawg.exe path; the in-process amneziawg.Run shape is probed
+  and staged.
+- Clean-room throughout (owner's ruling): LML/mlmvpn architecture
+  studied, zero code copied.
+- Gates: go vet clean; `go test -race -count=1` green for the
+  service (Lantern allowlist/auth, OpenVPN fake-mgmt session, WARP
+  registration, TUN lifecycle, proc confinement); node --check
+  clean; electron-builder green; fidelity shoot 15/15 against the
+  approved renders (record: windows-parity/rebuild-progress.md).
+- **CI run 46079616722 SUCCESS** (commit 37c71fa): service smoke
+  on the runner printed PROBE OK + SELFTEST OK. Installer
+  205,282,148 B sha256 d1864c3a4cb3ad8d1258cba443db29b7bf4b4ec4541d13ffd6d10cfd6b766010;
+  zip 329,439,705 B sha256 28e8ffda2b15157204e37c8f59ac0ead4ac9cf749214072888d0c80b213807b0;
+  inventory verified firsthand (ember-service.exe, full-VPN
+  lanternd 68,995,072 B, usque.exe, sing-box.exe + libcronet.dll,
+  regionhop-defaults.json present via the secret, NO warp folder,
+  NO lantern-bridge). NO GitHub Release — the updater feed stays
+  on 2040 until the owner takes 2041 on his PC. Package grew
+  (+80.8 MB installer): the Electron/Chromium runtime is the
+  driver; the engine layer itself shrank.
