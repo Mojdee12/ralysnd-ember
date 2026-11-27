@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -135,6 +138,7 @@ class SecretStore {
   static const _channel = MethodChannel('app/android');
 
   static Future<bool> store(String key, String value) async {
+    if (Platform.isWindows) return _WindowsVault.store(key, value);
     try {
       return await _channel.invokeMethod<bool>('secretStore', {
             'key': key,
@@ -147,6 +151,7 @@ class SecretStore {
   }
 
   static Future<String?> load(String key) async {
+    if (Platform.isWindows) return _WindowsVault.load(key);
     try {
       return await _channel.invokeMethod<String>('secretLoad', {'key': key});
     } catch (_) {
@@ -155,8 +160,84 @@ class SecretStore {
   }
 
   static Future<void> delete(String key) async {
+    if (Platform.isWindows) return _WindowsVault.delete(key);
     try {
       await _channel.invokeMethod<void>('secretDelete', {'key': key});
+    } catch (_) {}
+  }
+}
+
+/// The Windows SecretStore (W3, full-parity build): the
+/// Android Keystore's counterpart is DPAPI (CurrentUser) —
+/// the same construction the OpenVPN credential vault proved
+/// (openvpn_platform_windows.dart): the sealed payload is a
+/// base64 blob in `<dataDir>/vault/<sanitized key>.dpapi`,
+/// and a save counts only when the read-back decrypts to the
+/// same value. Nothing secret ever lands in settings/state
+/// JSON on Windows either.
+abstract final class _WindowsVault {
+  static Directory get _dir =>
+      Directory('${CoreLocator.dataDir(const [])}/vault');
+
+  static File _file(String key) => File(
+    '${_dir.path}/${key.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_')}.dpapi',
+  );
+
+  static Future<String?> _dpapi(String mode, String input) async {
+    final script =
+        '''
+\$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Security
+\$in = [Console]::In.ReadToEnd()
+if ('$mode' -eq 'protect') {
+  \$bytes = [Text.Encoding]::UTF8.GetBytes(\$in)
+  \$out = [Security.Cryptography.ProtectedData]::Protect(\$bytes, \$null, 'CurrentUser')
+  [Console]::Out.Write([Convert]::ToBase64String(\$out))
+} else {
+  \$bytes = [Convert]::FromBase64String(\$in)
+  \$out = [Security.Cryptography.ProtectedData]::Unprotect(\$bytes, \$null, 'CurrentUser')
+  [Console]::Out.Write([Text.Encoding]::UTF8.GetString(\$out))
+}
+''';
+    final p = await Process.start('powershell', [
+      '-NoProfile',
+      '-Command',
+      script,
+    ]);
+    p.stdin.write(input);
+    await p.stdin.close();
+    final out = await p.stdout.transform(utf8.decoder).join();
+    final code = await p.exitCode;
+    if (code != 0) return null;
+    return out;
+  }
+
+  static Future<bool> store(String key, String value) async {
+    try {
+      final sealed = await _dpapi('protect', value);
+      if (sealed == null || sealed.isEmpty) return false;
+      await _dir.create(recursive: true);
+      await _file(key).writeAsString(sealed, flush: true);
+      final back = await _dpapi('unprotect', sealed);
+      return back == value;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String?> load(String key) async {
+    try {
+      final f = _file(key);
+      if (!await f.exists()) return null;
+      return await _dpapi('unprotect', (await f.readAsString()).trim());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> delete(String key) async {
+    try {
+      await _file(key).delete();
     } catch (_) {}
   }
 }
@@ -165,8 +246,22 @@ class AndroidCore {
   static const _channel = MethodChannel('app/android');
 
   /// The core's data folder inside the app's private storage.
-  static Future<String> dataDir() async =>
-      await _channel.invokeMethod<String>('dataDir') ?? '';
+  ///
+  /// Android: the 'app/android' channel — filesDir/core, and the
+  /// synced controllers root their per-engine folders at its
+  /// parent (filesDir). Desktop has no such channel (the call
+  /// threw MissingPluginException, so synced controllers could
+  /// not persist state across restarts); it answers with the
+  /// same shape instead: the app data folder's own `core`
+  /// child, so every caller's parent-based math lands in the
+  /// app data folder exactly as on Android.
+  static Future<String> dataDir() async {
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      return '${CoreLocator.dataDir(const [])}'
+          '${Platform.pathSeparator}core';
+    }
+    return await _channel.invokeMethod<String>('dataDir') ?? '';
+  }
 
   AndroidCore(this._dataDir);
 

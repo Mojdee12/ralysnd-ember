@@ -5,7 +5,11 @@
 /// PID-file reaper; this side owns the option and the
 /// command line (wstunnel_args.dart).
 
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'subprocess_windows.dart';
 
 class WstunnelState {
   final bool available;
@@ -46,6 +50,7 @@ class WstunnelPlatform {
   /// exists; readiness completes asynchronously — poll [state]
   /// until [WstunnelState.ready].
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.wstunnel.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('wstunnelStart', {
         'args': args,
@@ -59,6 +64,7 @@ class WstunnelPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.wstunnel.stop();
     try {
       await _channel.invokeMethod('wstunnelStop');
     } catch (_) {
@@ -67,6 +73,17 @@ class WstunnelPlatform {
   }
 
   static Future<WstunnelState> state() async {
+    if (Platform.isWindows) {
+      final s = WindowsSubprocesses.wstunnel.snapshot();
+      return WstunnelState(
+        available: s.available,
+        running: s.running,
+        ready: s.ready,
+        stage: s.stage,
+        error: s.error,
+        logTail: s.logTail,
+      );
+    }
     try {
       final m = await _channel.invokeMapMethod<String, dynamic>(
         'wstunnelState',

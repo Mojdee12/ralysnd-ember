@@ -40,6 +40,28 @@ if (-not $iscc) {
 }
 if (-not $iscc) { throw 'Inno Setup 6 is needed for the installer (winget install JRSoftware.InnoSetup)' }
 
+# The RegionHop defaults secret route — the same discipline
+# as the Android CI (.github/workflows/android.yml): the repo
+# carries only the placeholder at
+# app\lib\regionhop\regionhop_defaults.dart; when the
+# EMBER_REGIONHOP_DEFAULTS_B64 environment variable carries
+# the real file (base64), it is written into place for this
+# build only and the placeholder is restored afterwards, so
+# a dev machine never keeps — or accidentally commits — the
+# real panel values. The windows workflow passes the secret
+# through this variable; without it the build ships the
+# placeholder and the RegionHop page reports the panel as
+# not configured.
+$rhDefaultsPath = "$root\app\lib\regionhop\regionhop_defaults.dart"
+$rhDefaultsBackup = $null
+if ($env:EMBER_REGIONHOP_DEFAULTS_B64) {
+    $rhDefaultsBackup = [System.IO.File]::ReadAllBytes($rhDefaultsPath)
+    [System.IO.File]::WriteAllBytes(
+        $rhDefaultsPath,
+        [System.Convert]::FromBase64String($env:EMBER_REGIONHOP_DEFAULTS_B64))
+    Write-Host 'RegionHop defaults: real file restored from EMBER_REGIONHOP_DEFAULTS_B64 for this build.'
+}
+
 Push-Location "$root\app"
 try {
     # Flutter copies the assets into the build folder but never removes the
@@ -56,7 +78,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'flutter pub get failed' }
     flutter build windows --release --no-pub --dart-define=APP_VERSION=$version
     if ($LASTEXITCODE -ne 0) { throw 'flutter build failed' }
-} finally { Pop-Location }
+} finally {
+    Pop-Location
+    if ($null -ne $rhDefaultsBackup) {
+        [System.IO.File]::WriteAllBytes($rhDefaultsPath, $rhDefaultsBackup)
+        Write-Host 'RegionHop defaults: placeholder restored.'
+    }
+}
 
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
 Copy-Item "$root\app\build\windows\x64\runner\Release" $out -Recurse
@@ -139,6 +167,35 @@ if (Test-Path "$ovpnSidecar\openvpn.exe") {
     Write-Host "OpenVPN sidecar copied from $ovpnSidecar"
 } else {
     Write-Warning "No OpenVPN sidecar in $ovpnSidecar (run scripts\fetch-windows-sidecars.ps1 first): the OpenVPN engine will have no core"
+}
+
+# The full-parity sidecars (2.2.0+2040), same pattern: each
+# helper's folder beside the app, where subprocess_windows.dart
+# looks for it (sing-box / Sudoku / Zapret / Mieru / DNSCrypt /
+# DNSTT / wstunnel / OLCRTC), plus the WireGuard engine's
+# native backend folder (wireguard\amneziawg.exe + wintun.dll,
+# driven by the Xray platform's AWG leg). Absent, the build
+# still succeeds and that helper reports unavailable.
+foreach ($sc in @(
+    @('singbox', 'sing-box.exe', 'the TUIC/Snell/NaiveProxy/ShadowTLS profiles will have no core'),
+    @('sudokubox', 'sudokubox.exe', 'Sudoku profiles will have no core'),
+    @('zapret', 'ciadpi.exe', 'the DPI Lab zap candidates and the ByeDPI hop will be unavailable'),
+    @('mieru', 'mieru.exe', 'Mieru profiles will have no core'),
+    @('dnscrypt', 'dnscrypt-proxy.exe', 'DNSCrypt DNS will be unavailable'),
+    @('dnstt', 'dnstt-client.exe', 'DNSTT legs will be unavailable'),
+    @('wstunnel', 'wstunnel.exe', 'wstunnel legs will be unavailable'),
+    @('olcrtc', 'olcrtc.exe', 'OLCRTC legs will be unavailable'),
+    @('wireguard', 'amneziawg.exe', 'the native WireGuard engine will fall back to the Xray route'),
+    @('lantern', 'lanternd.exe', 'the Lantern engine will report unavailable')
+)) {
+    $scDir = "$root\tools\sidecars\$($sc[0])"
+    if (Test-Path "$scDir\$($sc[1])") {
+        New-Item -ItemType Directory -Force "$out\$($sc[0])" | Out-Null
+        Copy-Item "$scDir\*" "$out\$($sc[0])" -Recurse -Force
+        Write-Host "$($sc[0]) sidecar copied from $scDir"
+    } else {
+        Write-Warning "No $($sc[0]) sidecar in $scDir (run scripts\fetch-windows-sidecars.ps1 first): $($sc[2])"
+    }
 }
 
 # A clean copy named as the user sees it, for the zip and the installer.

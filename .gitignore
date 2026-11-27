@@ -2,3 +2,6 @@
 /app/.dart_tool/
 .dart_tool/
 **/build/test_cache/
+
+# Local sidecar/radiance trees (CI provisions its own)
+/tools/

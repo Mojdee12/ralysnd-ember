@@ -9,12 +9,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../aether/aether_controller.dart';
 import '../../app_settings.dart';
 import '../../core/android_core.dart';
 import '../../core/core_controller.dart';
 import '../../features.dart';
 import '../../l10n/app_localizations.dart';
 import '../../lantern/lantern_controller.dart';
+import '../../openvpn/openvpn_controller.dart';
 import '../../psiphon/psiphon_controller.dart';
 import '../../warp/warp_controller.dart';
 import '../../xray/config_builder.dart'
@@ -23,14 +25,28 @@ import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
 import '../bypass_apps_page.dart';
 import '../settings_page.dart';
+import 'aether_pages.dart';
+import 'app_lock.dart';
+import 'automation_pages.dart';
+import 'battery_report.dart';
+import 'chain_builder_page.dart';
+import 'daily_report_page.dart';
+import 'ember_format.dart';
 import 'ember_info.dart';
+import 'ember_logs_page.dart';
+import 'ember_sync.dart';
+import 'leak_test_page.dart';
 import 'map_settings.dart';
 import 'map_widgets.dart';
 import 'ember_theme.dart';
 import 'lantern_pages.dart';
+import 'openvpn_pages.dart';
 import 'psiphon_pages.dart';
 import 'warp_pages.dart';
+import 'warp_settings_page.dart' hide WarpSettingsPage;
+import 'wireguard_pages.dart';
 import 'xray_logs_page.dart';
+import 'xray_section.dart';
 
 class EmberSettings extends StatelessWidget {
   final CoreController core;
@@ -38,6 +54,9 @@ class EmberSettings extends StatelessWidget {
   final PsiphonController psiphon;
   final LanternController lantern;
   final WarpController warp;
+  final OpenVpnController openvpn;
+  final AetherController aetherWarp;
+  final AetherController aetherMasque;
   final AppSettings settings;
 
   /// The Windows desktop shell: the settings are the mockup's
@@ -51,6 +70,9 @@ class EmberSettings extends StatelessWidget {
     required this.psiphon,
     required this.lantern,
     required this.warp,
+    required this.openvpn,
+    required this.aetherWarp,
+    required this.aetherMasque,
     required this.settings,
     this.desktop = false,
   });
@@ -62,14 +84,54 @@ class EmberSettings extends StatelessWidget {
     final psiphonMode = settings.emberMode == 2;
     final lanternMode = settings.emberMode == 3;
     final warpMode = settings.emberMode == 4;
+    final wgMode = settings.emberMode == 5;
+    final openvpnMode = settings.emberMode == 6;
+    final aetherWarpMode = settings.emberMode == 7;
+    final masqueMode = settings.emberMode == 8;
     final engineSection = v2ray
-        ? _XraySection(xray: xray)
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Desktop only: the Windows backend's capture
+              // choice. Android always captures through its
+              // VpnService and never shows this; off = proxy
+              // mode (local SOCKS/HTTP only).
+              if (Features.desktopShell) ...[
+                _ToggleCard(
+                  title: 'System-wide capture (TUN)',
+                  subtitle: 'Off = proxy mode: local SOCKS/HTTP only',
+                  value: xray.settings.tunCapture,
+                  onChanged: (v) async {
+                    xray.settings.tunCapture = v;
+                    await xray.save();
+                  },
+                ),
+                const SizedBox(height: 10),
+              ],
+              XraySection(
+                xray: xray,
+                settings: settings,
+                openvpn: openvpn,
+                psiphon: psiphon,
+                warp: aetherWarp,
+                masque: aetherMasque,
+              ),
+            ],
+          )
         : psiphonMode
         ? _PsiphonSection(psiphon: psiphon)
         : lanternMode
         ? _LanternSection(lantern: lantern)
         : warpMode
         ? _WarpSection(warp: warp)
+        : wgMode
+        ? _WireGuardSection(xray: xray)
+        : openvpnMode
+        ? _OpenVpnSection(openvpn: openvpn)
+        : aetherWarpMode
+        ? _AetherSection(controller: aetherWarp, xray: xray, name: 'EmberWarp')
+        : masqueMode
+        ? _AetherSection(controller: aetherMasque, xray: xray, name: 'MASQUE')
         : _MozillaSection(core: core);
     final generalCard = GlassCard(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -128,6 +190,124 @@ class EmberSettings extends StatelessWidget {
         ],
       ),
     );
+    // The care-pack panels (W5): Android's settings tail —
+    // the Iran panel under the V2Ray section, the
+    // cross-engine Automation & diagnostics panel, the
+    // settings-damage surfaces and Privacy & sync — composed
+    // under whichever engine section is showing, in both
+    // layouts.
+    final fullSection = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        engineSection,
+        if (v2ray) ...[
+          const SizedBox(height: 14),
+          IranFeatures2147Panel(xray: xray),
+        ],
+        const SizedBox(height: 14),
+        _AutomationPanel(
+          core: core,
+          settings: settings,
+          xray: xray,
+          psiphon: psiphon,
+          lantern: lantern,
+          openvpn: openvpn,
+          warp: aetherWarp,
+          masque: aetherMasque,
+        ),
+        if (settings.storeUnreadable) ...[
+          const SizedBox(height: 14),
+          const MapSettingsPanel(
+            title: 'Settings protected',
+            children: [
+              MapSettingRow(
+                label: 'Your settings file could not be read',
+                subtitle:
+                    'The file is still there, so Ember is not '
+                    'overwriting it — your settings are safe, '
+                    'but changes will not be saved until the '
+                    'app restarts and can read the file.',
+                trailing: const SizedBox.shrink(),
+                divider: false,
+              ),
+            ],
+          ),
+        ] else if (settings.storeDamaged) ...[
+          const SizedBox(height: 14),
+          const MapSettingsPanel(
+            title: 'Settings recovered',
+            children: [
+              MapSettingRow(
+                label: 'Your settings file was damaged',
+                subtitle:
+                    'Ember kept a copy of the damaged file and '
+                    'started from defaults. Your app lock PIN '
+                    'and GitHub sync sign-in did not survive — '
+                    'set them up again here.',
+                trailing: const SizedBox.shrink(),
+                divider: false,
+              ),
+            ],
+          ),
+        ],
+        if (settings.saveError != null && !settings.storeUnreadable) ...[
+          const SizedBox(height: 14),
+          MapSettingsPanel(
+            title: 'Settings not saving',
+            children: [
+              MapSettingRow(
+                label: 'Changes could not be saved to disk',
+                subtitle:
+                    'Settings are kept only until the app '
+                    'closes. (${settings.saveError})',
+                trailing: const SizedBox.shrink(),
+                divider: false,
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 14),
+        MapSettingsPanel(
+          title: 'Privacy & sync',
+          children: [
+            MapSettingRow(
+              label: 'App lock',
+              subtitle: settings.appLockEnabled
+                  ? (settings.appLockBiometric
+                        ? 'On — PIN or biometrics asked when the app opens'
+                        : 'On — a PIN is asked when the app opens')
+                  : 'Off — set a PIN to gate the app',
+              trailing: _navChevron,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => AppLockSettingsPage(settings: settings),
+                ),
+              ),
+            ),
+            MapSettingRow(
+              label: 'Sync via GitHub',
+              subtitle: settings.syncGistId.isNotEmpty
+                  ? 'Set up — encrypted backup in your own gist'
+                  : 'Encrypted backup of your configs in your own GitHub',
+              divider: false,
+              trailing: _navChevron,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => SyncPage(
+                    settings: settings,
+                    xray: xray,
+                    openvpn: openvpn,
+                    psiphon: psiphon,
+                    warp: aetherWarp,
+                    masque: aetherMasque,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
     if (desktop) {
       // The desktop settings page (2.1.0, map_settings.dart):
       // the Map Control sample's floating glass panels —
@@ -136,7 +316,7 @@ class EmberSettings extends StatelessWidget {
       return MapSettingsPage(
         core: core,
         settings: settings,
-        engineSection: engineSection,
+        engineSection: fullSection,
         xray: xray,
       );
     }
@@ -154,11 +334,229 @@ class EmberSettings extends StatelessWidget {
         Center(child: Text(l.navSettings, style: Ember.title)),
         Center(child: Text('Ralysnd Ember', style: Ember.caption)),
         const SizedBox(height: 20),
-        engineSection,
+        fullSection,
         const SizedBox(height: 18),
         Text(l.generalSection, style: Ember.heading),
         const SizedBox(height: 10),
         generalCard,
+      ],
+    );
+  }
+}
+
+/// The settings rows' forward chevron (Android's
+/// _navChevron, build 2056: LTR points right).
+const _navChevron = Icon(
+  Icons.chevron_right_rounded,
+  color: MapUi.faint,
+  size: 20,
+);
+
+/// The cross-engine Automation & diagnostics panel
+/// (Android build 2065/2095/2149, W5 port): the fallback
+/// chain, auto-connect triggers, custom chains, the leak
+/// test, the filtering probe, the logs hub, the daily
+/// problem report (DEFAULT OFF), the tunnel MTU and the
+/// session data budget.
+class _AutomationPanel extends StatelessWidget {
+  const _AutomationPanel({
+    required this.core,
+    required this.settings,
+    required this.xray,
+    required this.psiphon,
+    required this.lantern,
+    required this.openvpn,
+    required this.warp,
+    required this.masque,
+  });
+  final CoreController core;
+  final AppSettings settings;
+  final XrayController xray;
+  final PsiphonController psiphon;
+  final LanternController lantern;
+  final OpenVpnController openvpn;
+  final AetherController warp;
+  final AetherController masque;
+
+  @override
+  Widget build(BuildContext context) {
+    final reportCount = xray.problemJournal.countForDay(DateTime.now());
+    return MapSettingsPanel(
+      title: 'Automation & diagnostics',
+      children: [
+        MapSettingRow(
+          label: 'Fallback chain',
+          subtitle: settings.fallbackChainEnabled
+              ? 'On — ${settings.fallbackChain.map(emberEngineLabel).join(' → ')}'
+              : 'Off — a failed connect stays failed',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => FallbackChainPage(settings: settings),
+            ),
+          ),
+        ),
+        MapSettingRow(
+          label: 'Auto-connect',
+          subtitle: settings.emberAutoConnect
+              ? 'On — boot, untrusted Wi-Fi, network change'
+              : 'Off',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => AutoConnectPage(settings: settings),
+            ),
+          ),
+        ),
+        MapSettingRow(
+          label: 'Custom chains',
+          subtitle: settings.chains.isEmpty
+              ? 'Build a two-hop route: an underlay engine under one of your configs'
+              : '${latDigits(settings.chains.length)} saved chain${settings.chains.length == 1 ? '' : 's'}',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ChainBuilderPage(xray: xray, settings: settings),
+            ),
+          ),
+        ),
+        MapSettingRow(
+          label: 'Leak test',
+          subtitle: 'What the outside world sees while you are connected',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => LeakTestPage(
+                core: core,
+                xray: xray,
+                psiphon: psiphon,
+                lantern: lantern,
+                openvpn: openvpn,
+                warp: warp,
+                masque: masque,
+              ),
+            ),
+          ),
+        ),
+        MapSettingRow(
+          label: 'Filtering probe',
+          subtitle: 'How this network treats UDP, DNS and TLS names',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const FilteringProbePage()),
+          ),
+        ),
+        MapSettingRow(
+          label: 'Logs',
+          subtitle: 'Core, engine and crash logs for every engine',
+          trailing: _navChevron,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => EmberLogsPage(
+                core: core,
+                xray: xray,
+                psiphon: psiphon,
+                lantern: lantern,
+                openvpn: openvpn,
+              ),
+            ),
+          ),
+        ),
+        MapSettingRow(
+          label: 'Daily problem report',
+          subtitle: xray.settings.dailyProblemReport
+              ? 'On — problems are journaled for the daily digest'
+              : 'Off — nothing is recorded',
+          trailing: EmberToggle(
+            value: xray.settings.dailyProblemReport,
+            onChanged: (v) => unawaited(xray.setProblemReportEnabled(v)),
+          ),
+        ),
+        if (xray.settings.dailyProblemReport)
+          MapSettingRow(
+            label: 'Today\u2019s problem report',
+            subtitle: reportCount == 0
+                ? 'No problems recorded today'
+                : '${latDigits(reportCount)} problem${reportCount == 1 ? '' : 's'} recorded today',
+            trailing: _navChevron,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => DailyReportPage(xray: xray)),
+            ),
+          ),
+        MapSettingRow(
+          label: 'Tunnel MTU',
+          subtitle:
+              'Interface MTU for every engine — smaller values help on networks that fragment packets. Applies at next connect.',
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final n in const [1280, 1400, 1420, 1500])
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: EmberChip(
+                    label: '$n',
+                    compact: true,
+                    selected: xray.settings.tunnelMtu == n,
+                    onTap: () async {
+                      xray.settings.tunnelMtu = n;
+                      AndroidCore.tunnelMtu.value = n;
+                      await xray.save();
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+        MapSettingRow(
+          label: 'Session data budget',
+          subtitle: settings.sessionBudgetMb <= 0
+              ? 'Off — sessions are not capped'
+              : 'Disconnects at ${settings.sessionBudgetMb >= 1024 ? '${settings.sessionBudgetMb ~/ 1024} GB' : '${settings.sessionBudgetMb} MB'} per session (warns at 80%)',
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (mb, label) in const [
+                (0, 'Off'),
+                (500, '500 MB'),
+                (1024, '1 GB'),
+                (2048, '2 GB'),
+                (5120, '5 GB'),
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: EmberChip(
+                    label: label,
+                    compact: true,
+                    selected: settings.sessionBudgetMb == mb,
+                    onTap: () => settings.update(sessionBudgetMb: mb),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        // Build 2105: the battery usage report. Recording
+        // happens in the shell's session sampler; the page
+        // states its own estimation limits.
+        MapSettingRow(
+          label: 'Battery usage report',
+          subtitle:
+              'Attribute each session\u2019s battery drain to '
+              'the engine that was connected (an estimate)',
+          divider: settings.batteryReportEnabled,
+          trailing: EmberToggle(
+            value: settings.batteryReportEnabled,
+            onChanged: (v) => settings.update(batteryReportEnabled: v),
+          ),
+        ),
+        if (settings.batteryReportEnabled)
+          MapSettingRow(
+            label: 'Battery report',
+            trailing: _navChevron,
+            divider: false,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const BatteryReportPage()),
+            ),
+          ),
       ],
     );
   }
@@ -348,6 +746,174 @@ class _WarpSection extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The WireGuard engine's section (Android's _WireGuardSection,
+/// build 2104 route): the selected config and the engine it
+/// will actually run, into the WireGuard list.
+class _WireGuardSection extends StatelessWidget {
+  const _WireGuardSection({required this.xray});
+  final XrayController xray;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return ListenableBuilder(
+      listenable: xray,
+      builder: (context, _) {
+        final selected = xray.selected;
+        final wgSelected =
+            selected != null && selected.protocol == Protocol.wireguard
+            ? selected
+            : null;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SectionTitle(l.connectionSection),
+            GlassCard(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Column(
+                children: [
+                  _Row(
+                    icon: Icons.vpn_key_rounded,
+                    label: 'WireGuard',
+                    value: wgSelected?.displayName ?? 'No config selected',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => WireGuardServersView(xray: xray),
+                      ),
+                    ),
+                  ),
+                  const Divider(color: Ember.line, height: 1),
+                  _Row(
+                    icon: Icons.memory_rounded,
+                    label: 'Engine',
+                    value: wgSelected == null
+                        ? '—'
+                        : wgSelected.hasSupportedAmneziaParams
+                        ? 'AmneziaWG'
+                        : 'WireGuard',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// The OpenVPN engine's section (Android's _OpenVpnSection):
+/// live state into the engine's settings, plus its logs.
+class _OpenVpnSection extends StatelessWidget {
+  const _OpenVpnSection({required this.openvpn});
+  final OpenVpnController openvpn;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return ListenableBuilder(
+      listenable: openvpn,
+      builder: (context, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionTitle(l.connectionSection),
+          GlassCard(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Column(
+              children: [
+                _Row(
+                  icon: Icons.vpn_lock_rounded,
+                  label: 'OpenVPN',
+                  value: openvpn.state.connected
+                      ? l.statusConnected
+                      : openvpn.state.running
+                      ? l.stateConnecting
+                      : l.statusDisconnected,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => OpenVpnSettingsPage(openvpn: openvpn),
+                    ),
+                  ),
+                ),
+                const Divider(color: Ember.line, height: 1),
+                _Row(
+                  icon: Icons.receipt_long_rounded,
+                  label: 'Engine logs',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => OpenVpnLogsPage(openvpn: openvpn),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The EmberWarp / MASQUE section (Android's _WarpSection,
+/// build 2056 audit A-H5 + 2095 audit #6): the slot's own
+/// options page — never another engine's profile.
+class _AetherSection extends StatelessWidget {
+  const _AetherSection({
+    required this.controller,
+    required this.xray,
+    required this.name,
+  });
+  final AetherController controller;
+  final XrayController xray;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final c = controller;
+        final stateWord = c.connected
+            ? l.statusConnected
+            : c.state.running || c.connecting
+            ? l.stateConnecting
+            : l.statusDisconnected;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SectionTitle(l.connectionSection),
+            GlassCard(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Column(
+                children: [
+                  _Row(
+                    icon: Icons.tune_rounded,
+                    label: name,
+                    value: stateWord,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            AetherOptionsPage(controller: c, xray: xray),
+                      ),
+                    ),
+                  ),
+                  const Divider(color: Ember.line, height: 1),
+                  _Row(
+                    icon: Icons.place_rounded,
+                    label: 'Endpoint',
+                    value: c.state.server.isEmpty ? '—' : c.state.server,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -549,484 +1115,6 @@ class _MozillaSectionState extends State<_MozillaSection> {
 
 // ------------------------------------------------------------------ V2Ray
 
-class _XraySection extends StatelessWidget {
-  const _XraySection({required this.xray});
-  final XrayController xray;
-
-  XraySettings get s => xray.settings;
-
-  Future<void> _save(BuildContext context) async {
-    await xray.save();
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppLocalizations.of(context).savedNote)),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    return ListenableBuilder(
-      listenable: xray,
-      builder: (context, _) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SectionTitle(l.connectionSection),
-          GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(l.routingPreset, style: Ember.body),
-                const SizedBox(height: 11),
-                Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  children: [
-                    for (final preset in RoutingPreset.values)
-                      EmberChip(
-                        label: switch (preset) {
-                          RoutingPreset.global => l.presetGlobal,
-                          RoutingPreset.bypassLan => l.presetBypassLan,
-                          RoutingPreset.bypassIran => l.presetBypassIran,
-                          // Android 2157's own wording (its
-                          // settings hard-code this label too).
-                          RoutingPreset.bypassChina => 'Bypass China',
-                          RoutingPreset.directAll => l.presetDirectAll,
-                        },
-                        selected: s.routingPreset == preset,
-                        onTap: () async {
-                          s.routingPreset = preset;
-                          await xray.save();
-                        },
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 13),
-                Text(l.domainStrategy, style: Ember.body),
-                const SizedBox(height: 9),
-                EmberSegmented<String>(
-                  value: s.domainStrategy,
-                  options: [
-                    ('IPIfNonMatch', 'IPIfNonMatch', null),
-                    ('AsIs', 'AsIs', null),
-                    ('IPOnDemand', 'IPOnDemand', null),
-                  ],
-                  onChanged: (v) async {
-                    s.domainStrategy = v;
-                    await xray.save();
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-          // Desktop only: the Windows backend's mode choice. Android
-          // always captures through its VpnService and never shows
-          // this; off = proxy mode (local SOCKS/HTTP only).
-          if (Features.desktopShell) ...[
-            _ToggleCard(
-              title: 'System-wide capture (TUN)',
-              subtitle: 'Off = proxy mode: local SOCKS/HTTP only',
-              value: s.tunCapture,
-              onChanged: (v) async {
-                s.tunCapture = v;
-                await xray.save();
-              },
-            ),
-          ],
-          _ToggleCard(
-            title: l.enableUdp,
-            value: s.enableUdp,
-            onChanged: (v) async {
-              s.enableUdp = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: l.sniffing,
-            value: s.sniffing,
-            onChanged: (v) async {
-              s.sniffing = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: l.fakeDns,
-            value: s.fakeDns,
-            onChanged: (v) async {
-              s.fakeDns = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: l.ipv6Route,
-            value: s.ipv6Route,
-            onChanged: (v) async {
-              s.ipv6Route = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: l.mux,
-            subtitle: l.muxSub,
-            value: s.muxEnabled,
-            onChanged: (v) async {
-              s.muxEnabled = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: l.fragment,
-            subtitle: l.fragmentSub,
-            value: s.fragmentEnabled,
-            onChanged: (v) async {
-              s.fragmentEnabled = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: l.allowInsecure,
-            value: s.allowInsecure,
-            onChanged: (v) async {
-              s.allowInsecure = v;
-              await xray.save();
-            },
-          ),
-          const SizedBox(height: 8),
-          _SectionTitle(l.dnsSection),
-          GlassCard(
-            child: Column(
-              children: [
-                _TextRow(
-                  label: l.remoteDns,
-                  initial: s.remoteDns,
-                  onSubmit: (v) async {
-                    if (v.isNotEmpty) s.remoteDns = v;
-                    await _save(context);
-                  },
-                ),
-                // Resolver transport (parity port of builds
-                // 2032/2037): DoH, DoQ, or plain DNS over TCP
-                // port 53 at the provider's pinned IP — the same
-                // choices, in the desktop page's own idiom.
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        spacing: 7,
-                        runSpacing: 7,
-                        children: [
-                          EmberChip(
-                            label: 'DoH',
-                            selected: s.remoteDnsProto == 'doh',
-                            onTap: () async {
-                              s.remoteDnsProto = 'doh';
-                              await xray.save();
-                            },
-                          ),
-                          EmberChip(
-                            label: 'DoQ (QUIC)',
-                            selected: s.remoteDnsProto == 'doq',
-                            onTap: () async {
-                              s.remoteDnsProto = 'doq';
-                              await xray.save();
-                            },
-                          ),
-                          EmberChip(
-                            label: 'TCP (port 53)',
-                            selected: s.remoteDnsProto == 'tcp',
-                            onTap: () async {
-                              s.remoteDnsProto = 'tcp';
-                              await xray.save();
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 7),
-                      Text(
-                        'Resolution order: ${primaryResolver(s)}'
-                        '${s.dnsGroup
-                            ? ' → group: ${dnsGroupMembers.map((m) => resolverUnderTransport(m, s.remoteDnsProto)).join(' → ')}'
-                            : s.dnsFallback
-                            ? ' → ${resolverUnderTransport(s.fallbackDns.trim(), s.remoteDnsProto)}'
-                            : ''}'
-                        ' • server names resolve through the provider DNS, never the local one',
-                        style: Ember.caption,
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _TextRow(
-                  label: l.localDns,
-                  initial: s.localDns,
-                  onSubmit: (v) async {
-                    if (v.isNotEmpty) s.localDns = v;
-                    await _save(context);
-                  },
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _TextRow(
-                  label: l.socksPort,
-                  initial: '${s.socksPort}',
-                  numeric: true,
-                  onSubmit: (v) async {
-                    final port = int.tryParse(v);
-                    if (port != null && port > 0 && port < 65536) {
-                      s.socksPort = port;
-                    }
-                    await _save(context);
-                  },
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _TextRow(
-                  label: l.httpPort,
-                  initial: '${s.httpPort}',
-                  numeric: true,
-                  onSubmit: (v) async {
-                    final port = int.tryParse(v);
-                    if (port != null && port > 0 && port < 65536) {
-                      s.httpPort = port;
-                    }
-                    await _save(context);
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-          _ToggleCard(
-            title: 'Block ads & trackers',
-            subtitle: 'Resolve through AdGuard’s filtering DNS',
-            value: s.adBlockDoh,
-            onChanged: (v) async {
-              s.adBlockDoh = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: 'DNS group',
-            subtitle: 'Google, Cloudflare and Quad9 asked in turn; the working one sticks',
-            value: s.dnsGroup,
-            onChanged: (v) async {
-              s.dnsGroup = v;
-              await xray.save();
-            },
-          ),
-          _ToggleCard(
-            title: 'DNS fallback',
-            subtitle: 'Used only when the main resolver fails',
-            value: s.dnsFallback,
-            onChanged: (v) async {
-              s.dnsFallback = v;
-              await xray.save();
-            },
-          ),
-          if (s.dnsFallback)
-            GlassCard(
-              child: _TextRow(
-                label: 'Fallback DNS',
-                initial: s.fallbackDns,
-                onSubmit: (v) async {
-                  if (v.isNotEmpty) s.fallbackDns = v;
-                  await xray.save();
-                },
-              ),
-            ),
-          const SizedBox(height: 18),
-          _SectionTitle(l.customRules),
-          GlassCard(
-            child: Column(
-              children: [
-                _ListRow(
-                  label: l.directDomains,
-                  values: s.customDirectDomains,
-                  onChanged: (v) async {
-                    s.customDirectDomains = v;
-                    await xray.save();
-                  },
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _ListRow(
-                  label: l.directIps,
-                  values: s.customDirectIps,
-                  onChanged: (v) async {
-                    s.customDirectIps = v;
-                    await xray.save();
-                  },
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _ListRow(
-                  label: l.blockDomains,
-                  values: s.customBlockDomains,
-                  onChanged: (v) async {
-                    s.customBlockDomains = v;
-                    await xray.save();
-                  },
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _ListRow(
-                  label: l.proxyDomains,
-                  values: s.customProxyDomains,
-                  onChanged: (v) async {
-                    s.customProxyDomains = v;
-                    await xray.save();
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 18),
-          _SectionTitle(l.subscriptionsTitle),
-          _ToggleCard(
-            title: l.updateOnLaunch,
-            value: s.subUpdateOnLaunch,
-            onChanged: (v) async {
-              s.subUpdateOnLaunch = v;
-              await xray.save();
-            },
-          ),
-          GlassCard(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Column(
-              children: [
-                _Row(
-                  icon: Icons.backup_rounded,
-                  label: l.backupData,
-                  onTap: () => _showBackup(context),
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _Row(
-                  icon: Icons.restore_rounded,
-                  label: l.restoreData,
-                  onTap: () => _showRestore(context),
-                ),
-                const Divider(color: Ember.line, height: 1),
-                _Row(
-                  icon: Icons.terminal_rounded,
-                  label: l.coreLogs,
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => XrayLogsPage(xray: xray)),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showBackup(BuildContext context) async {
-    final l = AppLocalizations.of(context);
-    // Android 2157's export refuses an empty state with null
-    // (nothing to back up) instead of emitting an empty backup.
-    final backup = await xray.exportBackup();
-    if (!context.mounted) return;
-    if (backup == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.backupEmpty)));
-      return;
-    }
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: Ember.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: Text(l.backupData, style: Ember.heading),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SelectableText(
-            backup,
-            textDirection: TextDirection.ltr,
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 10.5,
-              color: Ember.dim,
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: backup));
-              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-            },
-            child: Text(
-              l.copyLink,
-              style: const TextStyle(color: Ember.orange),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(
-              l.closeAction,
-              style: const TextStyle(color: Ember.dim),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showRestore(BuildContext context) async {
-    final l = AppLocalizations.of(context);
-    final controller = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: Ember.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: Text(l.restoreData, style: Ember.heading),
-        content: TextField(
-          controller: controller,
-          minLines: 5,
-          maxLines: 9,
-          textDirection: TextDirection.ltr,
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 11,
-            color: Ember.text,
-          ),
-          decoration: emberField(context, '{…}'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(
-              l.closeAction,
-              style: const TextStyle(color: Ember.dim),
-            ),
-          ),
-          TextButton(
-            onPressed: () async {
-              // Android 2157's import answers a result object
-              // (null = the backup could not be restored).
-              final result = await xray.importBackup(controller.text);
-              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      result != null ? l.restoreOk : l.restoreFailed,
-                    ),
-                  ),
-                );
-              }
-            },
-            child: Text(
-              l.restoreData,
-              style: const TextStyle(color: Ember.orange),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 /// One editable text value row (label + current value, tap to edit).
 class _TextRow extends StatelessWidget {

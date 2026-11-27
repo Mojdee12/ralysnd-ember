@@ -71,6 +71,36 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   HANDLE instance_mutex =
       ::CreateMutexW(nullptr, TRUE, (L"Local\\VPNClient-" + key).c_str());
   if (::GetLastError() == ERROR_ALREADY_EXISTS) {
+    // A protocol activation (ovpn:// / openvpn://) hands its
+    // link to the running copy: leave it in the app data
+    // folder's pending-link.txt, which the shell drains when
+    // the window comes forward (desktop/pending_link.dart).
+    for (const auto& arg : command_line_arguments) {
+      std::string lower = arg;
+      for (auto& c : lower) c = static_cast<char>(::tolower(c));
+      if (lower.rfind("ovpn://", 0) == 0 ||
+          lower.rfind("openvpn://", 0) == 0) {
+        wchar_t exe_path[MAX_PATH] = {};
+        ::GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+        std::wstring dir(exe_path);
+        const auto slash = dir.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) {
+          dir.resize(slash);
+          const std::wstring file =
+              dir + L"\\user-data\\pending-link.txt";
+          HANDLE h = ::CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                   nullptr);
+          if (h != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            ::WriteFile(h, arg.data(),
+                        static_cast<DWORD>(arg.size()), &written, nullptr);
+            ::CloseHandle(h);
+          }
+        }
+        break;
+      }
+    }
     // Ask the running copy to show its window, and let it take the focus.
     ::AllowSetForegroundWindow(ASFW_ANY);
     ::PostMessageW(HWND_BROADCAST, ::RegisterWindowMessageW(L"VPNClient.Activate"),

@@ -1,10 +1,13 @@
 import 'package:firefox_vpn/lantern/lantern_platform.dart';
+import 'package:firefox_vpn/lantern/lantern_platform_windows.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// The Lantern engine's state parsing (build 2024): the map the
-/// Kotlin LanternVpnService/LanternCore pair reports, the stage
-/// labels the UI speaks, and the mode-3 contract (a state with
-/// no error and no binary is inert, never a crash).
+/// The Lantern engine's state parsing (the 2157 contract,
+/// W3 radiance port): the map the platform reports, the
+/// stage labels the UI speaks, and the mode-3 contract (a
+/// state with no error and no binary is inert, never a
+/// crash). The Windows backend serves its mixed inbound on
+/// 127.0.0.1:12080 (radiance novpn).
 void main() {
   group('LanternState.fromMap', () {
     test('parses a full connected report', () {
@@ -18,13 +21,10 @@ void main() {
         'exitCountry': 'Netherlands',
         'exitCode': 'NL',
         'servers': 42,
-        'exhausted': false,
         'sinceMs': 1700000000000,
         'up': 1024,
         'down': 2048,
         'error': null,
-        'stdoutTail': ['[lantern] listening', '[lantern] proxy ok'],
-        'stderrTail': <String>[],
       });
       expect(s.available, isTrue);
       expect(s.running, isTrue);
@@ -36,7 +36,6 @@ void main() {
       expect(s.upBytes, 1024);
       expect(s.downBytes, 2048);
       expect(s.error, isNull);
-      expect(s.stdoutTail, hasLength(2));
       expect(s.stageLabel, 'Connected');
       expect(s.starting, isFalse);
     });
@@ -49,6 +48,8 @@ void main() {
       expect(s.servers, -1);
       expect(s.exitLine, '');
       expect(s.stageLabel, 'Not connected');
+      expect(s.countersReported, isFalse);
+      expect(s.smartRouting, isFalse);
     });
 
     test('stage labels track the contract', () {
@@ -56,15 +57,14 @@ void main() {
         const LanternState(stage: 'starting').stageLabel,
         'Starting the core…',
       );
-      expect(
-        const LanternState(stage: 'fetching').stageLabel,
-        'Fetching the server list…',
-      );
       expect(const LanternState(stage: 'error').stageLabel, 'Failed');
-      expect(const LanternState(stage: 'fetching').starting, isTrue);
       expect(
-        const LanternState(running: true, stage: 'fetching').starting,
+        const LanternState(running: true, stage: 'starting').starting,
         isTrue,
+      );
+      expect(
+        const LanternState(running: true, connected: true).starting,
+        isFalse,
       );
     });
 
@@ -73,9 +73,24 @@ void main() {
       expect(s.exitLine, 'Germany');
     });
 
-    test('ports are the MLM-proven pair', () {
-      expect(LanternPlatform.socksPort, 20840);
-      expect(LanternPlatform.httpPort, 20841);
+    test('the kill-switch hold and counters flags parse', () {
+      // countersReported is DERIVED by fromMap (up/down
+      // present as numbers), never read from a map key.
+      final s = LanternState.fromMap({
+        'killSwitchHeld': true,
+        'up': 10,
+        'down': 20,
+        'selectedTag': 'lantern-nl',
+        'smartRouting': true,
+      });
+      expect(s.killSwitchHeld, isTrue);
+      expect(s.countersReported, isTrue);
+      expect(s.selectedTag, 'lantern-nl');
+      expect(s.smartRouting, isTrue);
+    });
+
+    test('the Windows backend serves radiance on 12080', () {
+      expect(WindowsLanternBackend.socksPort, 12080);
     });
   });
 }

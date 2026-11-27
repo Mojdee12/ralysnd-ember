@@ -1,0 +1,261 @@
+[
+  {
+    "OverrideID": "fastly-provider",
+    "MatchFrontingProviderIDRegexes": [
+      "(?i)fastly"
+    ],
+    "DialAddresses": [
+      "pypi.org"
+    ],
+    "SNIServerName": "pypi.org",
+    "VerifyServerNames": [
+      "www.python.org",
+      "pypi.org",
+      "fastly.com",
+      "www.fastly.com",
+      "developer.fastly.com",
+      "githubassets.com",
+      "github.com",
+      "github.io",
+      "githubusercontent.com"
+    ],
+    "ALPNProtocols": [
+      "h2",
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "fastly-address",
+    "MatchDialAddressRegexes": [
+      "(?i)(fastly|pypi|python|github)"
+    ],
+    "DialAddresses": [
+      "pypi.org"
+    ],
+    "SNIServerName": "pypi.org",
+    "VerifyServerNames": [
+      "www.python.org",
+      "pypi.org",
+      "fastly.com",
+      "www.fastly.com",
+      "developer.fastly.com",
+      "githubassets.com",
+      "github.com",
+      "github.io",
+      "githubusercontent.com"
+    ],
+    "ALPNProtocols": [
+      "h2",
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-a-1",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.215.0.206"
+    ],
+    "SNIServerName": "23.215.0.206",
+    "VerifyServerNames": [
+      "23.215.0.206",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-a-2",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.215.0.203"
+    ],
+    "SNIServerName": "23.215.0.203",
+    "VerifyServerNames": [
+      "23.215.0.203",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-b-1",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.212.250.91"
+    ],
+    "SNIServerName": "23.212.250.91",
+    "VerifyServerNames": [
+      "23.212.250.91",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-b-2",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.212.250.78"
+    ],
+    "SNIServerName": "23.212.250.78",
+    "VerifyServerNames": [
+      "23.212.250.78",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-c-1",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.12.147.13"
+    ],
+    "SNIServerName": "23.12.147.13",
+    "VerifyServerNames": [
+      "23.12.147.13",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-c-2",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.12.147.29"
+    ],
+    "SNIServerName": "23.12.147.29",
+    "VerifyServerNames": [
+      "23.12.147.29",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-d-1",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.73.207.8"
+    ],
+    "SNIServerName": "23.73.207.8",
+    "VerifyServerNames": [
+      "23.73.207.8",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-d-2",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "23.73.207.15"
+    ],
+    "SNIServerName": "23.73.207.15",
+    "VerifyServerNames": [
+      "23.73.207.15",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  },
+  {
+    "OverrideID": "edge-original",
+    "MatchDialAddressRegexes": [
+      ".*"
+    ],
+    "DialAddresses": [
+      "92.123.102.43"
+    ],
+    "SNIServerName": "92.123.102.43",
+    "VerifyServerNames": [
+      "92.123.102.43",
+      "a248.e.akamai.net",
+      "a.akamaized.net",
+      "a.akamaized-staging.net",
+      "a.akamaihd.net",
+      "a.akamaihd-staging.net",
+      "www.akamai.com"
+    ],
+    "ALPNProtocols": [
+      "http/1.1"
+    ],
+    "TLSProfile": "Chrome-83"
+  }
+]

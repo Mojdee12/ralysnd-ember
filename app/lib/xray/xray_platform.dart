@@ -59,12 +59,13 @@ class XrayState {
   /// side computes from the backend's own ActiveConfig (build
   /// 2104). The handshake age is display only: it never gates a
   /// connect or tears a session down. -1/0 when this is not an
-  /// AWG session, or the peer has not answered yet. The Windows
-  /// backend has no WG Tunnel engine (W2 owns that question); it
-  /// reports the defaults and records the refusal in
-  /// [awgProblemSeq]/[coreProblem] so the controller's fallback
-  /// walk proceeds exactly as it does for an Android start
-  /// failure.
+  /// AWG session, or the peer has not answered yet. On Windows
+  /// the engine is the AmneziaWG client's per-tunnel service
+  /// (W2): the same fields are reported from the service's
+  /// state and its UAPI pipe, and a failed start is recorded
+  /// in [awgProblemSeq]/[coreProblem] so the controller's
+  /// fallback walk proceeds exactly as it does for an Android
+  /// start failure.
   final bool awg;
   final int awgHandshakeAgeSec;
   final int awgRxBytes;

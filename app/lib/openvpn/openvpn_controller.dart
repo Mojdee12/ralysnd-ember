@@ -137,6 +137,21 @@ class OpenVpnController extends ChangeNotifier {
     }
   }
 
+  /// Build 2116 (AB-05): replaces the user profiles with a
+  /// restored backup's set and persists them. Credentials
+  /// are NOT part of a backup — they stay in the device
+  /// vault — so restored profiles that need a username or
+  /// password ask for it again on first connect.
+  Future<void> restoreProfiles(List<OvpnProfile> profiles) async {
+    userProfiles = profiles;
+    if (selectedId.isNotEmpty &&
+        !userProfiles.any((p) => p.id == selectedId)) {
+      selectedId = '';
+    }
+    notifyListeners();
+    await _saveStore();
+  }
+
   Future<void> _saveStore() async {
     // Saving the selection must never be able to take the app
     // down (2026 fix contract: a country tap is a pure state

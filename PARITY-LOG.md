@@ -238,3 +238,91 @@ w1-progress.md, renders/win-home-mapcontrol-2026-11-27.*).
   GOOS=windows build + vet clean; TestUDPLookupAndDial fails
   identically on pristine HEAD (this VM's UDP loopback).
 - Version: pubspec 2.2.0+2039, appBuildNumber '2039'.
+
+## Full parity — 2.2.0+2040 (2026-11-27): W2–W6, one cumulative build
+
+Owner order 2026-11-27 20:55 ("کامل با همه قابلیت های موبایل بم
+بده"): the complete app at Android-2157 parity, phases W2–W6
+back-to-back in ONE build. Running record:
+~/workspace/ember-app/windows-parity/full-parity-progress.md.
+
+- **W2 engines.** Psiphon: the MLM host rewritten in Dart over
+  psiphon-core.exe (Android 2157's constants/strategy/watchdog
+  verbatim; ConsoleClient deviations documented in-file);
+  dataDir() desktop fix at the seam (the bare channel call
+  threw on Windows, breaking state persistence for 21 call
+  sites). WireGuard/AmneziaWG: NATIVE backend on
+  amneziawg.exe (tunnel service AmneziaWGTunnel$<name>, UAPI
+  handshake/byte readback; the W1 honest refusal replaced);
+  OpenVPN ovpn:// links end to end (parser, shell intake,
+  second-instance pending-link file, installer URL protocols);
+  WARP drift resolved (both surfaces real; aether_pages
+  ported to 2157).
+- **W3 sources + Lantern.** SecretStore gains a DPAPI
+  (CurrentUser) vault backend. 24 pages batch-ported; the
+  settings Xray section replaced wholesale with Android
+  2157's (new xray_section.dart). RegionHop live via the
+  placeholder + CI secret route (placeholder notice in-app
+  when a build carries no panel). URnetwork source page
+  live (vault accounts, create-by-country, managed profiles
+  through the Xray/WG engines; the vendor-SDK engine mode
+  is Android-only by platform). Lantern FULLY implemented
+  via radiance (novpn lanternd + a stdio JSON bridge in
+  lantern-bridge/, mirrored replace pins + completed
+  go.sum; SOCKS 127.0.0.1:12080 through the TUN bridge).
+  Sidecar foundation: subprocess_windows.dart (the Dart twin
+  of SubprocessCore.kt) behind the singbox/sudoku/zapret/
+  mieru/dnscrypt/dnstt/wstunnel/olcrtc facades; fetch script
+  pins for all of them + AmneziaWG MSI extraction + the
+  aether Rust/mingw build.
+- **W4 Iran/DPI.** DPI Lab live over the sandbox core;
+  ByeDPI hop (DEFAULT OFF) via ciadpi; SNI scan + spoof;
+  kill switch IMPLEMENTED for the Xray and EmberWarp paths
+  (was accepted-and-ignored): an unexpected core death holds
+  the TUN bridge up as a blackhole with state words.
+- **W5 care pack.** Settings tail wired (Automation &
+  diagnostics panel: fallback chain, auto-connect, custom
+  chains, leak test, filtering probe, logs hub, daily
+  problem report [DEFAULT OFF], tunnel MTU, session budget;
+  settings-damage panels; Privacy & sync with app lock +
+  GitHub sync). App-lock gate in the shell (PIN; re-lock on
+  background; pending links queue behind it). Session budget
+  watcher + battery sampler in the shell (WMI battery read).
+  V2Ray home cards ported — the underlay selector was
+  missing entirely and is now there (None/Psiphon/EmberWarp/
+  DNSTT/OLCRTC + settings pills), plus QuickPresets, the
+  EmberWarp card and the connection-check card. Profile
+  editor replaced with 2157's (per-config DNS ping, mixins).
+  Leak test's WebRTC probe ported to InAppWebView/WebView2.
+- **W6 hardening.** A full analyze pass with a CORRECT error
+  grep found 56 latent errors the phase checkpoints' broken
+  grep had hidden (stale win-vintage APIs in ported pages);
+  all fixed — analyze now reports 0 errors, verified. The
+  sudokubox fetch switched from the GitHub archive (which
+  lacks the fork's replace/psiphon-tls dir) to a pinned git
+  clone + -mod=mod; the Windows build of sudokubox.exe and
+  of lantern-bridge.exe are both PROVEN locally (PE32+).
+  Tests: full suite +359 −9 — the 8 W1-baseline failures
+  (CoreLocator + 7 widget layout timeouts) unchanged, plus
+  one varying failure from a known race between the two
+  OpenVPN test files over the shared resolved store on
+  desktop hosts (both files pass standalone; CI does not
+  run the Dart suite). New/updated suites: psiphon 9,
+  awg 5, ovpn_link 14, lantern_state 6.
+- **Named not-at-parity legs** (honest list, also in the
+  progress file): the URnetwork vendor-SDK engine mode
+  (Android-only; capability ships via managed profiles);
+  the emergency-connect walk + failure-alternative offers
+  (src2-shell machinery with no counterpart in this shell's
+  actor model — not ported, no dead surface added); AWG
+  kill switch = the tunnel service's own WFP rules (no
+  post-death Ember hold; service install needs admin);
+  ovpn:// protocol registration only via the installer;
+  OpenVPN session bytes unmeasured (no counters in the
+  Windows backend — the budget says so in-app); QR image
+  decode on Windows reads as "no codes" (mobile_scanner
+  has no Windows implementation; paste import is the
+  route); aether.exe rides the CI Rust build — if it
+  fails there, EmberWarp/MASQUE report unavailable
+  honestly, as in 2038/2039.
+- Version: pubspec 2.2.0+2040, appBuildNumber '2040'.

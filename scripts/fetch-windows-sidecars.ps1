@@ -76,6 +76,94 @@
 #     SHA-256 b92c3b2adae85a11ba71fe7216daf0d84e82af4c8ab6c5625807f28622043a59
 #     (go.dev's official release index, checked 2026-11-01)
 #
+# Full-parity sidecars (2.2.0+2040 — the SubprocessCore helper
+# family Android drives through SubprocessCore.kt; on Windows
+# subprocess_windows.dart drives the same binaries):
+#   sing-box v1.14.4 official windows-amd64 zip (TUIC / Snell /
+#     NaiveProxy / ShadowTLS / Tailscale / OpenConnect — the
+#     exact release Android's libsingbox.so comes from)
+#     https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip
+#     SHA-256 99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df
+#     (hashed 2026-11-27 from the official release)
+#   hiddify-sing-box @ 1614c5edb52dd44a4cc079201ba1e790fdfad8a0
+#     (the Sudoku engine: Android's libsudokubox.so source,
+#     built here with the with_sudoku tag per
+#     engines/sudokubox/PROVENANCE.md; CGO off, as the recipe's
+#     own host build proved)
+#     https://github.com/hiddify/hiddify-sing-box/archive/1614c5ed.zip
+#     SHA-256 667e69f52e192e513d199822c1584b34ad77b91eccecc5e020a17e19d1ec6569
+#     (GitHub's archive of the commit, hashed 2026-11-27)
+#   mieru v3.39.0 official windows-amd64 zip (the exact release
+#     Android's libmieru.so comes from)
+#     https://github.com/enfein/mieru/releases/download/v3.39.0/mieru_3.39.0_windows_amd64.zip
+#     SHA-256 e753d403d0e0b684df47441c2e3f648c4d3b2b7075d2035fc7dd1cb2a1d7c35b
+#     (matches the release's own .sha256.txt, checked 2026-11-27)
+#   dnscrypt-proxy 2.1.20 official win64 zip (the exact release
+#     Android's libdnscrypt.so comes from)
+#     https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/2.1.20/dnscrypt-proxy-win64-2.1.20.zip
+#     SHA-256 9e498cb9bdbae57756db19ce516362ac307e9340a6996214964cfcc7c489abc3
+#     (hashed 2026-11-27 from the official release)
+#   wstunnel v11.1.0 official windows-amd64 tar.gz (the exact
+#     release Android's libwstunnel.so comes from)
+#     https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_windows_amd64.tar.gz
+#     SHA-256 b271d076fbba92fe3d8c9b7612bf17f4ac905d68614a6c40debd73107883d75e
+#     (matches the release's checksums.txt, checked 2026-11-27)
+#   dnstt @ 17aa1fed864cd5493e3d09a14df1b8b5cc1df123 (Mygod
+#     mirror of David Fifield's dnstt — Android's libdnstt.so
+#     source per engines/dnstt/BUILD-RECIPE.md; the client is
+#     pure Go, built here with the ambient Go, CGO off; the
+#     Windows cross-build of this exact tree is proven)
+#     https://github.com/Mygod/dnstt/archive/17aa1fe.zip
+#     SHA-256 d3ef9b061438a5fcfe23e028428ffcb18f9fcf969f17299a524ea4bc7ad29053
+#     (GitHub's archive of the commit, hashed 2026-11-27)
+#   olcrtc @ f3ad8fb7c0d0fa981423f83269526fa94077c23d
+#     (openlibrecommunity/olcrtc master snapshot — Android's
+#     libolcrtc.so source per engines/olcrtc/PROVENANCE.md;
+#     built here with the ambient Go and the recipe's
+#     -checklinkname=0; the Windows cross-build of this exact
+#     tree is proven)
+#     https://github.com/openlibrecommunity/olcrtc/archive/f3ad8fb.zip
+#     SHA-256 2773a64637bcb91c95cbfc1a9ead47f231edc12314ae7f747e74aeb0994f4e83
+#     (GitHub's archive of the commit, hashed 2026-11-27)
+#   radiance (Lantern) @ 051b4de9077337cd81fea5b6c1ab50e602959387
+#     (getlantern/radiance main snapshot — the Lantern
+#     engine's daemon, built here with the `novpn` tag so
+#     it serves a local mixed SOCKS/HTTP inbound instead
+#     of owning a TUN; the tree also stays at
+#     tools\radiance-src for the lantern-bridge build)
+#     https://github.com/getlantern/radiance/archive/051b4de.zip
+#     SHA-256 dd1db8bd65469c1134ca62f1de120ebb1b4e97d2e29a41919c3f1f0e4cd196b7
+#     (GitHub's archive of the commit, hashed 2026-11-27)
+#   ByeDPI (ciadpi) @ e2684772fbda45f2ff4fc220922a010370534216
+#     ("Fix Windows build", post-v0.17.3 — Android's
+#     libzapret.so source per engines/byedpi/PROVENANCE.md;
+#     built here with the provisioned mingw-w64 below via the
+#     upstream Makefile's windows target)
+#     https://github.com/hufrea/ByeDPI/archive/e2684772.zip
+#     SHA-256 4e0821f55cb7c8010fd7021589764c3935550e7467c80ae94243728566e7eb19
+#     (GitHub's archive of the commit, hashed 2026-11-27)
+#   AmneziaWG for Windows 3.1.0 amd64 MSI (the WireGuard
+#     engine's native backend: the wireguard-windows fork
+#     whose config parser accepts BOTH plain WireGuard and
+#     AmneziaWG junk parameters — the 2104-class route;
+#     extracted + Authenticode-verified like OpenVPN)
+#     https://github.com/amnezia-vpn/amneziawg-windows-client/releases/download/3.1.0/amneziawg-amd64-3.1.0.msi
+#     SHA-256 a1b48ea8699cd347832a3691d832004574ef8ad65bcf887611ac8acb99b7de8b
+#     (hashed 2026-11-27 from the official release)
+#
+# Provisioned toolchains (the aether + ciadpi builds stopped
+# depending on the runner's own Rust/mingw layout — the
+# 2.2.0 CI runs proved that layout cannot complete them):
+#   winlibs mingw-w64 (GCC 16.2.0, x86_64 posix-seh msvcrt)
+#     https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-msvcrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64msvcrt-14.0.0-r3.zip
+#     SHA-256 62af32ea58acdea1318ea5dd8eb7017eaee694dd40b269d52a59c769dcfefb82
+#     (matches the release's own .sha256, checked 2026-11-27)
+#   NASM 2.16.03 win64 (BoringSSL's assembler)
+#     https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip
+#     SHA-256 3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6
+#     (complete-download verified against the server's
+#     Content-Length + archive test, 2026-11-27)
+#
 # Every download is hash-checked before anything is unpacked; a
 # mismatch stops the build. Re-running replaces the sidecars.
 #Requires -Version 7
@@ -87,6 +175,17 @@ $psiDest = Join-Path $root 'tools\sidecars\psiphon'
 $warpDest = Join-Path $root 'tools\sidecars\warp'
 $aetherDest = Join-Path $root 'tools\sidecars\aether'
 $ovpnDest = Join-Path $root 'tools\sidecars\openvpn'
+$singboxDest = Join-Path $root 'tools\sidecars\singbox'
+$sudokuDest = Join-Path $root 'tools\sidecars\sudokubox'
+$zapretDest = Join-Path $root 'tools\sidecars\zapret'
+$mieruDest = Join-Path $root 'tools\sidecars\mieru'
+$dnscryptDest = Join-Path $root 'tools\sidecars\dnscrypt'
+$dnsttDest = Join-Path $root 'tools\sidecars\dnstt'
+$wstunnelDest = Join-Path $root 'tools\sidecars\wstunnel'
+$olcrtcDest = Join-Path $root 'tools\sidecars\olcrtc'
+$wireguardDest = Join-Path $root 'tools\sidecars\wireguard'
+$lanternDest = Join-Path $root 'tools\sidecars\lantern'
+$radianceSrcDir = Join-Path $root 'tools\radiance-src'
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "ember-sidecars-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
@@ -167,6 +266,43 @@ try {
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     }
 
+    # Provisioned toolchains for the two native builds below
+    # (aether's Rust/cc-rs and ciadpi's C): the runner's own
+    # mingw layout could not complete either in the 2.2.0 CI
+    # runs (cc-rs never found a prefixed archiver), so the
+    # script now downloads its own pinned winlibs mingw-w64
+    # + NASM and puts them on PATH. A provisioning failure is
+    # a loud warning, not a pipeline kill — both builds keep
+    # their warn-and-continue contract.
+    $provisionedMingwBin = $null
+    try {
+        $winlibsZip = Join-Path $tmp 'winlibs.zip'
+        Get-Verified `
+            'https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-msvcrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64msvcrt-14.0.0-r3.zip' `
+            '62af32ea58acdea1318ea5dd8eb7017eaee694dd40b269d52a59c769dcfefb82' `
+            $winlibsZip
+        $winlibsDir = Join-Path $tmp 'winlibs'
+        Expand-Archive -Path $winlibsZip -DestinationPath $winlibsDir -Force
+        $candidateBin = Join-Path $winlibsDir 'mingw64\bin'
+        if ((Test-Path (Join-Path $candidateBin 'x86_64-w64-mingw32-gcc.exe')) -and
+            (Test-Path (Join-Path $candidateBin 'x86_64-w64-mingw32-g++.exe'))) {
+            $provisionedMingwBin = $candidateBin
+        }
+        $nasmZip = Join-Path $tmp 'nasm.zip'
+        Get-Verified `
+            'https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip' `
+            '3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6' `
+            $nasmZip
+        $nasmDir = Join-Path $tmp 'nasm'
+        Expand-Archive -Path $nasmZip -DestinationPath $nasmDir -Force
+        $nasmBin = Get-ChildItem $nasmDir -Recurse -Filter 'nasm.exe' |
+            Select-Object -First 1 -ExpandProperty DirectoryName
+        $env:PATH = "$provisionedMingwBin;$nasmBin;$env:PATH"
+        Write-Host "Provisioned toolchain: mingw at $provisionedMingwBin, NASM at $nasmBin"
+    } catch {
+        Write-Warning "Toolchain provisioning failed ($($_.Exception.Message)) — the aether and ciadpi builds will warn and skip."
+    }
+
     # aether.exe: verify the source archive, then build with
     # cargo for the windows-gnu target when the Rust + mingw
     # toolchains are present. Absent toolchains are a loud
@@ -179,9 +315,10 @@ try {
         $aetherZip
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
     # The full prefixed mingw-w64 tool set (gcc/g++/ar) must be on
-    # PATH for cc-rs; runners keep it in a few known places — find
-    # and prepend the folder rather than trusting PATH.
-    $mingwBin = $null
+    # PATH for cc-rs. The provisioned toolchain above is the
+    # primary source (its layout is pinned and known); the
+    # ambient hunt below stays as a fallback for dev machines.
+    $mingwBin = $provisionedMingwBin
     $gccCmd = Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue
     if ($gccCmd -and (Get-Command x86_64-w64-mingw32-ar -ErrorAction SilentlyContinue)) {
         $mingwBin = Split-Path -Parent $gccCmd.Source
@@ -214,10 +351,16 @@ try {
         New-Item -ItemType Directory -Force $aetherDest | Out-Null
         Push-Location $crate
         try {
+            # The archiver's name differs by distribution:
+            # classic mingw-w64 ships x86_64-w64-mingw32-ar.exe,
+            # winlibs ships ar.exe (plus the gcc-ar wrapper).
+            # cc-rs takes the full path either way.
+            $arExe = Join-Path $mingwBin 'x86_64-w64-mingw32-ar.exe'
+            if (-not (Test-Path $arExe)) { $arExe = Join-Path $mingwBin 'ar.exe' }
             $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = (Join-Path $mingwBin 'x86_64-w64-mingw32-gcc.exe')
             $env:CC_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-gcc.exe')
             $env:CXX_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-g++.exe')
-            $env:AR_x86_64_pc_windows_gnu = (Join-Path $mingwBin 'x86_64-w64-mingw32-ar.exe')
+            $env:AR_x86_64_pc_windows_gnu = $arExe
             & rustup target add x86_64-pc-windows-gnu
             & cargo build --release --locked --target x86_64-pc-windows-gnu --bin aether
             if ($LASTEXITCODE -ne 0) {
@@ -363,6 +506,261 @@ try {
         }
     }
     Write-Host 'Psiphon init smoke passed (listener up, no panic).'
+
+    # ---- Full-parity sidecars (2.2.0+2040) -------------------
+    # The SubprocessCore helper family. Release binaries are
+    # extracted; source pins are built with the ambient Go
+    # (the workflow pins it via core/go.mod) or the
+    # provisioned mingw above. A failed OPTIONAL build warns
+    # and continues (the app reports that helper unavailable);
+    # a hash mismatch still stops everything, as everywhere
+    # in this script.
+
+    # sing-box.exe (+ libcronet.dll, which its naive/ccm
+    # outbounds load from the same folder): the official
+    # v1.14.4 windows-amd64 release.
+    $singboxZip = Join-Path $tmp 'sing-box-windows.zip'
+    Get-Verified `
+        'https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip' `
+        '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df' `
+        $singboxZip
+    $singboxDir = Join-Path $tmp 'sing-box'
+    Expand-Archive -Path $singboxZip -DestinationPath $singboxDir -Force
+    New-Item -ItemType Directory -Force $singboxDest | Out-Null
+    Copy-Item (Join-Path $singboxDir 'sing-box-1.14.4-windows-amd64\sing-box.exe') $singboxDest -Force
+    Copy-Item (Join-Path $singboxDir 'sing-box-1.14.4-windows-amd64\libcronet.dll') $singboxDest -Force
+
+    # sudokubox.exe: the hiddify-sing-box fork built with the
+    # sudoku tag (engines/sudokubox/PROVENANCE.md recipe,
+    # CGO off as its host proof ran). A build failure warns:
+    # Sudoku profiles then report their engine unavailable.
+    # The source comes from a GIT CLONE, not the archive zip:
+    # the fork's go.mod replaces psiphon-tls with
+    # ./replace/psiphon-tls, a directory GitHub's archive of
+    # this commit does not carry (proven 2026-11-27 — the
+    # archive build dies on the missing replace path). The
+    # clone is pinned to the same commit; -mod=mod lets the
+    # build complete the fork's go.sum for Windows-only deps
+    # (winipcfg) inside the scratch tree.
+    $sudokuSrc = Join-Path $tmp 'sudoku\hiddify-sing-box'
+    New-Item -ItemType Directory -Force (Join-Path $tmp 'sudoku') | Out-Null
+    & git clone --quiet https://github.com/hiddify/hiddify-sing-box.git $sudokuSrc
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning 'sudokubox source clone failed — Sudoku profiles will report their engine unavailable in this package.'
+    } else {
+        & git -C $sudokuSrc checkout --quiet '1614c5edb52dd44a4cc079201ba1e790fdfad8a0'
+    }
+    New-Item -ItemType Directory -Force $sudokuDest | Out-Null
+    Push-Location $sudokuSrc
+    try {
+        $env:GOOS = 'windows'
+        $env:GOARCH = 'amd64'
+        $env:CGO_ENABLED = '0'
+        $env:GOFLAGS = '-mod=mod'
+        & go build -trimpath -tags 'with_utls badlinkname tfogo_checklinkname0 with_sudoku' `
+            -ldflags '-s -w -checklinkname=0 -X github.com/sagernet/sing-box/constant.Version=1614c5e' `
+            -o (Join-Path $sudokuDest 'sudokubox.exe') ./cmd/sing-box
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'sudokubox build failed on this machine — Sudoku profiles will report their engine unavailable in this package.'
+        }
+    } finally {
+        Pop-Location
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED, Env:GOFLAGS -ErrorAction SilentlyContinue
+    }
+
+    # mieru.exe: the official v3.39.0 windows-amd64 release.
+    $mieruZip = Join-Path $tmp 'mieru-windows.zip'
+    Get-Verified `
+        'https://github.com/enfein/mieru/releases/download/v3.39.0/mieru_3.39.0_windows_amd64.zip' `
+        'e753d403d0e0b684df47441c2e3f648c4d3b2b7075d2035fc7dd1cb2a1d7c35b' `
+        $mieruZip
+    $mieruDir = Join-Path $tmp 'mieru'
+    Expand-Archive -Path $mieruZip -DestinationPath $mieruDir -Force
+    New-Item -ItemType Directory -Force $mieruDest | Out-Null
+    Copy-Item (Join-Path $mieruDir 'mieru.exe') $mieruDest -Force
+
+    # dnscrypt-proxy.exe: the official 2.1.20 win64 release.
+    $dnscryptZip = Join-Path $tmp 'dnscrypt-win64.zip'
+    Get-Verified `
+        'https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/2.1.20/dnscrypt-proxy-win64-2.1.20.zip' `
+        '9e498cb9bdbae57756db19ce516362ac307e9340a6996214964cfcc7c489abc3' `
+        $dnscryptZip
+    $dnscryptDir = Join-Path $tmp 'dnscrypt'
+    Expand-Archive -Path $dnscryptZip -DestinationPath $dnscryptDir -Force
+    New-Item -ItemType Directory -Force $dnscryptDest | Out-Null
+    Copy-Item (Join-Path $dnscryptDir 'win64\dnscrypt-proxy.exe') $dnscryptDest -Force
+
+    # wstunnel.exe: the official v11.1.0 windows-amd64
+    # release (a tar.gz — bsdtar, in-box on Windows 10+).
+    $wstunnelTar = Join-Path $tmp 'wstunnel-windows.tar.gz'
+    Get-Verified `
+        'https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_windows_amd64.tar.gz' `
+        'b271d076fbba92fe3d8c9b7612bf17f4ac905d68614a6c40debd73107883d75e' `
+        $wstunnelTar
+    $wstunnelDir = Join-Path $tmp 'wstunnel'
+    New-Item -ItemType Directory -Force $wstunnelDir | Out-Null
+    & tar -xzf $wstunnelTar -C $wstunnelDir
+    if ($LASTEXITCODE -ne 0) { throw 'wstunnel archive extraction failed' }
+    New-Item -ItemType Directory -Force $wstunnelDest | Out-Null
+    Copy-Item (Join-Path $wstunnelDir 'wstunnel.exe') $wstunnelDest -Force
+
+    # dnstt-client.exe: built from the pinned source with
+    # the ambient Go (pure Go client, CGO off).
+    $dnsttZip = Join-Path $tmp 'dnstt-src.zip'
+    Get-Verified `
+        'https://github.com/Mygod/dnstt/archive/17aa1fe.zip' `
+        'd3ef9b061438a5fcfe23e028428ffcb18f9fcf969f17299a524ea4bc7ad29053' `
+        $dnsttZip
+    $dnsttDir = Join-Path $tmp 'dnstt'
+    Expand-Archive -Path $dnsttZip -DestinationPath $dnsttDir -Force
+    $dnsttSrc = Join-Path $dnsttDir 'dnstt-17aa1fed864cd5493e3d09a14df1b8b5cc1df123\dnstt-client'
+    New-Item -ItemType Directory -Force $dnsttDest | Out-Null
+    Push-Location $dnsttSrc
+    try {
+        $env:GOOS = 'windows'
+        $env:GOARCH = 'amd64'
+        $env:CGO_ENABLED = '0'
+        & go build -trimpath -ldflags '-s -w' -o (Join-Path $dnsttDest 'dnstt-client.exe') .
+        if ($LASTEXITCODE -ne 0) { throw 'dnstt-client build failed' }
+    } finally {
+        Pop-Location
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
+
+    # olcrtc.exe: built from the pinned snapshot with the
+    # ambient Go and the recipe's -checklinkname=0
+    # (engines/olcrtc/PROVENANCE.md).
+    $olcrtcZip = Join-Path $tmp 'olcrtc-src.zip'
+    Get-Verified `
+        'https://github.com/openlibrecommunity/olcrtc/archive/f3ad8fb.zip' `
+        '2773a64637bcb91c95cbfc1a9ead47f231edc12314ae7f747e74aeb0994f4e83' `
+        $olcrtcZip
+    $olcrtcDir = Join-Path $tmp 'olcrtc'
+    Expand-Archive -Path $olcrtcZip -DestinationPath $olcrtcDir -Force
+    $olcrtcSrc = Join-Path $olcrtcDir 'olcrtc-f3ad8fb7c0d0fa981423f83269526fa94077c23d'
+    New-Item -ItemType Directory -Force $olcrtcDest | Out-Null
+    Push-Location $olcrtcSrc
+    try {
+        $env:GOOS = 'windows'
+        $env:GOARCH = 'amd64'
+        $env:CGO_ENABLED = '0'
+        & go build -p 2 -trimpath -ldflags '-s -w -checklinkname=0' -o (Join-Path $olcrtcDest 'olcrtc.exe') ./cmd/olcrtc
+        if ($LASTEXITCODE -ne 0) { throw 'olcrtc build failed' }
+    } finally {
+        Pop-Location
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
+
+    # lanternd.exe + lantern-bridge.exe (the Lantern
+    # engine, W3): the radiance daemon built with the
+    # `novpn` tag — its sing-box then serves a mixed
+    # SOCKS/HTTP inbound (RADIANCE_SOCKS_ADDRESS) instead
+    # of owning a TUN, and Ember captures through its own
+    # TUN bridge. The daemon's control API lives on a
+    # named pipe Dart cannot dial, so the bridge
+    # (win-work\lantern-bridge, over radiance's own IPC
+    # client) re-serves it on stdio. The extracted tree
+    # also stays at tools\radiance-src: the bridge's
+    # go.mod replaces the radiance module with it. Warns
+    # instead of failing: without these the Lantern engine
+    # reports unavailable in-app.
+    $radianceZip = Join-Path $tmp 'radiance-src.zip'
+    Get-Verified `
+        'https://github.com/getlantern/radiance/archive/051b4de.zip' `
+        'dd1db8bd65469c1134ca62f1de120ebb1b4e97d2e29a41919c3f1f0e4cd196b7' `
+        $radianceZip
+    $radianceDir = Join-Path $tmp 'radiance'
+    Expand-Archive -Path $radianceZip -DestinationPath $radianceDir -Force
+    $radianceSrc = Join-Path $radianceDir 'radiance-051b4de9077337cd81fea5b6c1ab50e602959387'
+    if (Test-Path $radianceSrcDir) { Remove-Item $radianceSrcDir -Recurse -Force }
+    Copy-Item $radianceSrc $radianceSrcDir -Recurse -Force
+    New-Item -ItemType Directory -Force $lanternDest | Out-Null
+    Push-Location $radianceSrcDir
+    try {
+        $env:GOOS = 'windows'
+        $env:GOARCH = 'amd64'
+        $env:CGO_ENABLED = '0'
+        & go build -p 2 -trimpath -tags novpn -ldflags '-s -w' -o (Join-Path $lanternDest 'lanternd.exe') ./cmd/lanternd
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'lanternd build failed on this machine — the Lantern engine will report unavailable in this package.'
+        }
+    } finally {
+        Pop-Location
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
+    Push-Location (Join-Path $root 'lantern-bridge')
+    try {
+        $env:GOOS = 'windows'
+        $env:GOARCH = 'amd64'
+        $env:CGO_ENABLED = '0'
+        & go build -p 2 -trimpath -ldflags '-s -w' -o (Join-Path $lanternDest 'lantern-bridge.exe').
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'lantern-bridge build failed on this machine — the Lantern engine will report unavailable in this package.'
+        }
+    } finally {
+        Pop-Location
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
+
+    # ciadpi.exe (the Zapret desync proxy): built from the
+    # pinned ByeDPI source with the provisioned mingw via
+    # the upstream Makefile's windows target. Warns instead
+    # of failing when no mingw is available (the DPI Lab's
+    # zap candidates then report unavailable).
+    $byedpiZip = Join-Path $tmp 'byedpi-src.zip'
+    Get-Verified `
+        'https://github.com/hufrea/ByeDPI/archive/e2684772.zip' `
+        '4e0821f55cb7c8010fd7021589764c3935550e7467c80ae94243728566e7eb19' `
+        $byedpiZip
+    if ($provisionedMingwBin) {
+        $byedpiDir = Join-Path $tmp 'byedpi'
+        Expand-Archive -Path $byedpiZip -DestinationPath $byedpiDir -Force
+        $byedpiSrc = Join-Path $byedpiDir 'ByeDPI-e2684772fbda45f2ff4fc220922a010370534216'
+        New-Item -ItemType Directory -Force $zapretDest | Out-Null
+        Push-Location $byedpiSrc
+        try {
+            $mingwMake = Join-Path $provisionedMingwBin 'mingw32-make.exe'
+            $mingwGcc = Join-Path $provisionedMingwBin 'x86_64-w64-mingw32-gcc.exe'
+            & $mingwMake windows "CC=$mingwGcc"
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $byedpiSrc 'ciadpi.exe'))) {
+                Write-Warning 'ciadpi build failed on this machine — the DPI Lab zap candidates will report unavailable in this package.'
+            } else {
+                Copy-Item (Join-Path $byedpiSrc 'ciadpi.exe') $zapretDest -Force
+            }
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Warning 'No provisioned mingw: ciadpi.exe not built — the DPI Lab zap candidates will report unavailable.'
+    }
+
+    # amneziawg.exe (+ its wintun.dll): the official AmneziaWG
+    # 3.1.0 MSI, Authenticode-verified, then an administrative
+    # install extracts the program files (the OpenVPN route).
+    $awgMsi = Join-Path $tmp 'amneziawg-amd64-3.1.0.msi'
+    Get-Verified `
+        'https://github.com/amnezia-vpn/amneziawg-windows-client/releases/download/3.1.0/amneziawg-amd64-3.1.0.msi' `
+        'a1b48ea8699cd347832a3691d832004574ef8ad65bcf887611ac8acb99b7de8b' `
+        $awgMsi
+    $awgSig = Get-AuthenticodeSignature $awgMsi
+    if ($awgSig.Status -ne 'Valid' -or $awgSig.SignerCertificate.Subject -notmatch 'Amnezia') {
+        throw "AmneziaWG MSI signature check failed: $($awgSig.Status) / $($awgSig.SignerCertificate.Subject)"
+    }
+    $awgExtract = Join-Path $tmp 'amneziawg-extract'
+    $awgProc = Start-Process msiexec.exe -ArgumentList '/a', $awgMsi, '/qn', "TARGETDIR=$awgExtract" -Wait -PassThru -NoNewWindow
+    if ($awgProc.ExitCode -ne 0) { throw "AmneziaWG MSI extraction failed ($($awgProc.ExitCode))" }
+    $awgExe = Get-ChildItem $awgExtract -Recurse -Filter 'amneziawg.exe' | Select-Object -First 1
+    if (-not $awgExe) { throw 'amneziawg.exe not found in the extracted MSI' }
+    New-Item -ItemType Directory -Force $wireguardDest | Out-Null
+    Copy-Item $awgExe.FullName $wireguardDest -Force
+    $awgWintun = Get-ChildItem $awgExtract -Recurse -Filter 'wintun.dll' | Select-Object -First 1
+    if ($awgWintun) {
+        Copy-Item $awgWintun.FullName $wireguardDest -Force
+    } else {
+        # The fork loads wintun.dll from its own folder; fall
+        # back to the Wintun distribution fetched above.
+        Copy-Item (Join-Path $wintunDir 'wintun\bin\amd64\wintun.dll') $wireguardDest -Force
+    }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
@@ -377,3 +775,18 @@ Write-Host "Sidecars in $aetherDest (Aether d58f9d5, if built):"
 Get-ChildItem $aetherDest -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
 Write-Host "Sidecars in $ovpnDest (OpenVPN 2.6.23):"
 Get-ChildItem $ovpnDest | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
+foreach ($pair in @(
+    @($singboxDest, 'sing-box v1.14.4'),
+    @($sudokuDest, 'sudokubox (hiddify-sing-box 1614c5e, with_sudoku)'),
+    @($zapretDest, 'ciadpi (ByeDPI e2684772)'),
+    @($mieruDest, 'mieru v3.39.0'),
+    @($dnscryptDest, 'dnscrypt-proxy 2.1.20'),
+    @($dnsttDest, 'dnstt-client 17aa1fe'),
+    @($wstunnelDest, 'wstunnel v11.1.0'),
+    @($olcrtcDest, 'olcrtc f3ad8fb'),
+    @($wireguardDest, 'AmneziaWG 3.1.0'),
+    @($lanternDest, 'radiance lanternd (novpn) + bridge 051b4de')
+)) {
+    Write-Host "Sidecars in $($pair[0]) ($($pair[1])):"
+    Get-ChildItem $pair[0] -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
+}

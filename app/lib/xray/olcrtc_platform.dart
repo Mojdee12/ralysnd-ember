@@ -5,7 +5,11 @@
 // PID-file reaper; this side owns the settings and the
 // generated YAML config (olcrtc_args.dart).
 
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'subprocess_windows.dart';
 
 class OlcrtcState {
   final bool available;
@@ -45,6 +49,7 @@ class OlcrtcPlatform {
   /// Returns once the process exists; readiness completes
   /// asynchronously — poll [state] until [OlcrtcState.ready].
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.olcrtc.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('olcrtcStart', {
         'args': args,
@@ -58,6 +63,7 @@ class OlcrtcPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.olcrtc.stop();
     try {
       await _channel.invokeMethod('olcrtcStop');
     } catch (_) {
@@ -66,6 +72,17 @@ class OlcrtcPlatform {
   }
 
   static Future<OlcrtcState> state() async {
+    if (Platform.isWindows) {
+      final s = WindowsSubprocesses.olcrtc.snapshot();
+      return OlcrtcState(
+        available: s.available,
+        running: s.running,
+        ready: s.ready,
+        stage: s.stage,
+        error: s.error,
+        logTail: s.logTail,
+      );
+    }
     try {
       final m = await _channel.invokeMapMethod<String, dynamic>('olcrtcState');
       if (m == null) return const OlcrtcState();

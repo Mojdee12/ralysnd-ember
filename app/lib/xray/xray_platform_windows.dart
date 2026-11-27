@@ -67,11 +67,20 @@ import '../core/core_api.dart';
 import '../core/orphan_cleanup.dart';
 import '../core/ports.dart';
 import '../core/tun_bridge.dart';
+import 'warp_platform.dart';
 import 'xray_platform.dart';
 
 class WindowsXrayBackend implements XrayBackend {
   Process? _process;
   TunBridge? _bridge;
+
+  /// The kill switch (W4): the last setOn/setOnWarp's flag,
+  /// and the hold it raises when the session's core dies
+  /// unexpectedly in TUN mode — the TUN bridge then stays
+  /// UP on the dead SOCKS port (a blackhole: nothing leaves
+  /// the PC) until stop() or a new setOn, Android's shape.
+  bool _killSwitch = false;
+  bool _killSwitchHeld = false;
   String _name = '';
   int _sinceMs = 0;
   int _apiPort = 0;
@@ -114,13 +123,39 @@ class WindowsXrayBackend implements XrayBackend {
   /// generation proof reads it through [state]).
   int _rotationGen = 0;
 
-  /// The AmneziaWG refusal (see [setOnAwg]): a problem sequence
-  /// that advances on every refused start, and its words. The
-  /// sequence survives [stop] (the controller's walk reads it
-  /// after its own teardown, exactly as on Android) and resets
-  /// on the next plain [setOn].
+  /// The AmneziaWG problem record (see [setOnAwg]): a problem
+  /// sequence that advances on every failed start, and its
+  /// words. The sequence survives [stop] (the controller's
+  /// walk reads it after its own teardown, exactly as on
+  /// Android) and resets on the next plain [setOn].
   int _awgProblemSeq = 0;
   String _awgProblem = '';
+
+  /// The live AmneziaWG session (see [setOnAwg]): the tunnel
+  /// name (the service is `AmneziaWGTunnel$<name>`), when it
+  /// started, and the figures the tunnel service's UAPI pipe
+  /// last gave. 0/'' = no session.
+  String _awgName = '';
+  String _awgTunnelName = '';
+  int _awgSinceMs = 0;
+  bool _awgSeenRunning = false;
+  bool _awgKillSwitch = false;
+  int _awgHandshakeAgeSec = -1;
+  int _awgRxBytes = 0;
+  int _awgTxBytes = 0;
+  DateTime? _awgUapiAt;
+  bool _awgUapiInFlight = false;
+
+  /// The AmneziaWG client (the fetch script extracts the
+  /// pinned MSI beside the app): its tunnel-service commands
+  /// install and remove the per-tunnel Windows services.
+  static String get _awgExe {
+    final sep = Platform.pathSeparator;
+    final dir = File(Platform.resolvedExecutable).parent.path;
+    return '$dir${sep}wireguard${sep}amneziawg.exe';
+  }
+
+  String get _awgServiceName => 'AmneziaWGTunnel\$$_awgTunnelName';
 
   /// Shown when the sidecar dies at once or will not start at all:
   /// the usual cause on a real PC is a security product, and a
@@ -233,9 +268,11 @@ class WindowsXrayBackend implements XrayBackend {
     // for the 2072/2134 helper legs (dnsttArgs / wstunnelArgs /
     // olcrtcArgs): the controller owns those processes on
     // Windows. socksUser/socksPass are inside the config's
-    // inbounds already; killSwitch is W4 scope on Windows and
-    // bridge names an Android in-process bridge the desktop
-    // does not have — all accepted for contract parity.
+    // inbounds already; bridge names an Android in-process
+    // bridge the desktop does not have — accepted for
+    // contract parity. killSwitch is live (W4): an
+    // unexpected core death in TUN mode holds the TUN
+    // bridge on the dead SOCKS port (see _onCoreDied).
     String underlay = 'none',
     String underlayRegion = '',
     String underlayUpstream = '',
@@ -258,6 +295,7 @@ class WindowsXrayBackend implements XrayBackend {
     // as a conflict.
     await _ensureCleaned();
     await stop();
+    _killSwitch = killSwitch;
     _lastError = '';
     _awgProblem = '';
     // The config's inbound ports: SOCKS (the [socksPort] argument,
@@ -364,9 +402,11 @@ class WindowsXrayBackend implements XrayBackend {
     p.stderr.listen(sink.add, onError: (_) {});
     unawaited(
       p.exitCode.then((_) async {
-        if (identical(_process, p)) _process = null;
+        final unexpected = identical(_process, p);
+        if (unexpected) _process = null;
         await sink.flush();
         await sink.close();
+        if (unexpected) _onCoreDied('the xray core');
       }),
     );
     // The core must really be serving before the connect counts as
@@ -463,7 +503,8 @@ class WindowsXrayBackend implements XrayBackend {
     required String dns,
     required bool ipv6,
     // Accepted for contract parity (see setOn's note on MTU);
-    // killSwitch is W4 scope on Windows.
+    // killSwitch is live (W4): state() holds the TUN bridge
+    // when the EmberWarp core dies under a live session.
     required int mtu,
     bool tunCapture = false,
     List<String> warpArgs = const [],
@@ -471,6 +512,7 @@ class WindowsXrayBackend implements XrayBackend {
   }) async {
     await _ensureCleaned();
     await stop();
+    _killSwitch = killSwitch;
     _lastError = '';
     _warpName = name;
     _warpSinceMs = DateTime.now().millisecondsSinceEpoch;
@@ -528,22 +570,237 @@ class WindowsXrayBackend implements XrayBackend {
     required int mtu,
     bool killSwitch = false,
   }) async {
-    // W1: Windows has no WG Tunnel engine (the Android AmneziaWG
-    // backend); W2 owns the Windows answer. The refusal is
-    // recorded exactly the way an Android engine start failure
-    // surfaces — a NEW problem (sequence advanced, words in
-    // coreProblem) with nothing running — so the controller's
-    // walk stops waiting, words the failure as its own kind and
-    // falls back to the plain Xray WireGuard leg, whose outbound
-    // applies none of the Amnezia parameters (the profile's
-    // diagnostics say that too). Nothing is faked up.
-    _awgProblemSeq++;
-    _awgProblem =
-        'the AmneziaWG engine is not available on Windows yet — '
-        'this profile continues on the plain WireGuard leg, '
-        'without its Amnezia obfuscation parameters';
-    _lastError = _awgProblem;
-    await _noteToLog('[ember] awg refused: $_awgProblem');
+    // The Windows AmneziaWG engine (W2): the official
+    // AmneziaWG Windows client (wireguard\amneziawg.exe, the
+    // pinned MSI's payload) runs the tunnel as a per-tunnel
+    // Windows service — AmneziaWGTunnel$<name> — which is the
+    // platform's native shape of Android's WG Tunnel backend:
+    // it takes the profile's .conf as-is, Amnezia parameters
+    // (Jc/Jmin/Jmax/S1/S2/H1–H4) included, over Wintun.
+    //
+    // The hand-off transformations are Android's own, applied
+    // to the text (buildAwgServiceConfig): the session DNS
+    // replaces the config's DNS line, the Settings MTU is the
+    // fallback when the profile carries none, and a peer
+    // without AllowedIPs gets the family-gated full-tunnel
+    // default.
+    //
+    // Installing or starting the tunnel service needs
+    // administrator rights. A failure is recorded exactly the
+    // way an Android engine start failure surfaces — a NEW
+    // problem (sequence advanced, words in coreProblem) with
+    // nothing running — so the controller's walk stops
+    // waiting, words the failure as its own kind and falls
+    // back to the plain Xray WireGuard leg. Nothing is faked.
+    if (_awgTunnelName.isNotEmpty) await _stopAwgSession();
+    if (!File(_awgExe).existsSync()) {
+      _awgProblemSeq++;
+      _awgProblem =
+          'the AmneziaWG sidecar (wireguard\\amneziawg.exe) is '
+          'missing from this build — this profile continues on '
+          'the plain WireGuard leg, without its Amnezia '
+          'obfuscation parameters';
+      _lastError = _awgProblem;
+      await _noteToLog('[ember] awg refused: $_awgProblem');
+      return;
+    }
+    final tunnelName = awgTunnelNameFor(name);
+    final dir = await workDir();
+    final awgDir = Directory('${dir.path}/awg');
+    await awgDir.create(recursive: true);
+    final confFile = File('${awgDir.path}/$tunnelName.conf');
+    await confFile.writeAsString(
+      buildAwgServiceConfig(
+        settings,
+        dns: dns,
+        ipv4: ipv4,
+        ipv6: ipv6,
+        mtu: mtu,
+      ),
+      flush: true,
+    );
+    _awgName = name;
+    _awgTunnelName = tunnelName;
+    _awgSeenRunning = false;
+    _awgKillSwitch = killSwitch;
+    _awgHandshakeAgeSec = -1;
+    _awgRxBytes = 0;
+    _awgTxBytes = 0;
+    _awgUapiAt = null;
+
+    // A service left registered by an earlier Ember session
+    // starts directly; a fresh one is installed from the
+    // config (which also starts it). Either step can refuse
+    // without elevation — the words land in the problem.
+    final existing = await _awgServiceState();
+    String? failure;
+    if (existing != null && existing != 'RUNNING') {
+      failure = await _runAwg(['sc', 'start', _awgServiceName]);
+    }
+    if (existing == null || failure != null) {
+      failure = await _runAwg([
+        _awgExe,
+        '/installtunnelservice',
+        confFile.path,
+      ]);
+    }
+    if (failure != null) {
+      _awgProblemSeq++;
+      _awgProblem =
+          'AmneziaWG could not start its tunnel service: $failure'
+          '${_looksLikeElevation(failure) ? ' Installing or starting '
+              'the tunnel service needs administrator rights — run '
+              'Ralysnd Ember as administrator and try again.' : ''}';
+      _lastError = _awgProblem;
+      _awgTunnelName = '';
+      _awgName = '';
+      await _noteToLog('[ember] awg failed: $_awgProblem');
+      return;
+    }
+    _awgSinceMs = DateTime.now().millisecondsSinceEpoch;
+    _awgProblem = '';
+    await _noteToLog(
+      '[ember] awg tunnel service $_awgServiceName starting '
+      'for $name',
+    );
+  }
+
+  bool _looksLikeElevation(String words) {
+    final w = words.toLowerCase();
+    return w.contains('access') && w.contains('denied') ||
+        w.contains('privilege') ||
+        w.contains('elevat') ||
+        w.contains('administrator');
+  }
+
+  /// Runs one service command; null on success, else its last
+  /// meaningful output line (the command's own words).
+  Future<String?> _runAwg(List<String> argv) async {
+    try {
+      final r = await Process.run(
+        argv.first,
+        argv.sublist(1),
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      ).timeout(const Duration(seconds: 30));
+      if (r.exitCode == 0) return null;
+      final words = [
+        (r.stderr as String? ?? '').trim(),
+        (r.stdout as String? ?? '').trim(),
+      ].where((s) => s.isNotEmpty).join(' ');
+      final lines = words
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      return lines.isEmpty
+          ? '${argv.first} exited with code ${r.exitCode}'
+          : lines.last;
+    } on TimeoutException {
+      return '${argv.first} did not answer in 30s';
+    } catch (e) {
+      return '$e';
+    }
+  }
+
+  /// The tunnel service's SCM state ('RUNNING', 'STOPPED', …),
+  /// or null when no such service is registered.
+  Future<String?> _awgServiceState() async {
+    if (_awgTunnelName.isEmpty) return null;
+    try {
+      final r = await Process.run(
+        'sc',
+        ['query', _awgServiceName],
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      ).timeout(const Duration(seconds: 5));
+      if (r.exitCode != 0) return null;
+      final out = r.stdout as String? ?? '';
+      final m = RegExp(r'STATE\s*:\s*\d+\s+(\w+)').firstMatch(out);
+      return m?.group(1);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Stops the AWG session's tunnel service (disconnect keeps
+  /// the service registered — Android's tunnel stays present
+  /// too — so the next connect starts without reinstalling).
+  /// A service that refuses to stop is uninstalled instead;
+  /// the words land in the log either way, never silently.
+  Future<void> _stopAwgSession() async {
+    if (_awgTunnelName.isEmpty) return;
+    final failure = await _runAwg(['sc', 'stop', _awgServiceName]);
+    if (failure != null) {
+      final un = await _runAwg([
+        _awgExe,
+        '/uninstalltunnelservice',
+        _awgTunnelName,
+      ]);
+      await _noteToLog(
+        '[ember] awg stop: sc stop said "$failure"'
+        '${un == null ? '; the tunnel service was uninstalled' : '; uninstall said "$un"'}',
+      );
+    }
+    _awgName = '';
+    _awgTunnelName = '';
+    _awgSinceMs = 0;
+    _awgSeenRunning = false;
+    _awgKillSwitch = false;
+    _awgHandshakeAgeSec = -1;
+    _awgRxBytes = 0;
+    _awgTxBytes = 0;
+  }
+
+  /// The tunnel service's UAPI dump, read off its protected
+  /// named pipe through PowerShell (the app's established
+  /// Windows bridge — the OpenVPN vault rides it too): the
+  /// handshake age and transfer counters the adoption proof
+  /// and the session display read. Throttled to one read per
+  /// few seconds of polling; any failure keeps the last
+  /// figures (handshake age -1 = not known yet).
+  void _refreshAwgUapi() {
+    if (_awgUapiInFlight || _awgTunnelName.isEmpty) return;
+    final at = _awgUapiAt;
+    if (at != null && DateTime.now().difference(at).inSeconds < 4) return;
+    _awgUapiAt = DateTime.now();
+    _awgUapiInFlight = true;
+    unawaited(() async {
+      try {
+        final pipe =
+            'ProtectedPrefix\\Administrators\\AmneziaWG\\$_awgTunnelName';
+        final script = '''
+\$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', '$pipe', [System.IO.Pipes.PipeDirection]::InOut)
+\$pipe.Connect(1500)
+\$w = New-Object System.IO.StreamWriter(\$pipe)
+\$w.AutoFlush = \$true
+\$w.Write("get=1`n`n")
+\$r = New-Object System.IO.StreamReader(\$pipe)
+while (\$true) {
+  \$line = \$r.ReadLine()
+  if (\$line -eq \$null) { break }
+  Write-Output \$line
+  if (\$line.StartsWith('errno=')) { break }
+}
+''';
+        final r = await Process.run(
+          'powershell',
+          ['-NoProfile', '-NonInteractive', '-Command', script],
+          stdoutEncoding: utf8,
+          stderrEncoding: utf8,
+        ).timeout(const Duration(seconds: 6));
+        if (r.exitCode != 0) return;
+        final figures = parseAwgUapiDump(r.stdout as String? ?? '');
+        if (figures == null) return;
+        _awgRxBytes = figures.rxBytes;
+        _awgTxBytes = figures.txBytes;
+        _awgHandshakeAgeSec = figures.handshakeAgeSec;
+      } catch (_) {
+        // The pipe is best-effort evidence; the session stands.
+      } finally {
+        _awgUapiInFlight = false;
+      }
+    }());
   }
 
   @override
@@ -593,9 +850,11 @@ class WindowsXrayBackend implements XrayBackend {
     np.stderr.listen(sink.add, onError: (_) {});
     unawaited(
       np.exitCode.then((_) async {
-        if (identical(_process, np)) _process = null;
+        final unexpected = identical(_process, np);
+        if (unexpected) _process = null;
         await sink.flush();
         await sink.close();
+        if (unexpected) _onCoreDied('the xray core');
       }),
     );
     try {
@@ -607,8 +866,36 @@ class WindowsXrayBackend implements XrayBackend {
     return true;
   }
 
+  /// An unexpected core death (the exit handlers above
+  /// call this only when the exit was not our own stop /
+  /// rotation — those detach _process first). With the
+  /// kill switch on and the TUN bridge up, the bridge
+  /// STAYS up on the dead SOCKS port: the system keeps
+  /// capturing into a blackhole, nothing leaks direct,
+  /// and state() publishes the hold until stop() or a new
+  /// setOn. Without it, the session tears down fully —
+  /// Android's two shapes. A session that already
+  /// recovered (a new core owns _process) is left alone.
+  void _onCoreDied(String what) {
+    if (_process != null) return;
+    if (_killSwitch && _bridge != null) {
+      _killSwitchHeld = true;
+      _lastError =
+          '$what stopped unexpectedly — the kill switch is '
+          'holding your traffic: nothing leaves this PC until '
+          'you disconnect or reconnect.';
+      unawaited(_noteToLog('[ember] $_lastError'));
+      return;
+    }
+    _lastError = '$what stopped unexpectedly';
+    unawaited(_noteToLog('[ember] $_lastError'));
+    unawaited(stop());
+  }
+
   @override
   Future<void> stop() async {
+    _killSwitchHeld = false;
+    if (_awgTunnelName.isNotEmpty) await _stopAwgSession();
     final bridge = _bridge;
     _bridge = null;
     if (bridge != null) await bridge.stop();
@@ -632,7 +919,95 @@ class WindowsXrayBackend implements XrayBackend {
 
   @override
   Future<XrayState> state() async {
+    if (_process == null && _awgTunnelName.isNotEmpty) {
+      final service = await _awgServiceState();
+      if (service == 'RUNNING' && _awgSinceMs != 0) {
+        _awgSeenRunning = true;
+        _refreshAwgUapi();
+        return XrayState(
+          running: true,
+          name: _awgName,
+          sinceMs: _awgSinceMs,
+          upBytes: _awgTxBytes,
+          downBytes: _awgRxBytes,
+          awg: true,
+          awgHandshakeAgeSec: _awgHandshakeAgeSec,
+          awgRxBytes: _awgRxBytes,
+          awgTxBytes: _awgTxBytes,
+          awgProblemSeq: _awgProblemSeq,
+          awgTunnelPresent: true,
+          rotationGen: _rotationGen,
+          lastError: _lastError,
+        );
+      }
+      if (_awgSinceMs != 0 &&
+          (service == null || service == 'STOPPED') &&
+          _awgSeenRunning) {
+        // The service was up and is gone (or stopped) without
+        // our stop: the session died. The words say so —
+        // with the kill switch on, Ember never reroutes the
+        // traffic anywhere; the tunnel service's own WFP
+        // full-tunnel rules held it while it lived.
+        _lastError = _awgKillSwitch
+            ? 'the AmneziaWG tunnel service stopped unexpectedly '
+                '(the kill switch was on; Ember did not reroute '
+                'any traffic)'
+            : 'the AmneziaWG tunnel service stopped unexpectedly';
+        _awgSinceMs = 0;
+        _awgSeenRunning = false;
+      }
+      // Registered but not running: present, not a session.
+      return XrayState(
+        running: false,
+        name: '',
+        sinceMs: 0,
+        upBytes: 0,
+        downBytes: 0,
+        awgProblemSeq: _awgProblemSeq,
+        awgTunnelPresent: service != null,
+        rotationGen: _rotationGen,
+        lastError: _lastError,
+      );
+    }
+    if (_killSwitchHeld) {
+      return XrayState(
+        running: false,
+        name: _name.isNotEmpty ? _name : _warpName,
+        sinceMs: _sinceMs != 0 ? _sinceMs : _warpSinceMs,
+        upBytes: _up,
+        downBytes: _down,
+        killSwitchHeld: true,
+        rotationGen: _rotationGen,
+        lastError: _lastError,
+        localPort: _localPort,
+        note: _portNote,
+      );
+    }
     if (_process == null && _warpSinceMs != 0) {
+      // The kill switch on the EmberWarp session: the core
+      // (aether.exe, owned by the warp backend) died while
+      // this session's TUN bridge is up — hold the bridge
+      // on the dead SOCKS instead of releasing capture.
+      if (_killSwitch && _bridge != null) {
+        final ws = await WarpPlatform.state();
+        if (!ws.running) {
+          return XrayState(
+            running: false,
+            name: _warpName,
+            sinceMs: _warpSinceMs,
+            upBytes: 0,
+            downBytes: 0,
+            killSwitchHeld: true,
+            rotationGen: _rotationGen,
+            lastError:
+                'the EmberWarp core stopped unexpectedly — the '
+                'kill switch is holding your traffic: nothing '
+                'leaves this PC until you disconnect or reconnect.',
+            localPort: _localPort,
+            note: _portNote,
+          );
+        }
+      }
       return XrayState(
         running: true,
         name: _warpName,
@@ -1847,4 +2222,155 @@ class _SocketReader {
   }
 
   Future<void> cancel() => _sub.cancel();
+}
+
+// ---------------------------------------------------------------------
+// AmneziaWG hand-off helpers (pure, so the contract is test-pinned).
+// ---------------------------------------------------------------------
+
+/// The tunnel name for a profile: the service is
+/// `AmneziaWGTunnel$<name>` and the config file `<name>.conf`,
+/// so the name is kept to the characters both accept —
+/// letters, digits and `_-.=+` — with anything else folded to
+/// `_`, capped at 40 characters. An empty result reads
+/// 'ember'.
+String awgTunnelNameFor(String profileName) {
+  final buf = StringBuffer();
+  for (final ch in profileName.trim().split('')) {
+    final ok = RegExp(r'^[A-Za-z0-9_\-.=+]$').hasMatch(ch);
+    buf.write(ok ? ch : '_');
+  }
+  var name = buf.toString();
+  if (name.length > 40) name = name.substring(0, 40);
+  name = name.replaceAll(RegExp(r'^[._]+|[._]+$'), '');
+  return name.isEmpty ? 'ember' : name;
+}
+
+/// Android's AWG hand-off transformations, applied to the
+/// profile's canonical .conf text for the tunnel service
+/// (setOnAwg): the session [dns] REPLACES the config's DNS
+/// line (build 2102, diagnosis C1); the Settings [mtu] is
+/// the fallback when the profile carries no MTU of its own
+/// (build 2116, B3-1); a peer carrying no AllowedIPs gets
+/// the full-tunnel default gated on the families the profile
+/// actually carries (build 2102, C2 / build 2103, D1).
+/// Everything else — the Amnezia parameters included — rides
+/// verbatim.
+String buildAwgServiceConfig(
+  String settings, {
+  required String dns,
+  required bool ipv4,
+  required bool ipv6,
+  required int mtu,
+}) {
+  final lines = settings.replaceAll('\r\n', '\n').split('\n');
+  final out = <String>[];
+  var section = '';
+  var ifaceHasDns = false;
+  var ifaceHasMtu = false;
+  var peerHasAllowed = false;
+
+  void closePeer() {
+    if (section == 'peer' && !peerHasAllowed) {
+      final defaults = [
+        if (ipv4) '0.0.0.0/0',
+        if (ipv6) '::/0',
+      ];
+      if (defaults.isNotEmpty) {
+        out.add('AllowedIPs = ${defaults.join(', ')}');
+      }
+    }
+    peerHasAllowed = false;
+  }
+
+  void closeInterface() {
+    if (section != 'interface') return;
+    if (dns.isNotEmpty && !ifaceHasDns) out.add('DNS = $dns');
+    if (mtu > 0 && !ifaceHasMtu) out.add('MTU = $mtu');
+    ifaceHasDns = false;
+    ifaceHasMtu = false;
+  }
+
+  for (final raw in lines) {
+    final line = raw.trimRight();
+    final trimmed = line.trim();
+    final header = RegExp(
+      r'^\[(interface|peer)\]$',
+      caseSensitive: false,
+    ).firstMatch(trimmed.toLowerCase());
+    if (header != null) {
+      closePeer();
+      closeInterface();
+      section = header.group(1)!;
+      out.add(line);
+      continue;
+    }
+    if (section == 'interface') {
+      if (RegExp(r'^DNS\s*=', caseSensitive: false).hasMatch(trimmed)) {
+        ifaceHasDns = true;
+        out.add(dns.isNotEmpty ? 'DNS = $dns' : line);
+        continue;
+      }
+      if (RegExp(r'^MTU\s*=', caseSensitive: false).hasMatch(trimmed)) {
+        ifaceHasMtu = true;
+        out.add(line);
+        continue;
+      }
+    }
+    if (section == 'peer' &&
+        RegExp(r'^AllowedIPs\s*=', caseSensitive: false).hasMatch(trimmed)) {
+      peerHasAllowed = true;
+    }
+    out.add(line);
+  }
+  closePeer();
+  closeInterface();
+  return out.join('\n');
+}
+
+/// The figures one UAPI `get` dump carries (the tunnel
+/// service's pipe): the newest handshake across peers and
+/// the summed transfer counters.
+class AwgUapiFigures {
+  final int handshakeAgeSec;
+  final int rxBytes;
+  final int txBytes;
+  const AwgUapiFigures(this.handshakeAgeSec, this.rxBytes, this.txBytes);
+}
+
+/// Parses a UAPI dump: per-peer `latest_handshake_time_sec`
+/// (the v3 key; `last_handshake_time_sec` on the v1 API),
+/// `rx_bytes` and `tx_bytes`. Null when the dump carries no
+/// peer at all. A handshake timestamp of 0 reads as "never"
+/// (age -1).
+AwgUapiFigures? parseAwgUapiDump(String dump, {int? nowSec}) {
+  var sawPeer = false;
+  var newestHandshake = 0;
+  var rx = 0;
+  var tx = 0;
+  for (final line in dump.split('\n')) {
+    final t = line.trim();
+    final eq = t.indexOf('=');
+    if (eq <= 0) continue;
+    final key = t.substring(0, eq);
+    final value = int.tryParse(t.substring(eq + 1)) ?? 0;
+    switch (key) {
+      case 'public_key':
+        sawPeer = true;
+      case 'latest_handshake_time_sec':
+      case 'last_handshake_time_sec':
+        if (value > newestHandshake) newestHandshake = value;
+      case 'rx_bytes':
+        rx += value;
+      case 'tx_bytes':
+        tx += value;
+    }
+  }
+  if (!sawPeer) return null;
+  final now = nowSec ?? DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  return AwgUapiFigures(
+    newestHandshake > 0 ? now - newestHandshake : -1,
+    rx,
+    tx,
+  );
 }

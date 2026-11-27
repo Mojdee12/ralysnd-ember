@@ -9,6 +9,8 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../../openvpn/ovpn_intake.dart';
+import '../../openvpn/ovpn_link.dart';
 import '../../xray/profile_codec.dart';
 import '../../xray/xray_controller.dart';
 import '../../xray/xray_models.dart';
@@ -62,7 +64,17 @@ Future<void> showPasteSheet(BuildContext context, XrayController xray) async {
           EmberButton(
             label: l.importAction,
             icon: Icons.download_rounded,
-            onTap: () {
+            onTap: () async {
+              // An ovpn:// link routes to the OpenVPN
+              // importer (the shell's handler), never to the
+              // generic link parser (build 2157, W2 port).
+              if (isOvpnLink(controller.text) &&
+                  OvpnLinkIntake.handler != null) {
+                final link = controller.text.trim();
+                Navigator.of(sheetContext).pop();
+                await OvpnLinkIntake.handle(link);
+                return;
+              }
               final added = xray.importLinks(controller.text);
               Navigator.of(sheetContext).pop();
               if (context.mounted) {
@@ -88,6 +100,10 @@ Future<void> scanAndImport(BuildContext context, XrayController xray) async {
     MaterialPageRoute(builder: (_) => const _ScannerPage()),
   );
   if (code == null || !context.mounted) return;
+  if (isOvpnLink(code) && OvpnLinkIntake.handler != null) {
+    await OvpnLinkIntake.handle(code.trim());
+    return;
+  }
   if (code.startsWith('http://') || code.startsWith('https://')) {
     try {
       await xray.addSubscription(code);
@@ -173,6 +189,28 @@ class _ScannerPageState extends State<_ScannerPage> {
 }
 
 /// Shows a config's link as a QR code for another device to scan.
+/// Build 2096 (post-2095 audit L16): decode every QR
+/// value in a gallery image. The throwaway scanner
+/// controller is disposed, and a decode failure reads as
+/// "no codes" instead of escaping as an unhandled async
+/// throw. (On Windows mobile_scanner has no implementation,
+/// so the decode lands in the catch and reads as no codes —
+/// paste import remains the route there.)
+Future<List<String>> decodeQrValuesFromImageFile(String path) async {
+  final controller = MobileScannerController();
+  try {
+    final capture = await controller.analyzeImage(path);
+    return [
+      for (final b in capture?.barcodes ?? const [])
+        if (b.rawValue != null && b.rawValue!.isNotEmpty) b.rawValue!,
+    ];
+  } catch (_) {
+    return const [];
+  } finally {
+    await controller.dispose();
+  }
+}
+
 Future<void> showProfileQr(BuildContext context, Profile profile) async {
   final l = AppLocalizations.of(context);
   final link = profileToLink(profile);

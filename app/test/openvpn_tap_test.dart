@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:firefox_vpn/l10n/app_localizations.dart';
+import 'package:firefox_vpn/core/core_api.dart';
 import 'package:firefox_vpn/openvpn/openvpn_controller.dart';
 import 'package:firefox_vpn/ui/ember/openvpn_pages.dart';
 
@@ -49,13 +50,22 @@ void main() {
 
   late Directory tempDir;
   final channelCalls = <String>[];
+  String? storeBackup;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('ovpn_tap_test');
     channelCalls.clear();
     // Seed the profile store the controller loads from:
     // filesDir/openvpn/state.json (dataDir is filesDir/core).
-    final dir = Directory('${tempDir.path}/openvpn');
+    // On a desktop host AndroidCore.dataDir() resolves via
+    // CoreLocator (the channel mock is bypassed), so the seed
+    // lands at the resolved location; the previous content
+    // is backed up here and restored in tearDown.
+    final dir = Directory('${CoreLocator.dataDir(const [])}/openvpn');
+    final storeFile = File('${dir.path}/state.json');
+    storeBackup = await storeFile.exists()
+        ? await storeFile.readAsString()
+        : null;
     await dir.create(recursive: true);
     await File('${dir.path}/state.json').writeAsString(
       jsonEncode({
@@ -107,6 +117,14 @@ void main() {
   tearDown(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('app/android'), null);
+    final storeFile = File(
+      '${CoreLocator.dataDir(const [])}/openvpn/state.json',
+    );
+    if (storeBackup != null) {
+      await storeFile.writeAsString(storeBackup!);
+    } else if (await storeFile.exists()) {
+      await storeFile.delete();
+    }
     await tempDir.delete(recursive: true);
   });
 

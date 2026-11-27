@@ -3,8 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'dart:async';
+
 import 'app_settings.dart';
 import 'core/android_core.dart';
+import 'desktop/pending_link.dart';
 import 'core/core_api.dart';
 import 'core/core_controller.dart';
 import 'core/updates.dart';
@@ -21,6 +24,15 @@ import 'ui/app.dart';
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isAndroid) return runAndroid();
+  // An OS protocol activation (ovpn:// / openvpn://) arrives
+  // as a bare argument: stash it where the shell drains
+  // pending links, the same file a second instance's runner
+  // writes before asking this one to come forward.
+  for (final arg in args) {
+    if (PendingLink.looksLikeLink(arg)) {
+      unawaited(PendingLink.stash(arg.trim()));
+    }
+  }
   final dataDir = CoreLocator.dataDir(args);
   final settings = await AppSettings.load(dataDir);
   final process = CoreProcess(

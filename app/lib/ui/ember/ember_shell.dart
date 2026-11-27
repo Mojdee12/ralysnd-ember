@@ -17,7 +17,14 @@ import '../../app_info.dart';
 import '../../app_settings.dart';
 import '../../aether/aether_controller.dart';
 import '../../core/android_core.dart';
+import '../../desktop/pending_link.dart';
 import '../../openvpn/openvpn_controller.dart';
+import 'app_lock.dart';
+import 'battery_report.dart';
+import 'ember_format.dart';
+import 'session_budget.dart';
+import '../../openvpn/ovpn_intake.dart';
+import '../../openvpn/ovpn_link.dart';
 import '../../core/core_controller.dart';
 import '../../core/models.dart';
 import '../../features.dart';
@@ -73,7 +80,7 @@ class EmberShell extends StatefulWidget {
 }
 
 class _EmberShellState extends State<EmberShell>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _tab = 0;
   late final XrayController _xray = XrayController();
   late final PsiphonController _psiphon = PsiphonController();
@@ -218,6 +225,121 @@ class _EmberShellState extends State<EmberShell>
       unawaited(_xray.refreshState());
     }
     _startShotHarness();
+    // ovpn:// links (build 2157's feature pick 1, W2 port):
+    // the shell owns the OpenVPN controller, so it serves the
+    // intake seam the paste sheet / QR scan offer ovpn links
+    // to, and it drains links the OS handed the process (a
+    // protocol activation — see desktop/pending_link.dart).
+    if (Platform.isWindows) {
+      OvpnLinkIntake.handler = _importOvpnLink;
+      WidgetsBinding.instance.addObserver(this);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_drainPendingLink());
+      });
+    }
+    _careTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted) _careTick();
+    });
+  }
+
+  /// The app lock's session flag (Android's shell rule):
+  /// one unlock per process, re-locked when the app leaves
+  /// the foreground.
+  bool _unlocked = false;
+  bool get _lockedNow => widget.settings.appLockEnabled && !_unlocked;
+
+  void _onUnlocked() {
+    setState(() => _unlocked = true);
+    unawaited(_drainPendingLink());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_drainPendingLink());
+    }
+    if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden) &&
+        widget.settings.appLockEnabled &&
+        _unlocked) {
+      setState(() => _unlocked = false);
+    }
+  }
+
+  /// A link the OS handed the app (ovpn:// activation):
+  /// route it through the same intake as a pasted link.
+  Future<void> _drainPendingLink() async {
+    // Behind the lock nothing imports (Android audit #5);
+    // the link stays queued for the unlock.
+    if (_lockedNow) return;
+    final link = await PendingLink.take();
+    if (link == null || !mounted) return;
+    if (isOvpnLink(link)) await _importOvpnLink(link);
+  }
+
+  /// An ovpn:// / openvpn:// link (Android build 2157's
+  /// wording and flow): the payload form imports directly;
+  /// the official import-profile form downloads its profile
+  /// first (https only, the file intake's 256 KB cap). The
+  /// profile lands through the OpenVPN controller's own
+  /// import path, on the OpenVPN list.
+  Future<bool> _importOvpnLink(String link) async {
+    if (!mounted) return false;
+    final payload = parseOvpnLink(link);
+    if (payload == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('That link is not an OpenVPN profile link'),
+        ),
+      );
+      return false;
+    }
+    final name = payload.name.isEmpty ? 'Imported profile' : payload.name;
+    String text;
+    switch (payload) {
+      case OvpnLinkText t:
+        text = t.text;
+      case OvpnLinkFetch(:final url):
+        final fetched = await fetchOvpnProfileText(url);
+        if (!mounted) return false;
+        if (fetched == null || !isOvpnProfileText(fetched)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not download that OpenVPN profile'),
+            ),
+          );
+          return false;
+        }
+        text = fetched;
+    }
+    try {
+      await _openvpn.importProfile(name, text);
+    } catch (e) {
+      if (!mounted) return false;
+      final raw = e is StateError ? e.message : '$e';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            raw == 'not-an-ovpn-profile'
+                ? 'That link does not carry an OpenVPN profile'
+                : raw.startsWith('core-rejected:')
+                    ? 'OpenVPN rejected the profile: '
+                        '${raw.substring('core-rejected:'.length)}'
+                    : 'Import failed: $raw',
+          ),
+        ),
+      );
+      return false;
+    }
+    if (!mounted) return true;
+    setState(() {
+      mode = 6; // OpenVPN on Windows' numbering.
+      _tab = 1;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Imported $name')),
+    );
+    return true;
   }
 
   // ── SCREENSHOT HARNESS (win-work copy only) ─────────────────────
@@ -392,6 +514,14 @@ class _EmberShellState extends State<EmberShell>
 
   @override
   void dispose() {
+    _careTimer?.cancel();
+    _batteryTracker?.closeOpen(DateTime.now().millisecondsSinceEpoch);
+    if (Platform.isWindows) {
+      WidgetsBinding.instance.removeObserver(this);
+      if (OvpnLinkIntake.handler == _importOvpnLink) {
+        OvpnLinkIntake.handler = null;
+      }
+    }
     _pulse.dispose();
     for (final t in _shotTimers) {
       t.cancel();
@@ -590,6 +720,211 @@ class _EmberShellState extends State<EmberShell>
     if (_aetherMasque.state.running) await _aetherMasque.disconnect();
   }
 
+  // ── W5 care apparatus: the session data budget (Android
+  // build 2095 feature 7) and the battery-report sampler
+  // (build 2105), ported onto this shell's engine model.
+  // One 5 s timer drives both; each costs a field read
+  // while its setting is off.
+
+  Timer? _careTimer;
+  bool _budgetWarned = false;
+  bool _budgetDisconnecting = false;
+  int? _budgetLastUsedBytes;
+  int? _budgetUnmeasurableNotedFor;
+  BatteryLog? _batteryLog;
+  BatterySessionTracker? _batteryTracker;
+  bool _batteryLogLoading = false;
+  bool _batteryTickBusy = false;
+
+  static const _careEngineNames = {
+    0: 'Mozilla',
+    1: 'V2Ray',
+    2: 'Psiphon',
+    3: 'Lantern',
+    4: 'WARP+',
+    5: 'WireGuard',
+    6: 'OpenVPN',
+    7: 'EmberWarp',
+    8: 'MASQUE',
+  };
+
+  /// Session bytes (up + down) for the engine running in
+  /// [m]; null when that engine reports no session totals
+  /// (the M19 rule: unknown, never 0).
+  int? _sessionUsedBytes(int m) {
+    switch (m) {
+      case 0:
+        final t = core.status?.traffic;
+        return t == null ? null : t.up + t.down;
+      case 1:
+      case 5:
+        return _xray.state.upBytes + _xray.state.downBytes;
+      case 2:
+        return _psiphon.state.upBytes + _psiphon.state.downBytes;
+      case 3:
+        return _lantern.state.countersReported
+            ? _lantern.state.upBytes + _lantern.state.downBytes
+            : null;
+      case 4:
+        return _warp.state.upBytes + _warp.state.downBytes;
+      case 6:
+        // The Windows OpenVPN backend reports no byte
+        // counters — unmeasurable, honestly.
+        return null;
+      case 7:
+        return _aetherWarp.upBytes + _aetherWarp.downBytes;
+      case 8:
+        return _aetherMasque.upBytes + _aetherMasque.downBytes;
+      default:
+        return null;
+    }
+  }
+
+  Future<void> _disconnectEngine(int m) async {
+    switch (m) {
+      case 0:
+        await _stopMozilla();
+      case 1:
+      case 5:
+        if (_xray.state.running) await _xray.disconnect();
+      case 2:
+        await _stopPsiphon();
+      case 3:
+        await _stopLantern();
+      case 4:
+        await _stopWarp();
+      case 6:
+        if (_openvpn.state.connected) await _openvpn.disconnect();
+      case 7:
+        if (_aetherWarp.state.running) await _aetherWarp.disconnect();
+      case 8:
+        if (_aetherMasque.state.running) await _aetherMasque.disconnect();
+    }
+  }
+
+  void _careTick() {
+    _budgetTick();
+    unawaited(_batteryTick());
+  }
+
+  /// The data-budget tick: warns once at 80% of the cap
+  /// and disconnects the running engine at the cap (once
+  /// per exceeded episode; a counter drop re-arms — a new
+  /// session began inside one tick).
+  void _budgetTick() {
+    final capMb = widget.settings.sessionBudgetMb;
+    final running = _connectedEngine;
+    if (capMb <= 0 || running == null) {
+      _budgetWarned = false;
+      _budgetUnmeasurableNotedFor = null;
+      _budgetDisconnecting = false;
+      _budgetLastUsedBytes = null;
+      return;
+    }
+    final used = _sessionUsedBytes(running);
+    if (used != null) {
+      final last = _budgetLastUsedBytes;
+      if (last != null && used < last) {
+        _budgetDisconnecting = false;
+        _budgetWarned = false;
+      }
+      _budgetLastUsedBytes = used;
+    }
+    if (used == null) {
+      if (_budgetUnmeasurableNotedFor != running && mounted) {
+        _budgetUnmeasurableNotedFor = running;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'The data budget cannot be measured on '
+              '${_careEngineNames[running] ?? 'this engine'} — '
+              'the cap will not apply to this session.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    _budgetUnmeasurableNotedFor = null;
+    switch (sessionBudgetVerdict(usedBytes: used, capMb: capMb)) {
+      case BudgetVerdict.warn:
+        if (!_budgetWarned && mounted) {
+          _budgetWarned = true;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Data budget: ${fmtBytes(used)} of '
+                '${latDigits(capMb)} MB used this session',
+              ),
+            ),
+          );
+        }
+      case BudgetVerdict.exceeded:
+        _budgetWarned = false;
+        if (_budgetDisconnecting) return;
+        _budgetDisconnecting = true;
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Data budget reached — disconnecting.'),
+            ),
+          );
+        }
+        unawaited(_disconnectEngine(running));
+      case BudgetVerdict.ok:
+        _budgetWarned = false;
+    }
+  }
+
+  /// The battery sampler: while the report is enabled,
+  /// each tick notes the connected engine into the session
+  /// tracker, which records the battery level at each
+  /// session's edges. Toggling off closes any open session.
+  Future<void> _batteryTick() async {
+    if (_batteryTickBusy) return;
+    _batteryTickBusy = true;
+    try {
+      if (!widget.settings.batteryReportEnabled) {
+        _batteryTracker?.closeOpen(DateTime.now().millisecondsSinceEpoch);
+        _batteryTracker = null;
+        return;
+      }
+      if (_batteryTracker == null) {
+        if (_batteryLogLoading) return;
+        _batteryLogLoading = true;
+        try {
+          _batteryLog ??= await BatteryLog.loadDefault();
+        } catch (_) {
+          _batteryLogLoading = false;
+          return;
+        }
+        _batteryLogLoading = false;
+        _batteryTracker = BatterySessionTracker(
+          onSession: (record) {
+            final log = _batteryLog;
+            if (log != null) unawaited(log.add(record));
+          },
+        );
+      }
+      final running = _connectedEngine;
+      String? label = running == null ? null : _careEngineNames[running];
+      // A standalone EmberWarp session rides the Xray
+      // section but keeps its own name (Android's doctrine).
+      if (running == 1 && _xray.state.running && _xray.warpSession) {
+        label = 'EmberWarp';
+      }
+      final reading = await readBatteryStatus();
+      if (!mounted) return;
+      _batteryTracker?.note(
+        engine: label,
+        nowMs: DateTime.now().millisecondsSinceEpoch,
+        reading: reading,
+      );
+    } finally {
+      _batteryTickBusy = false;
+    }
+  }
+
   /// The Mozilla engine's matching hook, used by the home page:
   /// all other engines go off before Mozilla starts.
   Future<void> stopXray() async {
@@ -604,6 +939,9 @@ class _EmberShellState extends State<EmberShell>
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    if (_lockedNow) {
+      return AppLockPage(settings: widget.settings, onUnlocked: _onUnlocked);
+    }
     if (widget.noCore != null) {
       return Scaffold(
         body: EmberBackground(child: SafeArea(child: widget.noCore!)),
@@ -691,6 +1029,9 @@ class _EmberShellState extends State<EmberShell>
         psiphon: _psiphon,
         lantern: _lantern,
         warp: _warp,
+        openvpn: _openvpn,
+        aetherWarp: _aetherWarp,
+        aetherMasque: _aetherMasque,
         settings: widget.settings,
         desktop: widget.desktop,
       ),

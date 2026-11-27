@@ -22,12 +22,17 @@ import 'ember_format.dart';
 import '../../aether/aether_controller.dart';
 import '../../openvpn/openvpn_controller.dart';
 import 'aether_pages.dart';
+import 'lantern_pages.dart';
 import 'map_mozilla.dart';
 import 'map_widgets.dart';
 import 'openvpn_pages.dart';
 import 'wireguard_pages.dart';
 import 'map_psiphon.dart';
 import 'map_v2ray.dart';
+import 'dnstt_settings_page.dart';
+import 'olcrtc_settings_page.dart';
+import 'quick_presets.dart';
+import 'warp_settings_page.dart';
 import 'ember_theme.dart';
 import 'profile_country.dart';
 import 'warp_pages.dart' show warpModeLabel;
@@ -99,7 +104,7 @@ class EmberHome extends StatelessWidget {
         3 => _DesktopEnginePanel(
           child: ListView(
             children: [
-              _LanternHome(lantern: lantern, onOpenServers: onOpenServers),
+              LanternHomePage(lantern: lantern),
             ],
           ),
         ),
@@ -184,11 +189,12 @@ class EmberHome extends StatelessWidget {
               xray: xray,
               onOpenServers: onOpenServers,
               onOpenAccounts: onOpenAccounts,
+              stopOtherEngine: stopOtherEngine,
             )
           else if (mode == 2)
             _PsiphonHome(psiphon: psiphon, onOpenServers: onOpenServers)
           else if (mode == 3)
-            _LanternHome(lantern: lantern, onOpenServers: onOpenServers)
+            LanternHomePage(lantern: lantern)
           else if (mode == 5)
             WireGuardHomePage(xray: xray, onOpenServers: onOpenServers)
           else if (mode == 6 && openvpn != null)
@@ -436,11 +442,13 @@ class _V2rayHome extends StatefulWidget {
     required this.xray,
     required this.onOpenServers,
     required this.onOpenAccounts,
+    required this.stopOtherEngine,
   });
 
   final XrayController xray;
   final VoidCallback onOpenServers;
   final VoidCallback onOpenAccounts;
+  final Future<void> Function() stopOtherEngine;
 
   @override
   State<_V2rayHome> createState() => _V2rayHomeState();
@@ -749,7 +757,359 @@ class _V2rayHomeState extends State<_V2rayHome> {
             ),
           ),
         ],
+        const SizedBox(height: 12),
+        // Build 2095 (feature 11): one-click presets.
+        QuickPresetsCard(xray: xray, stopOtherEngine: widget.stopOtherEngine),
+        const SizedBox(height: 12),
+        _UnderlayCard(xray: xray),
+        const SizedBox(height: 12),
+        _WarpCard(xray: xray),
+        const SizedBox(height: 12),
+        _ConnectionCheckCard(xray: xray),
       ],
+    );
+  }
+}
+
+/// The underlay card (Android's V2Ray home, builds
+/// 2072/2098/2145): the chain-leg picker — None / Psiphon /
+/// EmberWarp / DNSTT / OLCRTC under the V2Ray session, with
+/// the DNSTT and OLCRTC settings affordances. The live line
+/// names the SESSION's underlay, not the current setting.
+class _UnderlayCard extends StatelessWidget {
+  const _UnderlayCard({required this.xray});
+
+  final XrayController xray;
+
+  @override
+  Widget build(BuildContext context) {
+    final underlay = xray.settings.underlay;
+    final live = xray.state.running && xray.state.chainUnderlay;
+    final sessionUnderlay = xray.sessionUnderlay;
+    final valueName = switch (live ? sessionUnderlay : underlay) {
+      'warp' => 'EmberWarp',
+      'dnstt' => 'DNSTT',
+      'olcrtc' => 'OLCRTC',
+      'psiphon' => 'Psiphon',
+      _ => 'None',
+    };
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.layers_rounded, size: 16, color: MapUi.dim),
+              const SizedBox(width: 7),
+              Text('Underlay', style: Ember.microLabel),
+              const Spacer(),
+              Text(valueName, style: Ember.dimStyle),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              EmberChip(
+                label: 'None',
+                selected: underlay == 'none',
+                onTap: () => xray.setUnderlay('none'),
+              ),
+              EmberChip(
+                label: 'Psiphon',
+                selected: underlay == 'psiphon',
+                onTap: () => xray.setUnderlay('psiphon'),
+              ),
+              EmberChip(
+                label: 'EmberWarp',
+                selected: underlay == 'warp',
+                onTap: () => xray.setUnderlay('warp'),
+              ),
+              EmberChip(
+                label: 'DNSTT',
+                selected: underlay == 'dnstt',
+                onTap: () => xray.setUnderlay('dnstt'),
+              ),
+              EmberChip(
+                label: 'OLCRTC',
+                selected: underlay == 'olcrtc',
+                onTap: () => xray.setUnderlay('olcrtc'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            live
+                ? 'This session is running over '
+                      '${sessionUnderlay == 'warp'
+                          ? 'EmberWarp'
+                          : sessionUnderlay == 'dnstt'
+                          ? 'DNSTT'
+                          : sessionUnderlay == 'olcrtc'
+                          ? 'OLCRTC'
+                          : sessionUnderlay == 'psiphon'
+                          ? 'Psiphon'
+                          : 'an underlay tunnel'}.'
+                : underlay == 'psiphon'
+                ? 'V2Ray sessions will connect through a Psiphon '
+                      'tunnel underneath.'
+                : underlay == 'warp'
+                ? 'V2Ray sessions will connect through the '
+                      'EmberWarp core underneath.'
+                : underlay == 'dnstt'
+                ? 'V2Ray sessions will connect through a DNS '
+                      'tunnel (DNSTT) underneath — it needs your '
+                      'dnstt-server running at the other end.'
+                : underlay == 'olcrtc'
+                ? 'V2Ray sessions will connect through a WebRTC '
+                      'video-call tunnel (OLCRTC) underneath — '
+                      'it needs your olcrtc server in the same '
+                      'call room at the other end.'
+                : 'V2Ray sessions connect directly.',
+            style: Ember.caption,
+          ),
+          if (underlay == 'dnstt') ...[
+            const SizedBox(height: 10),
+            MapActionPill(
+              icon: Icons.dns_rounded,
+              label: 'DNSTT settings',
+              onTap: () => openDnsttSettings(context, xray),
+            ),
+          ],
+          if (underlay == 'olcrtc') ...[
+            const SizedBox(height: 10),
+            MapActionPill(
+              icon: Icons.video_call_rounded,
+              label: 'OLCRTC settings',
+              onTap: () => openOlcrtcSettings(context, xray),
+            ),
+          ],
+          if (xray.chainNotice.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  size: 15,
+                  color: Ember.orange,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    xray.chainNotice,
+                    style: Ember.caption,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The EmberWarp card (build 2030; renamed in build 2071):
+/// the EmberWarp core as a standalone tunnel — connect here
+/// and the PC runs over Cloudflare WARP with no Xray in the
+/// path. When Cloudflare refuses the saved identity, the
+/// Renew action appears here (the ONLY renewal path).
+class _WarpCard extends StatelessWidget {
+  const _WarpCard({required this.xray});
+
+  final XrayController xray;
+
+  @override
+  Widget build(BuildContext context) {
+    final ws = xray.warpState;
+    final live = xray.warpSession;
+    final status = live
+        ? 'Connected — this session runs over WARP.'
+        : ws.renewNeeded
+        ? 'Cloudflare refused the saved WARP identity.'
+        : !ws.identityPresent
+        ? 'No WARP identity yet — the first connect registers '
+              'one (free and anonymous).'
+        : 'WARP through Cloudflare\u2019s MASQUE / WireGuard '
+              'gateways.';
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shield_rounded, size: 16, color: MapUi.dim),
+              const SizedBox(width: 7),
+              Text('EmberWarp', style: Ember.microLabel),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              MapActionPill(
+                icon: Icons.settings_rounded,
+                label: 'Settings',
+                onTap: () => openWarpSettings(context, xray),
+              ),
+              const SizedBox(width: 7),
+              MapActionPill(
+                icon: Icons.bolt_rounded,
+                label: live
+                    ? 'Disconnect'
+                    : xray.connecting
+                    ? 'Working…'
+                    : 'Connect',
+                primary: live,
+                onTap: xray.connecting
+                    ? null
+                    : () async {
+                        try {
+                          if (live) {
+                            await xray.disconnect();
+                          } else {
+                            await xray.connectWarp();
+                          }
+                        } catch (_) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  xray.lastError ??
+                                      'The EmberWarp session could not start.',
+                                ),
+                              ),
+                            );
+                          }
+                        }
+                      },
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(status, style: Ember.caption),
+          if (xray.reconnectNotice.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(
+                  Icons.autorenew_rounded,
+                  size: 15,
+                  color: Ember.orange,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    xray.reconnectNotice,
+                    style: Ember.caption,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 2,
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (ws.renewNeeded && !live) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  size: 15,
+                  color: Ember.orange,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'The saved identity is dead. Renewing '
+                    'registers a fresh one — nothing else '
+                    'changes.',
+                    style: Ember.caption,
+                  ),
+                ),
+                MapActionPill(
+                  icon: Icons.refresh_rounded,
+                  label: 'Renew WARP Key',
+                  onTap: () => xray.renewWarpIdentity(),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The guided connection check (build 2029A): staged,
+/// plain-language — against the live tunnel when one is up,
+/// against the selected profile when not.
+class _ConnectionCheckCard extends StatelessWidget {
+  const _ConnectionCheckCard({required this.xray});
+
+  final XrayController xray;
+
+  @override
+  Widget build(BuildContext context) {
+    final stages = xray.lastCheck;
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.fact_check_rounded, size: 16, color: MapUi.dim),
+              const SizedBox(width: 7),
+              Text('Connection check', style: Ember.microLabel),
+              const Spacer(),
+              MapActionPill(
+                icon: Icons.play_arrow_rounded,
+                label: xray.checking ? 'Checking…' : 'Run check',
+                onTap: xray.checking ? null : () => xray.runConnectionCheck(),
+              ),
+            ],
+          ),
+          if (stages.isEmpty && !xray.checking) ...[
+            const SizedBox(height: 8),
+            Text(
+              xray.state.running
+                  ? 'Walks the live tunnel stage by stage and '
+                        'says what it finds, in plain language.'
+                  : 'Checks the selected server stage by stage '
+                        'and says what it finds, in plain language.',
+              style: Ember.caption,
+            ),
+          ],
+          for (final stage in stages) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  stage.ok ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                  size: 15,
+                  color: stage.ok ? Ember.green : Ember.red,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(stage.title, style: Ember.body),
+                      Text(stage.detail, style: Ember.caption),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1084,220 +1444,6 @@ class _PsiphonHomeState extends State<_PsiphonHome> {
   }
 }
 
-/// The Lantern home: the same power ring and status grammar as the
-/// Psiphon home, driven by the core's own state — connecting until
-/// the core reports its tunnel, then the session line, the server
-/// the free plan landed on, and the exit line looked up through the
-/// tunnel itself. The core exposes no session byte counters to the
-/// mobile bindings, so — unlike Psiphon — no rates or totals are
-/// shown; inventing them would be worse than omitting them.
-class _LanternHome extends StatefulWidget {
-  const _LanternHome({required this.lantern, required this.onOpenServers});
-
-  final LanternController lantern;
-  final VoidCallback onOpenServers;
-
-  @override
-  State<_LanternHome> createState() => _LanternHomeState();
-}
-
-class _LanternHomeState extends State<_LanternHome> {
-  bool _busy = false;
-
-  Future<void> _toggle() async {
-    final lantern = widget.lantern;
-    final l = AppLocalizations.of(context);
-    setState(() => _busy = true);
-    try {
-      if (lantern.state.running) {
-        await lantern.disconnect();
-      } else {
-        await lantern.connect();
-      }
-    } on StateError {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(l.startFailed)));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    final lantern = widget.lantern;
-    final state = lantern.state;
-    final on = state.connected;
-    final running = state.running;
-    final busy = _busy || lantern.connecting || (running && !on);
-    final exit = lantern.exitInfo;
-    // The flag: the exit lookup's country once connected, else the
-    // selected server's country code when the core reports one.
-    final flagCode = on && exit != null && exit.countryCode.isNotEmpty
-        ? exit.countryCode
-        : state.serverCountryCode;
-
-    return Column(
-      children: [
-        PowerRing(on: on, busy: busy, onTap: () => unawaited(_toggle())),
-        const SizedBox(height: 14),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (on) ...[
-              Container(
-                width: 9,
-                height: 9,
-                decoration: const BoxDecoration(
-                  color: Ember.green,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-            Text(
-              on
-                  ? l.statusConnected
-                  : running
-                  ? l.stateConnecting
-                  : l.statusDisconnected,
-              style: TextStyle(
-                fontSize: 21,
-                fontWeight: FontWeight.w800,
-                color: on ? Ember.orange : Ember.text,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 5),
-        if (running && state.sinceMs > 0)
-          _SessionLine(
-            startedAt: DateTime.fromMillisecondsSinceEpoch(state.sinceMs),
-            caption: l.secureConnection,
-          )
-        else
-          Text(l.secureConnection, style: Ember.dimStyle),
-        const SizedBox(height: 20),
-        // The server card: a tap opens the server view (the Servers
-        // tab in this mode). The free plan auto-selects; once the
-        // core has landed somewhere it says where.
-        GlassCard(
-          onTap: widget.onOpenServers,
-          child: Row(
-            children: [
-              FlagCircle(code: flagCode),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      on && state.serverLine.isNotEmpty
-                          ? state.serverLine
-                          : l.lanternAutoFree,
-                      style: Ember.heading,
-                    ),
-                    Text(
-                      on && state.serverLine.isNotEmpty
-                          ? l.lanternServer
-                          : l.region,
-                      style: Ember.caption,
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_left_rounded, color: Ember.faint),
-            ],
-          ),
-        ),
-        if (on && exit != null) ...[
-          const SizedBox(height: 12),
-          GlassCard(
-            child: Row(
-              children: [
-                const Icon(Icons.public_rounded, size: 16, color: Ember.dim),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    exit.line,
-                    style: Ember.body,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-        if (running) ...[
-          const SizedBox(height: 12),
-          GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(l.lanternLocalProxy, style: Ember.heading),
-                const SizedBox(height: 8),
-                Text(
-                  'SOCKS / HTTP  127.0.0.1:${LanternPlatform.socksPort}',
-                  style: Ember.body,
-                ),
-                if (state.capAllotted != null && state.capUsed != null) ...[
-                  const SizedBox(height: 6),
-                  Directionality(
-                    textDirection: TextDirection.ltr,
-                    child: Text(
-                      '${l.lanternDataCap}: ${fmtBytes(state.capUsed!)} / '
-                      '${fmtBytes(state.capAllotted!)}',
-                      style: Ember.body,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
-        // The failed-start card, mirroring the WARP home: a failed
-        // attempt stays visible (with the service's own reason when
-        // it reported one) instead of vanishing behind a snackbar.
-        if (state.failed && !on && !running) ...[
-          const SizedBox(height: 12),
-          GlassCard(
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.error_outline_rounded,
-                  size: 16,
-                  color: Ember.red,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    state.failure.isNotEmpty
-                        ? '${l.startFailed} — ${state.failure}'
-                        : '${l.startFailed} — ${l.lanternLogs}',
-                    style: Ember.body,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-/// The WARP+ home: the same power ring and status grammar as the
-/// Psiphon home. The core is warp-plus as a subprocess: it registers
-/// its anonymous identity, optionally scans endpoints, and only
-/// serves its proxy after its own connectivity test passes — so the
-/// ring lights when the service says connected. Session traffic
 /// comes from the service's per-UID counters, like the Xray home's.
 class _WarpHome extends StatefulWidget {
   const _WarpHome({required this.warp, required this.onOpenServers});

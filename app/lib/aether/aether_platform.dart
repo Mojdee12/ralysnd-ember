@@ -1,8 +1,4 @@
-import 'dart:io';
-
 import 'package:flutter/services.dart';
-
-import 'aether_platform_windows.dart';
 
 /// The ralysnd Aether engines (build 2032): the owner's own
 /// binary (libaether.so) taken as it is from the ralysnd app,
@@ -26,7 +22,10 @@ class AetherState {
     this.sinceMs = 0,
     this.error = '',
     this.identity = false,
+    this.engineValidated = false,
+    this.identityRefused = false,
     this.probeTopReason = '',
+    this.traceError = '',
     this.log = '',
   });
 
@@ -43,7 +42,10 @@ class AetherState {
     sinceMs: (m['sinceMs'] as num?)?.toInt() ?? 0,
     error: (m['error'] as String?) ?? '',
     identity: m['identity'] == true,
+    engineValidated: m['engineValidated'] == true,
+    identityRefused: m['identityRefused'] == true,
     probeTopReason: (m['probeTopReason'] as String?) ?? '',
+    traceError: (m['traceError'] as String?) ?? '',
     log: (m['log'] as String?) ?? '',
   );
 
@@ -73,8 +75,23 @@ class AetherState {
   final String error;
   final bool identity;
 
+  /// Build 2116 (B5-8): the engine validated this run's
+  /// tunnel end-to-end and the validation is still fresh —
+  /// the native data probe trusts it over a cold re-probe.
+  final bool engineValidated;
+
+  /// Build 2116 (B5-3): the engine refused the stored
+  /// identity (cert/key mismatch or deregistration) — the
+  /// failure surface names the Reset path when this is set.
+  final bool identityRefused;
+
   /// The most common probe-failure reason from the scan.
   final String probeTopReason;
+
+  /// Build 2115: the last trace fetch's failure, in the
+  /// native side's own words ('' when the last trace landed).
+  /// Before this build a failed trace was an opaque null.
+  final String traceError;
   final String log;
 
   bool get failed => stage == 'failed' || stage == 'crashed';
@@ -87,14 +104,16 @@ class AetherOptions {
     this.protocol = 'masque',
     this.scan = 'turbo',
     this.ip = 'v4',
-    this.transport = 'h3',
+    this.transport = 'auto',
+    this.transportExplicit = false,
+    this.ech = '',
     this.fragment = false,
     this.noize = '',
     this.keepalive = 25,
     this.peer,
   });
 
-  /// masque | wg | gool (the cfwarp slot always runs wg)
+  /// masque | wg | gool | mim (the cfwarp slot always runs wg)
   final String protocol;
 
   /// turbo | balanced | thorough | stealth | ironclad
@@ -103,8 +122,30 @@ class AetherOptions {
   /// v4 | v6 | both
   final String ip;
 
-  /// h3 | h2 — the MASQUE carrier transport
+  /// h3 | h2 | auto — the MASQUE carrier transport. 'auto'
+  /// (the default since build 2083) walks the carrier ladder
+  /// natively in ONE connect (MasqueRung: H3 → H2 → H2+
+  /// fragment → H2+semi-python+fragment → H2+semi-python+
+  /// tlshello), each rung proven by real data before the
+  /// TUN, and remembers the rung that carried data per
+  /// network. An explicit 'h3'/'h2' stays a single-carrier
+  /// connect and learns nothing.
   final String transport;
+
+  /// Whether [transport] was picked by the user on the page,
+  /// as opposed to shipped as a default (build 2083). The
+  /// distinction is what the one-time migration below reads:
+  /// through build 2082 the shipped default was 'h3', so a
+  /// stored 'h3' without this marker cannot be told apart
+  /// from the old default.
+  final bool transportExplicit;
+
+  /// The ECH setting handed to the engine (AETHER_ECH):
+  /// '' = the engine's own default. Build 2116 (A-02):
+  /// the Kotlin side has read this argument all along
+  /// (AetherRunOptions.ech → buildEnv) — the Dart options
+  /// simply never carried or sent it, so it was always ''.
+  final String ech;
   final bool fragment;
 
   /// '' = the engine default (firewall for MASQUE, balanced else)
@@ -120,6 +161,7 @@ class AetherOptions {
     'scan': scan,
     'ip': ip,
     'transport': transport,
+    'ech': ech,
     'fragment': fragment,
     'noize': noize,
     'keepalive': keepalive,
@@ -131,6 +173,8 @@ class AetherOptions {
     'scan': scan,
     'ip': ip,
     'transport': transport,
+    'transportExplicit': transportExplicit,
+    'ech': ech,
     'fragment': fragment,
     'noize': noize,
     'keepalive': keepalive,
@@ -141,7 +185,9 @@ class AetherOptions {
     protocol: (j['protocol'] as String?) ?? 'masque',
     scan: (j['scan'] as String?) ?? 'turbo',
     ip: (j['ip'] as String?) ?? 'v4',
-    transport: (j['transport'] as String?) ?? 'h3',
+    transport: (j['transport'] as String?) ?? 'auto',
+    transportExplicit: j['transportExplicit'] == true,
+    ech: (j['ech'] as String?) ?? '',
     fragment: j['fragment'] == true,
     noize: (j['noize'] as String?) ?? '',
     keepalive: (j['keepalive'] as num?)?.toInt() ?? 25,
@@ -153,6 +199,8 @@ class AetherOptions {
     String? scan,
     String? ip,
     String? transport,
+    bool? transportExplicit,
+    String? ech,
     bool? fragment,
     String? noize,
     int? keepalive,
@@ -163,6 +211,8 @@ class AetherOptions {
     scan: scan ?? this.scan,
     ip: ip ?? this.ip,
     transport: transport ?? this.transport,
+    transportExplicit: transportExplicit ?? this.transportExplicit,
+    ech: ech ?? this.ech,
     fragment: fragment ?? this.fragment,
     noize: noize ?? this.noize,
     keepalive: keepalive ?? this.keepalive,
@@ -170,71 +220,158 @@ class AetherOptions {
   );
 }
 
+/// Build 2083: the one-time transport migration for stored
+/// options (applied by AetherController.load and persisted
+/// there). Through build 2082 the shipped MASQUE transport
+/// default was 'h3', and the options file cannot tell a
+/// stored default from an explicit HTTP/3 pick — so an
+/// unmarked 'h3' is read as the old default and lands on
+/// 'auto', the new default (whose ladder tries HTTP/3
+/// first anyway, and remembers what worked). An unmarked
+/// 'h2' can only be an explicit pick — 'h2' was never a
+/// default — so it is marked explicit and honored. Anything
+/// already marked, and 'auto' itself, stands as stored.
+/// Returns the same instance when nothing changes.
+AetherOptions migrateMasqueTransport(AetherOptions o) {
+  if (o.transportExplicit) return o;
+  if (o.transport == 'h3') return o.copyWith(transport: 'auto');
+  if (o.transport == 'h2') return o.copyWith(transportExplicit: true);
+  return o;
+}
+
+/// Build 2083: the MASQUE carrier ladder's time arithmetic.
+/// The native walk has its own bound (AetherSlot's
+/// ladderTotalMs, the same numbers); this is the Dart
+/// backstop for the platform call — the native side answers
+/// first in every expected case, and the backstop only
+/// guards a wedged call, after which the connect tears the
+/// engine down. A bound, not an expectation: a dead rung
+/// ends at its ~45 s scan-cycle signal natively, so a cold
+/// first connect on a filtered line normally resolves in a
+/// few minutes.
+int masqueScanDeadlineMs(String scan) => switch (scan) {
+  'turbo' => 45000,
+  'balanced' => 120000,
+  'thorough' => 300000,
+  'stealth' => 180000,
+  'ironclad' => 180000,
+  _ => 180000,
+};
+
+/// Identity/handshake/validation headroom after a scan.
+const int masqueRungHeadroomMs = 45000;
+
+/// Trace + data-proof allowance inside one rung's total.
+const int masqueProofAllowanceMs = 135000;
+
+/// The rungs the ladder walks (MasqueRung, native side).
+const int masqueLadderRungCount = 5;
+
+/// The Dart backstop for one masque-auto connect: every
+/// rung's wait + proofs, plus a minute of channel slack.
+Duration masqueAutoConnectTimeout(String scan) => Duration(
+  milliseconds:
+      masqueLadderRungCount *
+          (masqueScanDeadlineMs(scan) +
+              masqueRungHeadroomMs +
+              masqueProofAllowanceMs) +
+      60000,
+);
+
 /// The platform-channel surface of the Aether engines
 /// (MainActivity's aether* and socksTun* cases).
 class AetherPlatform {
   static const _channel = MethodChannel('app/android');
 
-  /// The Windows backend (the aether.exe sidecar, driven in
-  /// Dart with AetherCore.kt's exact contract).
-  static final WindowsAetherBackend _windows = WindowsAetherBackend();
-  static bool get _isWindows => Platform.isWindows;
-
   static const int cfwarpSocksPort = 20870;
   static const int masqueSocksPort = 20810;
 
-  static Future<bool> start(String engine, AetherOptions options) async {
-    if (_isWindows) return _windows.start(engine, options);
-    return await _channel.invokeMethod<bool>(
-          'aetherStart',
-          options.toMap(engine),
-        ) ??
-        false;
+  static Future<bool> start(String engine, AetherOptions options) async =>
+      await _channel.invokeMethod<bool>(
+        'aetherStart',
+        options.toMap(engine),
+      ) ??
+      false;
+
+  /// Build 2083: the MASQUE carrier ladder — ONE native
+  /// call that walks the rungs (engine start → CONNECTED →
+  /// warp trace → data proof per rung) until one carries
+  /// data, remembering the winner per network. On success
+  /// the engine is left running and proven; the caller
+  /// raises the TUN. Blocking on the platform side for the
+  /// whole walk; the caller bounds it with
+  /// [masqueAutoConnectTimeout]. Returns the verdict map
+  /// ({ok, carrier, label} or {ok: false, error}); null
+  /// when the platform call itself failed.
+  static Future<Map<String, dynamic>?> connectMasque(
+    String engine,
+    AetherOptions options,
+  ) async {
+    final m = await _channel.invokeMapMethod<dynamic, dynamic>(
+      'aetherConnectMasque',
+      options.toMap(engine),
+    );
+    if (m == null) return null;
+    return m.map((k, v) => MapEntry(k.toString(), v));
   }
 
-  static Future<void> stop(String engine) {
-    if (_isWindows) return _windows.stop(engine);
-    return _channel.invokeMethod<void>('aetherStop', {'engine': engine});
-  }
+  static Future<void> stop(String engine) =>
+      _channel.invokeMethod<void>('aetherStop', {'engine': engine});
 
   static Future<AetherState> state(String engine) async {
-    if (_isWindows) return _windows.state(engine);
-    final m = await _channel.invokeMapMethod<dynamic, dynamic>(
-      'aetherState',
-      {'engine': engine},
-    );
-    return m == null ? const AetherState() : AetherState.fromMap(m);
+    // Build 2116 (AB-11): a channel throw here used to
+    // escape into the controller's refresh() — an
+    // unhandled async error and a card frozen on its last
+    // state. A state read that cannot be answered reads
+    // as stopped, the Warp/Sidecar treatment.
+    try {
+      final m = await _channel.invokeMapMethod<dynamic, dynamic>(
+        'aetherState',
+        {'engine': engine},
+      );
+      return m == null ? const AetherState() : AetherState.fromMap(m);
+    } catch (_) {
+      return const AetherState();
+    }
   }
 
   /// Blocking on the platform side (the registration ladder):
   /// makes an identity when the slot has none. Returns the
   /// platform's outcome line.
-  static Future<String> ensureIdentity(String engine, String protocol) async {
-    if (_isWindows) return _windows.ensureIdentity(engine, protocol);
-    return await _channel.invokeMethod<String>('aetherEnsureIdentity', {
-          'engine': engine,
-          'protocol': protocol,
-        }) ??
-        '';
-  }
+  static Future<String> ensureIdentity(String engine, String protocol) async =>
+      await _channel.invokeMethod<String>('aetherEnsureIdentity', {
+        'engine': engine,
+        'protocol': protocol,
+      }) ??
+      '';
 
-  static Future<void> resetIdentity(String engine) {
-    if (_isWindows) return _windows.resetIdentity(engine);
-    return _channel.invokeMethod<void>('aetherResetIdentity', {
-      'engine': engine,
-    });
-  }
+  static Future<void> resetIdentity(String engine) =>
+      _channel.invokeMethod<void>('aetherResetIdentity', {'engine': engine});
 
   /// One Cloudflare trace through the slot's SOCKS (the cfwarp
   /// connect proof and both pages' exit card). Null on failure.
   static Future<Map<String, String>?> trace(String engine) async {
-    if (_isWindows) return _windows.trace(engine);
     final m = await _channel.invokeMapMethod<dynamic, dynamic>(
       'aetherTrace',
       {'engine': engine},
     );
     if (m == null) return null;
     return m.map((k, v) => MapEntry(k.toString(), v.toString()));
+  }
+
+  /// Real transfers through the slot's SOCKS (build 2080, the
+  /// CfDataProbe port): HTTP 204, HTTPS 204, an exact-byte
+  /// download and an echoed upload, all through the tunnel's
+  /// own proxy. Returns the native verdict map ({ok, detail,
+  /// ms}); null when the platform call itself failed. Blocking
+  /// on the platform side (up to ~45 s).
+  static Future<Map<String, dynamic>?> dataProbe(String engine) async {
+    final m = await _channel.invokeMapMethod<dynamic, dynamic>(
+      'aetherDataProbe',
+      {'engine': engine},
+    );
+    if (m == null) return null;
+    return m.map((k, v) => MapEntry(k.toString(), v));
   }
 
   /// Raises (or drops) the device TUN against a slot's SOCKS —
@@ -244,34 +381,29 @@ class AetherPlatform {
     required String name,
     required int socksPort,
     required String engine,
+    required int mtu,
     String dns = '1.1.1.1',
     bool ipv6 = true,
-  }) {
-    if (_isWindows) {
-      return _windows.setTun(
-        on: on,
-        name: name,
-        socksPort: socksPort,
-        engine: engine,
-      );
-    }
-    return _channel.invokeMethod<void>('socksTunSetOn', {
+    bool killSwitch = false,
+  }) => _channel.invokeMethod<void>('socksTunSetOn', {
     'on': on,
     'name': name,
     'dns': dns,
     'ipv6': ipv6,
-      'socksPort': socksPort,
-      'engine': engine,
-    });
-  }
+    'mtu': mtu,
+    'socksPort': socksPort,
+    'engine': engine,
+    // Build 2097 (post-2096 audit C7): the native handler
+    // has read this argument since build 2063 — the Dart
+    // side simply never sent it, so the Settings kill
+    // switch silently did nothing for the WARP/MASQUE
+    // (Aether) tunnels while its copy promised coverage.
+    'killSwitch': killSwitch,
+  });
 
   /// The TUN service's session state (shared with the V2Ray
   /// engine's bridge reads: running, name, sinceMs, up, down).
-  /// On Windows this is the TunBridge session the Aether
-  /// backend raised (byte counters are not reported by the
-  /// bridge and read 0).
   static Future<Map<String, dynamic>> tunState() async {
-    if (_isWindows) return _windows.tunState();
     final m = await _channel.invokeMapMethod<dynamic, dynamic>('xrayState');
     if (m == null) return const {};
     return m.map((k, v) => MapEntry(k.toString(), v));

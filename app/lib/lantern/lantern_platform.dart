@@ -1,31 +1,96 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 
-/// The Lantern engine's state, as the Kotlin LanternVpnService
-/// and LanternCore report it on the bridge. Stage values come
-/// from the core's stdout contract: idle, starting, fetching,
-/// up, error.
+import 'lantern_platform_windows.dart';
+
+/// One server on Lantern's list, as the gomobile core reports
+/// it through Mobile.getAvailableServers() (build 2129): the
+/// bridge maps each entry to its tag and location. A [tag] is
+/// what connectToServer pins. Build 2131: the list carries
+/// private servers too — the core stores them with
+/// isLantern=false — and the picker marks them.
+class LanternServer {
+  const LanternServer({
+    required this.tag,
+    this.city = '',
+    this.country = '',
+    this.countryCode = '',
+    this.isLantern = true,
+  });
+
+  factory LanternServer.fromMap(Map<dynamic, dynamic> m) => LanternServer(
+    tag: (m['tag'] as String?) ?? '',
+    city: (m['city'] as String?) ?? '',
+    country: (m['country'] as String?) ?? '',
+    countryCode: (m['countryCode'] as String?) ?? '',
+    // Payloads from before build 2131 carry no isLantern
+    // key; those lists held Lantern entries only.
+    isLantern: m['isLantern'] != false,
+  );
+
+  final String tag;
+  final String city;
+  final String country;
+  final String countryCode;
+
+  /// False for a private server (the owner's own, registered
+  /// through the private-server API); true for Lantern's
+  /// public fleet.
+  final bool isLantern;
+
+  /// "Country · City" for the picker (the LML label shape).
+  String get label {
+    if (country.isNotEmpty && city.isNotEmpty) return '$country · $city';
+    if (country.isNotEmpty) return country;
+    if (city.isNotEmpty) return city;
+    return tag;
+  }
+}
+
+/// Parses the bridge's server-list JSON (a string field of the
+/// published state) into servers. Malformed input reads as an
+/// empty list — the picker then offers Automatic only.
+List<LanternServer> parseLanternServers(String json) {
+  try {
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return [
+      for (final entry in decoded)
+        if (entry is Map && (entry['tag'] as String? ?? '').isNotEmpty)
+          LanternServer.fromMap(entry),
+    ];
+  } catch (_) {
+    return const [];
+  }
+}
+
+/// The Lantern engine's state, as the :lantern process's
+/// LanternVpnService publishes it (build 2129). Connected is
+/// the core's own verdict (Mobile.isVPNConnected, polled by
+/// the service) — never a local guess: the honesty rule.
 class LanternState {
   const LanternState({
     this.available = false,
     this.running = false,
     this.coreRunning = false,
     this.connected = false,
+    this.killSwitchHeld = false,
     this.stage = 'idle',
     this.exitCity = '',
     this.exitCountry = '',
     this.exitCode = '',
+    this.selectedTag = '',
     this.servers = -1,
-    this.keptServers = -1,
-    this.keptMasque = -1,
-    this.exhausted = false,
+    this.serversJson = '[]',
+    this.smartRouting = false,
+    this.privateResult = '',
     this.sinceMs = 0,
     this.upBytes = 0,
+    this.countersReported = false,
     this.downBytes = 0,
     this.error,
-    this.stdoutTail = const [],
-    this.stderrTail = const [],
   });
 
   factory LanternState.fromMap(Map<dynamic, dynamic> m) => LanternState(
@@ -33,39 +98,48 @@ class LanternState {
     running: m['running'] == true,
     coreRunning: m['coreRunning'] == true,
     connected: m['connected'] == true,
+    // Build 2125 (audit A25-04): the kill-switch hold flag.
+    killSwitchHeld: m['killSwitchHeld'] == true,
     stage: (m['stage'] as String?) ?? 'idle',
     exitCity: (m['exitCity'] as String?) ?? '',
     exitCountry: (m['exitCountry'] as String?) ?? '',
     exitCode: (m['exitCode'] as String?) ?? '',
+    selectedTag: (m['selectedTag'] as String?) ?? '',
     servers: (m['servers'] as num?)?.toInt() ?? -1,
-    keptServers: (m['keptServers'] as num?)?.toInt() ?? -1,
-    keptMasque: (m['keptMasque'] as num?)?.toInt() ?? -1,
-    exhausted: m['exhausted'] == true,
+    serversJson: (m['serversJson'] as String?) ?? '[]',
+    // Build 2129: smart routing through the real API —
+    // DEFAULT OFF, forced off at every core init; this is
+    // the core's own readback of the setting.
+    smartRouting: m['smartRouting'] == true,
+    privateResult: (m['privateResult'] as String?) ?? '',
     sinceMs: (m['sinceMs'] as num?)?.toInt() ?? 0,
     upBytes: (m['up'] as num?)?.toInt() ?? 0,
     downBytes: (m['down'] as num?)?.toInt() ?? 0,
+    countersReported: m['up'] is num && m['down'] is num,
     error: m['error'] as String?,
-    stdoutTail:
-        (m['stdoutTail'] as List?)?.map((e) => e.toString()).toList() ??
-        const [],
-    stderrTail:
-        (m['stderrTail'] as List?)?.map((e) => e.toString()).toList() ??
-        const [],
   );
 
-  /// False on builds without the core binary (non-arm64 ABIs).
+  /// False on builds without the gomobile library (non-arm64).
   final bool available;
 
-  /// The TUN tunnel is up.
+  /// A session was started and has not been stopped.
   final bool running;
 
-  /// The core subprocess is alive.
+  /// Kept for the shell's engine arbitration: with the
+  /// gomobile core there is no separate process to probe, so
+  /// this mirrors [running] (the platform fills it in).
   final bool coreRunning;
 
-  /// The core reports the proxy carrying traffic ("proxy ok").
+  /// The core itself reports the VPN connected.
   final bool connected;
 
-  /// idle | starting | fetching | up | error
+  /// Build 2125 (audit A25-04): the kill-switch hold is in
+  /// place — the session died unexpectedly and its TUN is
+  /// held as a blackhole until the user disconnects or
+  /// reconnects.
+  final bool killSwitchHeld;
+
+  /// idle | starting | up | error
   final String stage;
   final String exitCity;
   final String exitCountry;
@@ -73,52 +147,47 @@ class LanternState {
   /// The exit's ISO country code (NL, DE, …), for the map pin.
   final String exitCode;
 
-  /// Servers in the fetched config; -1 until the first list lands.
+  /// The tag of the server the core selected, from its own
+  /// getSelectedServerJSON readback.
+  final String selectedTag;
+
+  /// Servers in the core's current list; -1 until the first
+  /// list lands.
   final int servers;
 
-  /// The kept (on-disk) config's server counts (build 2032):
-  /// fronted / masque, -1 when there is no readable kept
-  /// config. A valid kept config means the next start connects
-  /// instantly, with no fetch — ralysnd's rule.
-  final int keptServers;
-  final int keptMasque;
+  /// The list itself, verbatim JSON from the bridge.
+  final String serversJson;
 
-  /// True when a kept config exists to start from instantly.
-  bool get hasKeptConfig => keptServers > 0 || keptMasque > 0;
+  /// The core's smart-routing setting (real API readback).
+  final bool smartRouting;
 
-  /// The core reports its free capacity allocation is used up.
-  final bool exhausted;
+  /// The last private-server registration outcome from the
+  /// service: "", `ok|<tag>` or `error|<words>`.
+  final String privateResult;
+
   final int sinceMs;
   final int upBytes;
   final int downBytes;
 
+  /// False when the state carried no counter keys at all —
+  /// the zeros above are then placeholders, not measurements.
+  final bool countersReported;
+
   /// The last startup/core failure, verbatim from the platform.
   final String? error;
-  final List<String> stdoutTail;
-  final List<String> stderrTail;
 
-  bool get starting =>
-      stage == 'starting' || stage == 'fetching' || (running && !connected);
+  /// The parsed server list (picker entries after Automatic).
+  List<LanternServer> get serverList => parseLanternServers(serversJson);
+
+  bool get starting => running && !connected;
 
   /// Short human line for the stage, for the home page and bar.
   String get stageLabel => switch (stage) {
     'starting' => 'Starting the core…',
-    'fetching' => 'Fetching the server list…',
     'up' => 'Connected',
     'error' => 'Failed',
     _ => running ? 'Connecting…' : 'Not connected',
   };
-
-  // ---- Windows-tree desktop page compatibility -----------------
-  // The desktop Lantern pages were written against the 2.1.0
-  // tree's older LanternState shape. These getters keep those
-  // pages working against the 2032 state contract unchanged.
-  String get serverCountryCode => exitCode;
-  String get serverLine => exitLine;
-  int? get capAllotted => null;
-  int? get capUsed => null;
-  bool get failed => stage == 'error' || error != null;
-  String get failure => error ?? '';
 
   /// "City, Country" when the core has named its exit.
   String get exitLine {
@@ -130,72 +199,155 @@ class LanternState {
 }
 
 /// The platform-channel surface of the Lantern engine
-/// (MainActivity's lantern* cases).
-/// Why Lantern cannot start on Windows (yet): the engine is
-/// Lantern's radiance core compiled as an Android library
-/// (liblantern.so) — there is no Windows build of it in this
-/// tree. The honest Windows state is therefore a failed state
-/// carrying this explanation (never a dead toggle): the page
-/// shows it verbatim. The unblock path is a radiance sidecar
-/// (getlantern/radiance is Go and cross-platform; a Windows
-/// CLI wrapper around it, staged like the other sidecars,
-/// would slot in behind this facade unchanged).
-const lanternWindowsUnavailable =
-    'Lantern is not available on Windows yet: its core ships '
-    'only as an Android library in this app. The V2Ray, '
-    'Psiphon, WARP and Mozilla engines all work on Windows.';
-
+/// (MainActivity's lantern* cases; the work happens in the
+/// :lantern process, state returns through its snapshot).
 class LanternPlatform {
   static const _channel = MethodChannel('app/android');
-
-  static bool get _windows => Platform.isWindows;
-  static const int socksPort = 20840;
-  static const int httpPort = 20841;
 
   static Future<void> setOn({
     required bool on,
     bool ipv6 = true,
-    bool smart = false,
-    int fetchVia = 0,
-    String clientIp = '',
-  }) async {
-    if (_windows) throw StateError(lanternWindowsUnavailable);
+    required int mtu,
+    String dns = '1.1.1.1',
+    // Build 2125 (audit A25-04): the kill switch.
+    bool killSwitch = false,
+    // Build 2129: the picked server's tag; "" = automatic
+    // (Mobile.startVPN), a tag pins (Mobile.connectToServer).
+    String tag = '',
+    // Build 2149 (audit A43-09): the pinned PRIVATE
+    // server's stored identity (country + code), so the
+    // service's exit-identity lookup can synthesize the
+    // pinned entry when the core's list has no row for it.
+    // '' for a public pin or automatic.
+    String pinCountry = '',
+    String pinCode = '',
+    // Build 2149 (audit A43-27): the stored smart-routing
+    // choice; the service applies it after core init.
+    bool smartOn = false,
+  }) {
+    // Windows (W3, full-parity build): the radiance daemon
+    // host (lantern_platform_windows.dart) serves the same
+    // contract.
+    if (Platform.isWindows) {
+      return WindowsLanternBackend.setOn(
+        on: on,
+        ipv6: ipv6,
+        mtu: mtu,
+        dns: dns,
+        killSwitch: killSwitch,
+        tag: tag,
+        pinCountry: pinCountry,
+        pinCode: pinCode,
+        smartOn: smartOn,
+      );
+    }
     return _channel.invokeMethod<void>('lanternSetOn', {
     'on': on,
     'ipv6': ipv6,
-    'smart': smart,
-    'fetchVia': fetchVia,
-    'clientIp': clientIp,
+    'mtu': mtu,
+    'dns': dns,
+    'killSwitch': killSwitch,
+    'tag': tag,
+    'pinCountry': pinCountry,
+    'pinCode': pinCode,
+    'smartOn': smartOn,
     });
   }
 
-  static Future<void> stop() async {
-    if (_windows) return;
+  static Future<void> stop() {
+    if (Platform.isWindows) return WindowsLanternBackend.stop();
     return _channel.invokeMethod<void>('lanternStop');
   }
 
   static Future<LanternState> state() async {
-    if (_windows) {
-      return const LanternState(
-        stage: 'error',
-        error: lanternWindowsUnavailable,
+    if (Platform.isWindows) return WindowsLanternBackend.state();
+    // Build 2116 (AB-11): catch→stopped, like the rest of
+    // the platform family — a thrown state read froze the
+    // Lantern card on its last state.
+    try {
+      final m = await _channel.invokeMapMethod<dynamic, dynamic>(
+        'lanternState',
+      );
+      return m == null ? const LanternState() : LanternState.fromMap(m);
+    } catch (_) {
+      return const LanternState();
+    }
+  }
+
+  /// Asks the :lantern process to initialize the core and
+  /// publish its server list; the list arrives through
+  /// [state] (the service publishes it when the fetch lands).
+  static Future<void> fetchServers() {
+    if (Platform.isWindows) return WindowsLanternBackend.fetchServers();
+    return _channel.invokeMethod<void>('lanternFetchServers');
+  }
+
+  /// The real smart-routing API (Mobile.setSmartRoutingEnabled).
+  static Future<void> setSmartRouting(bool on) {
+    if (Platform.isWindows) {
+      return WindowsLanternBackend.setSmartRouting(on);
+    }
+    return _channel.invokeMethod<void>('lanternSetSmartRouting', {'on': on});
+  }
+
+  /// Registers a private server through
+  /// Mobile.addServerManagerInstance (build 2129, replacing
+  /// the 2127 H8 servers.json merge). The outcome arrives in
+  /// the state's privateResult.
+  static Future<void> addPrivateServer({
+    required String ip,
+    required int port,
+    required String token,
+    required String tag,
+  }) {
+    if (Platform.isWindows) {
+      return WindowsLanternBackend.addPrivateServer(
+        ip: ip,
+        port: port,
+        token: token,
+        tag: tag,
       );
     }
-    final m = await _channel.invokeMapMethod<dynamic, dynamic>('lanternState');
-    return m == null ? const LanternState() : LanternState.fromMap(m);
+    return _channel.invokeMethod<void>('lanternAddPrivateServer', {
+    'ip': ip,
+    'port': port,
+    'token': token,
+    'tag': tag,
+    });
   }
 
-  /// Asks the running core to refetch its server list now.
-  static Future<bool> fetchList() async {
-    if (_windows) return false;
-    return await _channel.invokeMethod<bool>('lanternFetchList') ?? false;
+  /// Removes a private server by its tag
+  /// (Mobile.deletePrivateServerByName).
+  static Future<void> removePrivateServer(String tag) {
+    if (Platform.isWindows) {
+      return WindowsLanternBackend.removePrivateServer(tag);
+    }
+    return _channel.invokeMethod<void>('lanternRemovePrivateServer', {
+      'tag': tag,
+    });
   }
 
-  /// Deletes the cached server list so the next start refetches
-  /// it. Returns the number of files deleted, or -1 while the
-  /// core is running.
-  static Future<int> rotateList() async {
-    if (_windows) return 0;
-    return await _channel.invokeMethod<int>('lanternRotateList') ?? 0;
+  /// Build 2131: switches a RUNNING session to [tag]
+  /// ("" = automatic) inside the live tunnel — the service
+  /// re-runs the bridge connect, and the core switches via
+  /// SelectServer without a TUN rebuild. Build 2149 (audit
+  /// A43-09): the pin identity rides along, as on [setOn].
+  static Future<void> switchServer(
+    String tag, {
+    String pinCountry = '',
+    String pinCode = '',
+  }) {
+    if (Platform.isWindows) {
+      return WindowsLanternBackend.switchServer(
+        tag,
+        pinCountry: pinCountry,
+        pinCode: pinCode,
+      );
+    }
+    return _channel.invokeMethod<void>('lanternSwitch', {
+      'tag': tag,
+      'pinCountry': pinCountry,
+      'pinCode': pinCode,
+    });
   }
 }

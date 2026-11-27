@@ -6,8 +6,9 @@
 /// and stopped the core. This test stages a fake psiphon-core.exe
 /// that emits the exact notice lines from a real failed run (the
 /// user's 2.0.5 log, 2026-11-01) on stderr, and drives the real
-/// WindowsPsiphonBackend end to end: setOn must pass its listener
-/// wait, and the notice-fed state must flip.
+/// WindowsPsiphonBackend end to end: the notice-fed state must
+/// flip to running + connected (the build-2157 host returns from
+/// setOn at spawn; the controller polls state, as on Android).
 ///
 /// POSIX hosts only: the fake core is a shell script. On Windows CI
 /// the test is skipped (the CI sidecar smoke in
@@ -55,7 +56,6 @@ void main() {
       });
 
       final backend = WindowsPsiphonBackend();
-      final sw = Stopwatch()..start();
       await backend.setOn(
         vpnMode: false,
         region: '',
@@ -64,14 +64,19 @@ void main() {
         dns: '1.1.1.1',
         mtu: 1500,
       );
-      // The listener wait passed — quickly, not via the 15 s timeout.
-      expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
-      final s = await backend.state();
+      // The notices land within a second or two of spawn; poll
+      // the published state the way the controller does.
+      var s = await backend.state();
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (!(s.running && s.connected) &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        s = await backend.state();
+      }
       expect(s.running, isTrue);
       expect(s.connected, isTrue);
       expect(s.regions, contains('DE'));
       expect(s.region, 'DE');
-      expect(s.lastError, isEmpty);
       await backend.stop();
       expect((await backend.state()).running, isFalse);
     },

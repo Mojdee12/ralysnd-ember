@@ -5,7 +5,11 @@
 /// PID-file reaper; this side owns the settings and the
 /// command line (dnstt_args.dart).
 
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'subprocess_windows.dart';
 
 class DnsttState {
   final bool available;
@@ -43,6 +47,7 @@ class DnsttPlatform {
   /// exists; readiness completes asynchronously — poll [state]
   /// until [DnsttState.ready].
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.dnstt.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('dnsttStart', {'args': args});
       if (v == true) lastStartError = '';
@@ -54,6 +59,7 @@ class DnsttPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.dnstt.stop();
     try {
       await _channel.invokeMethod('dnsttStop');
     } catch (_) {
@@ -62,6 +68,17 @@ class DnsttPlatform {
   }
 
   static Future<DnsttState> state() async {
+    if (Platform.isWindows) {
+      final s = WindowsSubprocesses.dnstt.snapshot();
+      return DnsttState(
+        available: s.available,
+        running: s.running,
+        ready: s.ready,
+        stage: s.stage,
+        error: s.error,
+        logTail: s.logTail,
+      );
+    }
     try {
       final m = await _channel.invokeMapMethod<String, dynamic>('dnsttState');
       if (m == null) return const DnsttState();

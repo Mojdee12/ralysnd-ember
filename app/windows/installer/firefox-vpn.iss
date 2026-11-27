@@ -166,6 +166,21 @@ Type: files; Name: "{app}\firefox-vpn-core.exe"
 ; Never an existing data folder, if one was in the source.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "user-data,portable"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; The ovpn:// / openvpn:// URL protocols (build 2157's link
+; import, W2 port): a browser tap opens Ember with the link
+; as the argument; the runner hands it to the running copy
+; (or the first instance reads its own arguments) and the
+; shell routes it to the OpenVPN importer. Per-user keys —
+; the installer needs no administrator rights for them, and
+; uninstalling removes them.
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\ovpn"; ValueType: string; ValueName: ""; ValueData: "URL:OpenVPN profile link"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\ovpn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\ovpn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\openvpn"; ValueType: string; ValueName: ""; ValueData: "URL:OpenVPN profile link"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\openvpn"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\openvpn\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""
+
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon

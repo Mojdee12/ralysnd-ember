@@ -10,6 +10,9 @@ import '../core/core_controller.dart';
 import '../core/models.dart';
 import '../l10n/app_localizations.dart';
 import 'connections_view.dart';
+import 'ember/ember_dialogs.dart';
+import 'ember/ember_theme.dart';
+import 'ember/map_widgets.dart';
 import 'format.dart';
 import 'widgets.dart';
 
@@ -23,9 +26,19 @@ class LogsPage extends StatefulWidget {
     required this.core,
     this.settings,
     this.connections,
+    this.emberChrome = false,
   });
 
   final CoreController core;
+
+  /// Build 2116 (AP-02): when the page is pushed as a
+  /// route of its own (the Ember shell's Mozilla log
+  /// viewer), it carries the shared Ember page chrome —
+  /// a Scaffold with a transparent AppBar and an
+  /// Ember.heading title — like every sibling log viewer.
+  /// Hosted inside another shell's content area (the
+  /// desktop layout), it keeps its in-page title instead.
+  final bool emberChrome;
 
   /// Keeps the Connections tab's columns; without it they are not kept.
   final AppSettings? settings;
@@ -47,6 +60,16 @@ class _LogsPageState extends State<LogsPage> {
   Timer? _timer;
   int _after = 0;
   bool _reading = false;
+
+  /// Build 2092 (item 17): the first read has completed —
+  /// before it, an empty list is a loading state, not
+  /// "no logs".
+  bool _firstReadDone = false;
+
+  /// Build 2092 (item 17): the last read failed (the core
+  /// was unreachable) — an empty list then shows the error
+  /// line, not "no logs".
+  bool _readFailed = false;
   String _minLevel = 'DEBUG';
   String _text = '';
   bool _follow = true;
@@ -83,6 +106,7 @@ class _LogsPageState extends State<LogsPage> {
       // second, and a read may be under way) stay cleared.
       final cleared = widget.core.logsClearedAt;
       setState(() {
+        _readFailed = false;
         _entries.addAll([
           for (final e in more)
             if (cleared == null || e.time == null || e.time!.isAfter(cleared))
@@ -102,10 +126,15 @@ class _LogsPageState extends State<LogsPage> {
       }
     } on CoreApiException {
       // The next tick tries again.
+      if (mounted) setState(() => _readFailed = true);
     } on CoreUnavailable {
       // The shell shows it.
+      if (mounted) setState(() => _readFailed = true);
     } finally {
       _reading = false;
+      if (mounted && !_firstReadDone) {
+        setState(() => _firstReadDone = true);
+      }
     }
   }
 
@@ -157,20 +186,22 @@ class _LogsPageState extends State<LogsPage> {
   Widget _wideTools(AppLocalizations l, List<LogEntry> visible) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      Wrap(
-        spacing: 12,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      // Build 2074 (audit item 12): the level picker is the
+      // Ember segmented control now, not stock SegmentedButton.
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          SegmentedButton<String>(
-            showSelectedIcon: false,
-            segments: [
-              for (final level in _levels)
-                ButtonSegment(value: level, label: Text(_levelName(l, level))),
-            ],
-            selected: {_minLevel},
-            onSelectionChanged: (v) => setState(() => _minLevel = v.first),
+          Expanded(
+            child: EmberSegmented<String>(
+              value: _minLevel,
+              options: [
+                for (final level in _levels)
+                  (level, _levelName(l, level), null),
+              ],
+              onChanged: (v) => setState(() => _minLevel = v),
+            ),
           ),
+          const SizedBox(width: 12),
           SizedBox(width: 280, child: _filterField(l)),
         ],
       ),
@@ -185,7 +216,7 @@ class _LogsPageState extends State<LogsPage> {
                 _followSwitch(l),
                 // Every destination in the log, for finding problems.
                 if (_verbose case final verbose?)
-                  LabeledSwitch(
+                  _emberSwitch(
                     label: l.verboseLogs,
                     value: verbose,
                     onChanged: _setVerbose,
@@ -241,19 +272,24 @@ class _LogsPageState extends State<LogsPage> {
   static String _levelName(AppLocalizations l, String level) =>
       level == 'DEBUG' ? l.levelAll : level;
 
+  // Build 2074 (audit item 12): the Ember field style, not
+  // the stock outlined field.
   Widget _filterField(AppLocalizations l) => TextField(
-    decoration: InputDecoration(
-      isDense: true,
-      prefixIcon: const Icon(Icons.filter_list_rounded, size: 20),
-      hintText: l.filter,
-      border: const OutlineInputBorder(),
+    style: Ember.body,
+    decoration: emberField(
+      context,
+      l.filter,
+      prefix: const Icon(
+        Icons.filter_list_rounded,
+        size: 20,
+        color: Ember.faint,
+      ),
     ),
     onChanged: (v) => setState(() => _text = v),
   );
 
   /// The level as a small menu, as tall as the filter beside it.
   Widget _levelMenu(AppLocalizations l) {
-    final theme = Theme.of(context);
     return PopupMenuButton<String>(
       initialValue: _minLevel,
       onSelected: (v) => setState(() => _minLevel = v),
@@ -265,47 +301,93 @@ class _LogsPageState extends State<LogsPage> {
         height: 48,
         padding: const EdgeInsetsDirectional.only(start: 12, end: 4),
         decoration: BoxDecoration(
-          border: Border.all(color: theme.colorScheme.outline),
-          borderRadius: BorderRadius.circular(4),
+          color: MapUi.insetFill,
+          border: Border.all(color: Ember.line),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(_levelName(l, _minLevel)),
-            const Icon(Icons.arrow_drop_down_rounded),
+            Text(_levelName(l, _minLevel), style: Ember.body),
+            const Icon(Icons.arrow_drop_down_rounded, color: Ember.dim),
           ],
         ),
       ),
     );
   }
 
-  Widget _followSwitch(AppLocalizations l) => LabeledSwitch(
+  /// Build 2074 (audit item 12): a labelled Ember toggle —
+  /// the MapToggle pill, not the stock Material Switch the
+  /// shared LabeledSwitch carries.
+  Widget _emberSwitch({
+    required String label,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) => InkWell(
+    borderRadius: BorderRadius.circular(10),
+    onTap: () => onChanged(!value),
+    child: Padding(
+      padding: const EdgeInsetsDirectional.only(start: 8, end: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              label,
+              style: Ember.body,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 4),
+          MapToggle(value: value, onChanged: onChanged),
+        ],
+      ),
+    ),
+  );
+
+  Widget _followSwitch(AppLocalizations l) => _emberSwitch(
     label: l.follow,
     value: _follow,
     onChanged: (v) => setState(() => _follow = v),
   );
 
+  // Build 2092 (item 51): the copy icon takes the Ember
+  // dim colour, and a successful copy is confirmed with a
+  // plain SnackBar — it used to go through the error
+  // channel (showError).
   Widget _copyButton(AppLocalizations l, List<LogEntry> visible) => IconButton(
     tooltip: l.copyAll,
-    icon: const Icon(Icons.copy_rounded),
+    icon: const Icon(Icons.copy_rounded, color: Ember.dim),
     onPressed: visible.isEmpty
         ? null
         : () {
             Clipboard.setData(
               ClipboardData(text: visible.map(_line).join('\n')),
             );
-            showError(context, l.logsCopied);
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(l.logsCopied)));
           },
   );
 
+  // Build 2092 (items 17/51): Clear confirms first, like
+  // the other log pages.
   Widget _clearButton(AppLocalizations l) => IconButton(
     tooltip: l.clear,
-    icon: const Icon(Icons.delete_sweep_outlined),
-    onPressed: () => setState(() {
-      widget.core.logsClearedAfter = _after;
-      widget.core.logsClearedAt = DateTime.now();
-      _entries.clear();
-    }),
+    icon: const Icon(Icons.delete_sweep_outlined, color: Ember.dim),
+    onPressed: () async {
+      final confirmed = await showEmberConfirm(
+        context,
+        title: l.clear,
+        message: 'Clear the log lines shown here?',
+        confirmLabel: l.clear,
+      );
+      if (!confirmed || !mounted) return;
+      setState(() {
+        widget.core.logsClearedAfter = _after;
+        widget.core.logsClearedAt = DateTime.now();
+        _entries.clear();
+      });
+    },
   );
 
   static String _line(LogEntry e) {
@@ -320,71 +402,116 @@ class _LogsPageState extends State<LogsPage> {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final visible = _visible();
-    return Padding(
-      padding: pagePadding(context),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          PageTitle(l.navLogs),
-          const SizedBox(height: 16),
-          if (widget.connections ?? !Platform.isAndroid) ...[
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: SegmentedButton<bool>(
-                showSelectedIcon: false,
-                segments: [
-                  ButtonSegment(
-                    value: false,
-                    icon: const Icon(Icons.receipt_long_outlined, size: 18),
-                    label: Text(l.tabLog),
-                  ),
-                  ButtonSegment(
-                    value: true,
-                    icon: const Icon(Icons.swap_vert_rounded, size: 18),
-                    label: Text(l.tabConnections),
-                  ),
+    // Build 2074 (audit item 12): the page sits on the Ember
+    // background like every other Ember log viewer; the
+    // filtering/loading behaviour above is unchanged.
+    final body = EmberBackground(
+      child: Padding(
+        // Build 2138 (visual review V-26): only in the page's
+        // own Scaffold (emberChrome) does the body extend
+        // behind the transparent bar — there, add the bar
+        // inset to the page margin's top. In the shell tab
+        // and the settings wrapper route the same body sits
+        // below a bar (or none) and keeps the plain margin.
+        padding: widget.emberChrome
+            ? pagePadding(context).copyWith(
+                top:
+                    MediaQuery.of(context).padding.top +
+                    kToolbarHeight +
+                    pagePadding(context).top,
+              )
+            : pagePadding(context),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Build 2116 (AP-02): with the route chrome the
+            // AppBar carries the title; the in-page title
+            // would double it.
+            if (!widget.emberChrome) ...[
+              PageTitle(l.navLogs),
+              const SizedBox(height: 16),
+            ],
+            if (widget.connections ?? !Platform.isAndroid) ...[
+              EmberSegmented<bool>(
+                value: _connections,
+                options: [
+                  (false, l.tabLog, Icons.receipt_long_outlined),
+                  (true, l.tabConnections, Icons.swap_vert_rounded),
                 ],
-                selected: {_connections},
-                onSelectionChanged: (v) =>
-                    setState(() => _connections = v.first),
+                onChanged: (v) => setState(() => _connections = v),
               ),
-            ),
-            const SizedBox(height: 16),
-          ],
-          if (_connections)
-            Expanded(
-              child: ConnectionsView(
-                core: widget.core,
-                settings: widget.settings,
+              const SizedBox(height: 16),
+            ],
+            if (_connections)
+              Expanded(
+                child: ConnectionsView(
+                  core: widget.core,
+                  settings: widget.settings,
+                ),
+              )
+            else ...[
+              LayoutBuilder(
+                builder: (context, box) => box.maxWidth < 600
+                    ? _narrowTools(l, visible)
+                    : _wideTools(l, visible),
               ),
-            )
-          else ...[
-            LayoutBuilder(
-              builder: (context, box) => box.maxWidth < 600
-                  ? _narrowTools(l, visible)
-                  : _wideTools(l, visible),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: Card(
-                margin: EdgeInsets.zero,
-                clipBehavior: Clip.antiAlias,
-                child: visible.isEmpty
-                    ? Center(child: Text(l.noLogs))
-                    : SelectionArea(
-                        child: ListView.builder(
-                          controller: _scroll,
-                          padding: const EdgeInsets.all(12),
-                          itemCount: visible.length,
-                          itemBuilder: (context, i) =>
-                              _LogLine(entry: visible[i]),
+              const SizedBox(height: 16),
+              Expanded(
+                // Build 2074 (audit item 12): glass, not a plain
+                // Material Card.
+                child: GlassCard(
+                  padding: EdgeInsets.zero,
+                  child: visible.isEmpty
+                      // Build 2092 (item 17): four distinct
+                      // empty states — loading, read error,
+                      // filter matched nothing, and a truly
+                      // empty log.
+                      ? Center(
+                          child: !_firstReadDone
+                              ? const CircularProgressIndicator(
+                                  color: Ember.orange,
+                                )
+                              : Text(
+                                  _readFailed && _entries.isEmpty
+                                      ? 'The logs could not be loaded.'
+                                      : _entries.isNotEmpty
+                                      ? 'No lines match the filter.'
+                                      : l.noLogs,
+                                  style: Ember.dimStyle,
+                                ),
+                        )
+                      : SelectionArea(
+                          child: ListView.builder(
+                            controller: _scroll,
+                            padding: const EdgeInsets.all(12),
+                            itemCount: visible.length,
+                            itemBuilder: (context, i) =>
+                                _LogLine(entry: visible[i]),
+                          ),
                         ),
-                      ),
+                ),
               ),
-            ),
+            ],
           ],
-        ],
+        ),
       ),
+    );
+    if (!widget.emberChrome) return body;
+    // Build 2116 (AP-02): the shared Ember log-viewer
+    // chrome — the Mozilla viewer was pushed bare (no
+    // Scaffold, no back button, its title under the
+    // status bar) while all four sibling viewers are
+    // full pages like this.
+    return Scaffold(
+      extendBodyBehindAppBar: true,
+      backgroundColor: Ember.bg,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        foregroundColor: Ember.text,
+        title: Text(l.navLogs, style: Ember.heading),
+      ),
+      body: body,
     );
   }
 }
@@ -396,19 +523,20 @@ class _LogLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final e = entry;
+    // Build 2074 (audit item 12): Ember palette, not
+    // StatusColors / theme colours.
     final color = switch (e.level) {
-      'ERROR' => StatusColors.bad,
-      'WARN' => StatusColors.busy,
-      'DEBUG' => theme.colorScheme.onSurfaceVariant,
-      _ => theme.colorScheme.primary,
+      'ERROR' => Ember.red,
+      'WARN' => Ember.warn,
+      'DEBUG' => Ember.faint,
+      _ => Ember.orange,
     };
     // Consolas on Windows; elsewhere the system's monospace font.
     const mono = TextStyle(
       fontFamily: 'Consolas',
       fontFamilyFallback: ['Menlo', 'DejaVu Sans Mono', 'monospace'],
-      fontSize: 12.5,
+      fontSize: Ember.fontSmall,
       height: 1.45,
     );
     final t = e.time;
@@ -417,13 +545,13 @@ class _LogLine extends StatelessWidget {
       textDirection: TextDirection.ltr,
       child: Text.rich(
         TextSpan(
-          style: mono.copyWith(color: theme.colorScheme.onSurface),
+          style: mono.copyWith(color: Ember.text),
           children: [
             if (t != null)
               TextSpan(
                 text:
                     '${formatTime(t)}:${t.second.toString().padLeft(2, '0')}  ',
-                style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                style: const TextStyle(color: Ember.faint),
               ),
             TextSpan(
               text: '${e.level.padRight(5)}  ',

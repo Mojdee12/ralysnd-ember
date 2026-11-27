@@ -1,36 +1,42 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../aether/aether_platform.dart';
+import '../core/poll_policy.dart';
+import '../atomic_json_store.dart';
 import '../core/android_core.dart';
-import '../xray/exit_info.dart';
+import '../xray/lantern_import.dart';
 import 'lantern_platform.dart';
+import 'lantern_private.dart';
+
+/// The connect budget (build 2129): the gomobile core
+/// fetches its server list in-process at init; a first fetch
+/// on a filtered network can take minutes, and the list is
+/// needed only once — later connects reuse the core's kept
+/// list and land in seconds. The pre-2129 warm/cold ladder
+/// and its WARP-leg bootstrap died with the CLI subprocess
+/// contract they drove (the leg rerouted a stdin the new
+/// core does not have).
+const lanternConnectBudget = Duration(seconds: 240);
+
+/// The give-up words for a connect that never landed.
+String lanternGiveUpMessage() {
+  return 'Lantern did not connect in four minutes. Try again a '
+      'little later — the first server list is needed only once, '
+      'and later connects take seconds.';
+}
 
 /// Owns the Lantern engine's state for the UI, mirroring
-/// PsiphonController: fetches the platform state, polls while
-/// the engine runs, derives the per-second rates, and keeps the
-/// last failure verbatim so the UI can show it loudly (the
-/// core's stdout/stderr tails ride along in the state).
+/// PsiphonController: fetches the platform state (the
+/// :lantern process's published snapshot), polls while the
+/// engine runs, derives the per-second rates, and keeps the
+/// last failure verbatim so the UI can show it loudly.
 class LanternController extends ChangeNotifier {
   LanternState _state = const LanternState();
 
   LanternState get state => _state;
-
-  /// Desktop-page compatibility (the 2.1.0 tree's pages read a
-  /// fetched exit lookup): the 2032 core reports its exit inside
-  /// the state itself, so the lookup is composed from it. Null
-  /// until the core names an exit.
-  ExitInfo? get exitInfo {
-    if (_state.exitCode.isEmpty && _state.exitCountry.isEmpty) return null;
-    return ExitInfo(
-      ip: '',
-      countryCode: _state.exitCode.toUpperCase(),
-      countryEn: _state.exitCountry,
-      city: _state.exitCity,
-    );
-  }
 
   /// The captured platform error of the last failed start, when
   /// the state itself carries none.
@@ -39,8 +45,34 @@ class LanternController extends ChangeNotifier {
 
   Future<void> Function()? stopOtherEngine;
 
+  /// Set by the shell: the global tunnel MTU (build 2038, queue 2f) —
+  /// the Xray settings value, read at connect time. Defaults to 1500
+  /// (the unchanged behaviour) when unwired.
+  int Function() tunnelMtu = () => 1500;
+
+  /// Set by the shell: the tunnel's DNS (build 2057, audit §6
+  /// engine low) — the Xray settings localDns, read at connect
+  /// time. Defaults to 1.1.1.1 (the unchanged behaviour) when
+  /// unwired.
+  String Function() localDns = () => '1.1.1.1';
+
+  /// Set by the shell: the Settings kill switch (build
+  /// 2125, audit A25-04) — read at connect time and passed
+  /// to the TUN start; with it on, an unexpectedly dead
+  /// session's TUN is held as a blackhole instead of
+  /// being closed to direct traffic. Defaults to false
+  /// when unwired.
+  bool Function() killSwitchEnabled = () => false;
+
   Timer? _poller;
-  bool _busy = false;
+
+  /// Build 2097 (post-2096 audit C4): the busy flag has an
+  /// OWNER, as in the OpenVPN/Aether controllers — connect()
+  /// and disconnect() claim it with a token and release it
+  /// only while the token is still theirs; disconnect()
+  /// STEALS the claim (the superseding operation).
+  Object? _busyToken;
+  bool get _busy => _busyToken != null;
   bool _startRequested = false;
 
   bool get connecting => _busy;
@@ -53,9 +85,62 @@ class LanternController extends ChangeNotifier {
   int downRate = 0;
 
   Future<void> load() async {
+    // The persisted options: the server mode + the private
+    // server's key and confirmed identity, the picked server
+    // tag and the smart-routing toggle (build 2129).
+    try {
+      final doc = await (await _optionsStore()).read();
+      if (doc != null) {
+        privateMode = doc['privateMode'] == true;
+        privateKey = (doc['privateKey'] as String?) ?? '';
+        privateName = (doc['privateName'] as String?) ?? '';
+        privateCountry = (doc['privateCountry'] as String?) ?? '';
+        privateCode = (doc['privateCode'] as String?) ?? '';
+        selectedTag = (doc['selectedTag'] as String?) ?? '';
+        // DEFAULT OFF: an absent key is off, and the core is
+        // forced off at every init regardless (bridge init).
+        // Build 2149 (audit A43-27): a stored ON is now
+        // actually re-applied — here at load (the service
+        // initializes the core to apply it) and again on
+        // every connect (the start intent carries it and
+        // startTunnel applies it after init). Before this
+        // build nothing re-applied it: the comment above
+        // claimed a page-open re-application that did not
+        // exist, and the core's init reset silently undid
+        // the stored choice.
+        smartRouting = doc['smartRouting'] == true;
+        if (smartRouting) {
+          try {
+            await LanternPlatform.setSmartRouting(true);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
     _state = await LanternPlatform.state();
     _syncPoller();
     notifyListeners();
+  }
+
+  /// Writes the whole options document: the store replaces
+  /// the document on write, so every writer carries every
+  /// field.
+  Future<void> _persistOptions() async {
+    try {
+      await (await _optionsStore()).write({
+        'privateMode': privateMode,
+        'privateKey': privateKey,
+        'privateName': privateName,
+        'privateCountry': privateCountry,
+        'privateCode': privateCode,
+        'selectedTag': selectedTag,
+        'smartRouting': smartRouting,
+      });
+    } catch (_) {}
+  }
+
+  Future<AtomicJsonStore> _optionsStore() async {
+    final filesDir = File(await AndroidCore.dataDir()).parent.path;
+    return AtomicJsonStore(File('$filesDir/lantern_options.json'));
   }
 
   Future<void> refresh() async {
@@ -66,10 +151,28 @@ class LanternController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// App-foreground state for the poll cadence (build 2050).
+  bool _foreground = true;
+
+  /// The shell's lifecycle feed (build 2050): live 2 s poll
+  /// only while foregrounded; a 30 s heartbeat otherwise.
+  void setForeground(bool fg) {
+    if (fg == _foreground) return;
+    _foreground = fg;
+    if (_poller != null) {
+      _poller!.cancel();
+      _poller = null;
+      _syncPoller();
+    }
+  }
+
   void _syncPoller() {
     final want = _state.running || _state.coreRunning || _startRequested;
     if (want && _poller == null) {
-      _poller = Timer.periodic(const Duration(seconds: 2), (_) => refresh());
+      _poller = Timer.periodic(
+        enginePollPeriod(foreground: _foreground),
+        (_) => refresh(),
+      );
     } else if (!want && _poller != null) {
       _poller!.cancel();
       _poller = null;
@@ -102,130 +205,356 @@ class LanternController extends ChangeNotifier {
     _lastTick = now;
   }
 
-  /// The core's -smart flag (build 2032): the core's own smart
-  /// server choice. Session-scoped; off by default, as in
-  /// ralysnd's conservative start.
-  bool smartRouting = false;
+  // ---- Build 2129: server selection ----
 
-  void setSmartRouting(bool value) {
-    smartRouting = value;
+  /// The picked server's tag, persisted like LML's
+  /// lanternTag: "" (the default) is Automatic —
+  /// Mobile.startVPN() — and a tag pins the connect through
+  /// Mobile.connectToServer(tag).
+  String selectedTag = '';
+
+  Future<void> setSelectedTag(String tag) async {
+    if (tag == selectedTag) return;
+    selectedTag = tag;
     notifyListeners();
+    await _persistOptions();
   }
 
-  /// True while the current start is the WARP-leg bootstrap
-  /// retry (the page can say the control plane rides WARP).
-  bool viaWarpLeg = false;
+  /// Asks the core for its server list (the service
+  /// initializes the core if needed and publishes the list);
+  /// polls the state until the list lands or the budget ends.
+  Future<void> refreshServers() async {
+    final before = _state.serversJson;
+    try {
+      await LanternPlatform.fetchServers();
+    } catch (_) {
+      return;
+    }
+    for (var i = 0; i < 30; i++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      await refresh();
+      if (_state.serversJson != before && _state.servers >= 0) return;
+      if (_state.error != null) return;
+    }
+  }
 
-  /// Connects: asks the shell to stop the other engines first,
-  /// then waits for the TUN to come up. The core's own config
-  /// fetch can take a while on a cold start, so the wait budget
-  /// is generous; a dead core fails fast through its error.
-  ///
-  /// Build 2032 (ralysnd's bootstrap): when the direct start
-  /// fails — the config service is name-filtered on some lines
-  /// — the start is retried ONCE with the control plane fetched
-  /// through the app's WARP leg (the Aether cfwarp slot run
-  /// proxy-only), with the leg's exit identity announced so the
-  /// config service places this phone where it is. The leg is
-  /// stopped as soon as Lantern is up; the fetched list is kept
-  /// by the core for next time.
+  // ---- Build 2129: smart routing (the real API) ----
+
+  /// The user's smart-routing choice, DEFAULT OFF. Distinct
+  /// from the Smart/Private server-mode buttons: this is
+  /// Lantern's routing setting itself (rule-listed
+  /// destinations sent direct), backed by
+  /// Mobile.setSmartRoutingEnabled. The bridge forces it OFF
+  /// at every core init; turning it on here applies it to the
+  /// core and persists the choice.
+  bool smartRouting = false;
+
+  Future<void> setSmartRouting(bool on) async {
+    smartRouting = on;
+    notifyListeners();
+    await _persistOptions();
+    try {
+      await LanternPlatform.setSmartRouting(on);
+    } catch (_) {}
+    await refresh();
+  }
+
+  // ---- Private server (build 2129: the API replaces H8) ----
+
+  /// The server mode — false is Smart (Lantern's public
+  /// fleet, the core's own choice; the default), true is
+  /// Private: the owner's own server, registered with the
+  /// core through Mobile.addServerManagerInstance before the
+  /// connect, then PINNED via connectToServer(tag).
+  bool privateMode = false;
+
+  /// The private server's invite link (the access key),
+  /// stored verbatim; the app parses it at registration.
+  String privateKey = '';
+
+  /// The private entry's identity: its tag (the invite's
+  /// name/alias, else its IP) and its geolocated country.
+  String privateName = '';
+  String privateCountry = '';
+  String privateCode = '';
+
+  /// The VIP entry's headline (owner's naming, build
+  /// 2127): "VIP · `country`" once the country is known,
+  /// plain "VIP" before the first registration lands it.
+  String get vipLabel =>
+      privateCountry.isNotEmpty ? 'VIP · $privateCountry' : 'VIP';
+
+  Future<void> setPrivateMode(bool value) async {
+    privateMode = value;
+    notifyListeners();
+    await _persistOptions();
+  }
+
+  /// The tag the stored private key registers under
+  /// ("" when the key does not parse) — the picker's
+  /// private row carries this same tag in the core's list.
+  String get privateTag {
+    final link = parseLanternPrivateServerLink(privateKey);
+    return link == null ? '' : lanternPrivateTag(link);
+  }
+
+  /// Build 2132: the rows the Servers picker shows — the
+  /// core's list with the owner's private server GUARANTEED
+  /// present. The core list only carries the private entry
+  /// when getAvailableServers surfaces the stored
+  /// registration, which the owner's device did not do
+  /// reliably; the app knows the key and its tag, so when
+  /// the list lacks the tag the row is synthesized from the
+  /// saved key's identity (its geolocated country/code ride
+  /// along). No key — or an unparseable one — and the core
+  /// list stands as-is.
+  List<LanternServer> get pickerServers {
+    final servers = _state.serverList;
+    if (privateKey.trim().isEmpty) return servers;
+    final tag = privateTag;
+    if (tag.isEmpty) return servers;
+    if (servers.any((s) => s.tag == tag)) return servers;
+    return [
+      ...servers,
+      LanternServer(
+        tag: tag,
+        country: privateCountry,
+        countryCode: privateCode,
+        isLantern: false,
+      ),
+    ];
+  }
+
+  /// Build 2131: the registration connect() performs,
+  /// exposed for a live switch — the Servers page registers
+  /// the private server with the core before switching a
+  /// running session to it. False (with [lastError] set)
+  /// means the caller must NOT switch.
+  Future<bool> registerPrivateForSwitch() => _registerPrivateServer();
+
+  /// Build 2131: switches a RUNNING session to [tag]
+  /// ("" = Automatic) inside the live tunnel — no TUN
+  /// rebuild; the core re-selects via SelectServer. The
+  /// poller and the refresh below surface the new exit.
+  /// Build 2149: switching to the private tag carries its
+  /// stored identity for the service's exit lookup (audit
+  /// A43-09), and a failed switch is SURFACED in
+  /// [lastError] instead of swallowed (audit A43-28) —
+  /// the refresh still runs, so the display settles on
+  /// the session's real exit either way.
+  Future<void> liveSwitch(String tag) async {
+    try {
+      await LanternPlatform.switchServer(
+        tag,
+        pinCountry: tag == privateTag ? privateCountry : '',
+        pinCode: tag == privateTag ? privateCode : '',
+      );
+    } catch (e) {
+      _lastError = 'Switching the Lantern server failed: $e';
+    }
+    await refresh();
+  }
+
+  /// Stores a newly pasted key. A different key is a
+  /// different server: the previous entry's identity is
+  /// cleared (it re-lands at the next registration) and its
+  /// registration is removed from the core best-effort
+  /// (Mobile.deletePrivateServerByName).
+  Future<void> setPrivateKey(String value) async {
+    final key = value.trim();
+    if (key == privateKey) return;
+    final old = parseLanternPrivateServerLink(privateKey);
+    privateKey = key;
+    privateName = '';
+    privateCountry = '';
+    privateCode = '';
+    notifyListeners();
+    await _persistOptions();
+    if (old != null) {
+      try {
+        await LanternPlatform.removePrivateServer(lanternPrivateTag(old));
+      } catch (_) {}
+    }
+  }
+
+  /// Registers the private server with the core through the
+  /// API and waits for the service's verdict in the state.
+  /// Returns false with [_lastError] set in plain words when
+  /// the registration fails; the caller then does NOT start
+  /// the core — a failed registration never falls back to
+  /// public servers silently.
+  Future<bool> _registerPrivateServer() async {
+    final link = parseLanternPrivateServerLink(privateKey);
+    if (link == null) {
+      _lastError =
+          'That key is not a Lantern private-server link — paste '
+          'the whole lantern:// key from your server.';
+      return false;
+    }
+    final tag = lanternPrivateTag(link);
+    final before = _state.privateResult;
+    try {
+      await LanternPlatform.addPrivateServer(
+        ip: link.ip,
+        port: link.port,
+        token: link.token,
+        tag: tag,
+      );
+    } catch (e) {
+      _lastError = 'Adding your private server failed: $e';
+      return false;
+    }
+    // The service publishes the outcome ("ok|<tag>" or
+    // "error|<words>"); registration success is also
+    // fire-and-forget in the official client, so a verdict
+    // that never changes within the budget reads as
+    // registered — the pinned connect that follows is the
+    // real proof, and its failure surfaces there.
+    final started = DateTime.now();
+    final deadline = started.add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      await refresh();
+      final result = _state.privateResult;
+      if (result.startsWith('error|')) {
+        _lastError = result.substring('error|'.length);
+        return false;
+      }
+      // A fresh ok ends the wait; an ok that predates this
+      // attempt is accepted after a grace period (the new
+      // registration's identical verdict would be
+      // indistinguishable from it, and either way the server
+      // stands registered under this tag).
+      if (result.startsWith('ok|') &&
+          (result != before ||
+              DateTime.now().difference(started) >
+                  const Duration(seconds: 6))) {
+        break;
+      }
+    }
+    if (_state.privateResult.startsWith('error|')) {
+      _lastError = _state.privateResult.substring('error|'.length);
+      return false;
+    }
+    privateName = tag;
+    final location = await geolocateLanternServer(link.ip);
+    privateCountry = location?.country ?? '';
+    privateCode = location?.code ?? '';
+    await _persistOptions();
+    return true;
+  }
+
+  // ---- Connect / disconnect ----
+
+  int _startGen = 0;
+
   Future<void> connect() async {
-    _busy = true;
+    if (_busy) return; // Build 2095 (audit 2.2).
+    // Build 2095 (audit 2.1): disconnect() bumps the
+    // generation; _startAndAwait's wait loop honours it.
+    final gen = ++_startGen;
+    final busyToken = Object();
+    _busyToken = busyToken;
     _lastError = null;
     _startRequested = true;
-    viaWarpLeg = false;
     notifyListeners();
     try {
-      await stopOtherEngine?.call();
-      try {
-        await _startAndAwait(fetchVia: 0, clientIp: '');
-      } catch (directError) {
-        final leg = await _startWarpLeg();
-        if (leg == null) rethrow;
-        viaWarpLeg = true;
-        notifyListeners();
-        try {
-          await _startAndAwait(
-            fetchVia: AetherPlatform.cfwarpSocksPort,
-            clientIp:
-                '${leg['ip'] ?? ''}|${(leg['loc'] ?? '').toUpperCase()}',
-          );
-        } finally {
-          await AetherPlatform.stop('cfwarp');
-          viaWarpLeg = false;
-        }
+      // Private mode without a key has nothing to connect
+      // through — fail in plain words before any engine
+      // arbitration moves.
+      if (privateMode && privateKey.trim().isEmpty) {
+        _lastError =
+            'Private mode needs your server key first — paste the '
+            'lantern:// key from your server on the Lantern page.';
+        return;
       }
+      await stopOtherEngine?.call();
+      // Build 2096 (post-2095 audit H5): a disconnect that
+      // landed during the arbitration await must not be
+      // followed by starting the core at all.
+      if (gen != _startGen) return;
+      // Private mode registers the owner's server with the
+      // core BEFORE the start, then pins the connect to its
+      // tag. A failed registration ends the connect here,
+      // loudly: no core start, no silent fall-back to the
+      // public fleet.
+      var tag = selectedTag;
+      if (privateMode) {
+        if (!await _registerPrivateServer()) return;
+        if (gen != _startGen) return;
+        tag = lanternPrivateTag(parseLanternPrivateServerLink(privateKey)!);
+      }
+      await _startAndAwait(
+        tag: tag,
+        gen: gen,
+        // Build 2149 (audit A43-09): the private pin's
+        // stored identity rides to the service.
+        pinCountry: privateMode ? privateCountry : '',
+        pinCode: privateMode ? privateCode : '',
+      );
     } finally {
-      _busy = false;
-      _startRequested = false;
+      if (identical(_busyToken, busyToken)) {
+        _busyToken = null;
+        _startRequested = false;
+      }
       await refresh();
     }
   }
 
   Future<void> _startAndAwait({
-    required int fetchVia,
-    required String clientIp,
+    required String tag,
+    int gen = 0,
+    String pinCountry = '',
+    String pinCode = '',
   }) async {
+    // Build 2096 (post-2095 audit H5): the start is
+    // gen-gated, and a superseded wait stops its own core on
+    // the way out (a disconnect during connect must not
+    // resurrect the core).
+    if (gen != _startGen) return;
     await LanternPlatform.setOn(
       on: true,
-      smart: smartRouting,
-      fetchVia: fetchVia,
-      clientIp: clientIp,
+      mtu: tunnelMtu(),
+      dns: localDns(),
+      // Build 2125 (A25-04): the kill switch.
+      killSwitch: killSwitchEnabled(),
+      tag: tag,
+      pinCountry: pinCountry,
+      pinCode: pinCode,
+      // Build 2149 (audit A43-27): the stored smart-routing
+      // choice rides the start; the service applies it
+      // after the core init that would otherwise reset it.
+      smartOn: smartRouting,
     );
-    final deadline = DateTime.now().add(const Duration(seconds: 60));
-    while (DateTime.now().isBefore(deadline)) {
+    final started = DateTime.now();
+    while (true) {
       await Future<void>.delayed(const Duration(milliseconds: 600));
+      if (gen != _startGen) {
+        await LanternPlatform.stop();
+        return;
+      }
       await refresh();
-      if (_state.running) return;
-      if (_state.error != null && !_state.coreRunning) {
+      // Honesty rule: "connected" is the core's own verdict
+      // in the published state, nothing local.
+      if (_state.connected) return;
+      if (_state.error != null && !_state.running) {
         throw StateError(_state.error!);
       }
-    }
-    throw StateError(_state.error ?? 'start-timeout');
-  }
-
-  /// Brings the WARP leg up proxy-only for the bootstrap.
-  /// Returns its trace (ip/loc) or null when the leg itself
-  /// could not be raised — the caller then keeps the direct
-  /// start's own error.
-  Future<Map<String, String>?> _startWarpLeg() async {
-    try {
-      // Make sure the failed direct attempt is fully down first.
-      await LanternPlatform.stop();
-      final stopDeadline = DateTime.now().add(const Duration(seconds: 10));
-      while (DateTime.now().isBefore(stopDeadline)) {
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        await refresh();
-        if (!_state.running && !_state.coreRunning) break;
+      if (DateTime.now().difference(started) >= lanternConnectBudget) {
+        throw StateError(lanternGiveUpMessage());
       }
-      var leg = await AetherPlatform.state('cfwarp');
-      if (!leg.identity) {
-        await AetherPlatform.ensureIdentity('cfwarp', 'wg');
-        leg = await AetherPlatform.state('cfwarp');
-        if (!leg.identity) return null;
-      }
-      final started = await AetherPlatform.start(
-        'cfwarp',
-        const AetherOptions(protocol: 'wg'),
-      );
-      if (!started) return null;
-      final deadline = DateTime.now().add(const Duration(seconds: 90));
-      while (DateTime.now().isBefore(deadline)) {
-        await Future<void>.delayed(const Duration(milliseconds: 600));
-        leg = await AetherPlatform.state('cfwarp');
-        if (leg.connected) {
-          return await AetherPlatform.trace('cfwarp');
-        }
-        if (leg.failed || !leg.running) return null;
-      }
-      return null;
-    } catch (_) {
-      return null;
     }
   }
 
   Future<void> disconnect() async {
-    _busy = true;
+    // Build 2095 (audit 2.1): break any in-flight start.
+    _startGen++;
+    // Build 2097 (post-2096 audit C4): steal the busy claim.
+    final busyToken = Object();
+    _busyToken = busyToken;
+    // Build 2098 (post-2097 audit L1): the superseding
+    // operation owns _startRequested now.
+    _startRequested = false;
     notifyListeners();
     try {
       await LanternPlatform.stop();
@@ -236,58 +565,85 @@ class LanternController extends ChangeNotifier {
         if (!_state.running && !_state.coreRunning) return;
       }
     } finally {
-      _busy = false;
+      if (identical(_busyToken, busyToken)) _busyToken = null;
       await refresh();
     }
   }
 
-  /// Asks the running core to refetch its server list.
-  Future<bool> fetchList() => LanternPlatform.fetchList();
+  // ---- Logs (diagnostics) ----
 
-  /// Forgets the cached server list (core stopped). Returns the
-  /// number of cached files deleted, or -1 while running.
-  Future<int> rotateList() async {
-    final n = await LanternPlatform.rotateList();
-    await refresh();
-    return n;
-  }
-
-  /// The engine's on-disk logs (core stdout/stderr + bridge),
-  /// readable even after a failed start — the loud-failure path.
+  /// The engine's on-disk logs: the gomobile core's logDir
+  /// files (filesDir/lantern/logs — the bridge's Opts logDir,
+  /// reachable by the diagnostics export) plus crash.log.
   Future<String> readLogs() async {
     final filesDir = File(await AndroidCore.dataDir()).parent.path;
-    final dir = Directory('$filesDir/lantern');
     final out = StringBuffer();
-    for (final name in [
-      'lantern-stdout.log',
-      'lantern-stderr.log',
-      'tunlink.log',
-    ]) {
-      final f = File('${dir.path}/$name');
-      out.writeln('══ $name ══');
-      if (await f.exists()) {
-        final lines = await f.readAsLines();
+    final logDir = Directory('$filesDir/lantern/logs');
+    var found = false;
+    try {
+      if (await logDir.exists()) {
+        final files = await logDir.list().toList();
+        files.sort((a, b) => a.path.compareTo(b.path));
+        for (final entity in files) {
+          if (entity is! File) continue;
+          found = true;
+          out.writeln('══ ${entity.path.split('/').last} ══');
+          final lines = await entity.readAsLines();
+          out.writeln(
+            lines.skip(lines.length > 300 ? lines.length - 300 : 0).join('\n'),
+          );
+          out.writeln();
+        }
+      }
+    } catch (_) {}
+    if (!found) {
+      out.writeln('══ core logs ══');
+      out.writeln('(none yet)');
+      out.writeln();
+    }
+    // Build 2070 (review §3.4): the crash.log section — the
+    // recorder's file lives in filesDir itself, and this
+    // service's start net writes to it; decoded leniently
+    // because a stack trace must never break the viewer.
+    final crash = File('$filesDir/crash.log');
+    out.writeln('══ crash.log ══');
+    try {
+      if (await crash.exists()) {
+        final text = utf8.decode(
+          await crash.readAsBytes(),
+          allowMalformed: true,
+        );
+        final lines = text.split('\n');
         out.writeln(
           lines.skip(lines.length > 300 ? lines.length - 300 : 0).join('\n'),
         );
       } else {
         out.writeln('(none yet)');
       }
-      out.writeln();
+    } catch (e) {
+      out.writeln('($e)');
     }
+    out.writeln();
     return out.toString();
   }
 
   Future<void> clearLogs() async {
     final filesDir = File(await AndroidCore.dataDir()).parent.path;
-    final dir = Directory('$filesDir/lantern');
-    for (final name in [
-      'lantern-stdout.log',
-      'lantern-stderr.log',
-      'tunlink.log',
-    ]) {
-      final f = File('${dir.path}/$name');
-      if (await f.exists()) await f.delete();
+    final logDir = Directory('$filesDir/lantern/logs');
+    try {
+      if (await logDir.exists()) {
+        await for (final entity in logDir.list()) {
+          if (entity is File) await entity.delete();
+        }
+      }
+    } catch (_) {}
+    // Build 2070 (review §3.4): Clear means all of it — the
+    // shared crash.log is truncated, not deleted (the
+    // recorder appends to it from every engine).
+    try {
+      await File('$filesDir/crash.log').writeAsString('');
+    } catch (_) {
+      // Not there yet.
     }
   }
 

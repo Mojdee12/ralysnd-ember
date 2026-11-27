@@ -9,7 +9,7 @@ const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.0.0');
 /// The build number shown beside the version in the desktop
 /// brand panel: pubspec.yaml's `+NNNN`, kept here as a literal
 /// because the build scripts pass only APP_VERSION through.
-const appBuildNumber = '2039';
+const appBuildNumber = '2040';
 
 /// The GitHub repository, "owner/name", for the source link and the update
 /// check. W1: repointed from the stale upstream

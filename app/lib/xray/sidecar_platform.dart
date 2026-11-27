@@ -5,7 +5,11 @@
 /// the 2072 SubprocessCore lifecycle). One state shape for
 /// all three — the native `state()` maps are identical.
 
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'subprocess_windows.dart';
 
 class SidecarState {
   final bool available;
@@ -28,6 +32,18 @@ class SidecarState {
     this.logTail = '',
   });
 }
+
+/// The Windows backend's snapshot in this file's state shape
+/// (subprocess_windows.dart — the SubprocessCore lifecycle
+/// driven from Dart, as warp_platform.dart's backend does).
+SidecarState _stateFromSnapshot(SubprocessSnapshot s) => SidecarState(
+      available: s.available,
+      running: s.running,
+      ready: s.ready,
+      stage: s.stage,
+      error: s.error,
+      logTail: s.logTail,
+    );
 
 SidecarState _stateFrom(Map<String, dynamic>? m) {
   if (m == null) return const SidecarState();
@@ -74,6 +90,7 @@ class SingBoxPlatform {
   static String lastStartError = '';
 
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.singbox.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('singboxStart', {
         'args': args,
@@ -87,6 +104,7 @@ class SingBoxPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.singbox.stop();
     try {
       await _channel.invokeMethod('singboxStop');
     } catch (_) {
@@ -95,6 +113,9 @@ class SingBoxPlatform {
   }
 
   static Future<SidecarState> state() async {
+    if (Platform.isWindows) {
+      return _stateFromSnapshot(WindowsSubprocesses.singbox.snapshot());
+    }
     try {
       return _withStartError(
         _stateFrom(
@@ -122,6 +143,7 @@ class SudokuBoxPlatform {
   static String lastStartError = '';
 
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.sudokubox.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('sudokuBoxStart', {
         'args': args,
@@ -135,6 +157,7 @@ class SudokuBoxPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.sudokubox.stop();
     try {
       await _channel.invokeMethod('sudokuBoxStop');
     } catch (_) {
@@ -143,6 +166,9 @@ class SudokuBoxPlatform {
   }
 
   static Future<SidecarState> state() async {
+    if (Platform.isWindows) {
+      return _stateFromSnapshot(WindowsSubprocesses.sudokubox.snapshot());
+    }
     try {
       return _withStartError(
         _stateFrom(
@@ -170,6 +196,7 @@ class ZapretPlatform {
   static String lastStartError = '';
 
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.zapret.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('zapretStart', {
         'args': args,
@@ -183,6 +210,7 @@ class ZapretPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.zapret.stop();
     try {
       await _channel.invokeMethod('zapretStop');
     } catch (_) {
@@ -191,6 +219,9 @@ class ZapretPlatform {
   }
 
   static Future<SidecarState> state() async {
+    if (Platform.isWindows) {
+      return _stateFromSnapshot(WindowsSubprocesses.zapret.snapshot());
+    }
     try {
       return _withStartError(
         _stateFrom(
@@ -215,6 +246,7 @@ class MieruPlatform {
   static String lastStartError = '';
 
   static Future<bool> start(String configJson) async {
+    if (Platform.isWindows) return WindowsSubprocesses.startMieru(configJson);
     try {
       final v = await _channel.invokeMethod<bool>('mieruStart', {
         'config': configJson,
@@ -228,6 +260,7 @@ class MieruPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.mieru.stop();
     try {
       await _channel.invokeMethod('mieruStop');
     } catch (_) {
@@ -236,6 +269,9 @@ class MieruPlatform {
   }
 
   static Future<SidecarState> state() async {
+    if (Platform.isWindows) {
+      return _stateFromSnapshot(WindowsSubprocesses.mieru.snapshot());
+    }
     try {
       return _withStartError(
         _stateFrom(
@@ -260,6 +296,7 @@ class DnsCryptPlatform {
   static String lastStartError = '';
 
   static Future<bool> start(List<String> args) async {
+    if (Platform.isWindows) return WindowsSubprocesses.dnscrypt.start(args);
     try {
       final v = await _channel.invokeMethod<bool>('dnscryptStart', {
         'args': args,
@@ -273,6 +310,7 @@ class DnsCryptPlatform {
   }
 
   static Future<void> stop() async {
+    if (Platform.isWindows) return WindowsSubprocesses.dnscrypt.stop();
     try {
       await _channel.invokeMethod('dnscryptStop');
     } catch (_) {
@@ -281,6 +319,9 @@ class DnsCryptPlatform {
   }
 
   static Future<SidecarState> state() async {
+    if (Platform.isWindows) {
+      return _stateFromSnapshot(WindowsSubprocesses.dnscrypt.snapshot());
+    }
     try {
       return _withStartError(
         _stateFrom(

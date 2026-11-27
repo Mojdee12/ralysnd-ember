@@ -35,6 +35,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:firefox_vpn/l10n/app_localizations.dart';
+import 'package:firefox_vpn/core/core_api.dart';
 import 'package:firefox_vpn/openvpn/openvpn_controller.dart';
 import 'package:firefox_vpn/ui/ember/openvpn_pages.dart';
 
@@ -77,10 +78,20 @@ void main() {
 
   late Directory tempDir;
   late FakeVault vault;
+  // The log-bundle tests write into the resolved desktop
+  // openvpn dir (CoreLocator resolution bypasses the
+  // channel mock on desktop hosts); the real files are
+  // backed up in setUp and restored in tearDown.
+  final Map<String, String?> logBackup = {};
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('ovpn_client_test');
     vault = FakeVault();
+    final ovpnDir = Directory('${CoreLocator.dataDir(const [])}/openvpn');
+    for (final name in ['breadcrumbs.log', 'openvpn.log']) {
+      final f = File('${ovpnDir.path}/$name');
+      logBackup[name] = await f.exists() ? await f.readAsString() : null;
+    }
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('app/android'), (
           call,
@@ -147,6 +158,16 @@ void main() {
   tearDown(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('app/android'), null);
+    final ovpnDir = Directory('${CoreLocator.dataDir(const [])}/openvpn');
+    for (final name in ['breadcrumbs.log', 'openvpn.log']) {
+      final f = File('${ovpnDir.path}/$name');
+      final backup = logBackup[name];
+      if (backup != null) {
+        await f.writeAsString(backup);
+      } else if (await f.exists()) {
+        await f.delete();
+      }
+    }
     await tempDir.delete(recursive: true);
   });
 
@@ -284,7 +305,7 @@ void main() {
     final c = OpenVpnController();
     addTearDown(c.dispose);
     await tester.runAsync(() async {
-      final dir = Directory('${tempDir.path}/openvpn');
+      final dir = Directory('${CoreLocator.dataDir(const [])}/openvpn');
       await dir.create(recursive: true);
       await File('${dir.path}/breadcrumbs.log').writeAsString(
         'connect_tapped Work VPN t=1000\n'
@@ -306,7 +327,7 @@ void main() {
     final c = OpenVpnController();
     addTearDown(c.dispose);
     await tester.runAsync(() async {
-      final dir = Directory('${tempDir.path}/openvpn');
+      final dir = Directory('${CoreLocator.dataDir(const [])}/openvpn');
       await dir.create(recursive: true);
       await File('${dir.path}/breadcrumbs.log').writeAsString(
         'connect_tapped Work VPN t=1000\n'
