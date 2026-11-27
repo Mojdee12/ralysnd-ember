@@ -574,6 +574,34 @@ class CoreStatus {
   /// seconds; 0 when none is stored) — build 2034's prepared pass.
   final int passExpiresAt;
 
+  /// The connect-journal line for a pass boundary (build
+  /// 2116, audit AB-04): non-null when [passExpiresAt]
+  /// moved while the proxy runs — the session's start
+  /// (prevExpiresAt 0) or a renewal landing (the expiry
+  /// jumps forward). The line carries the session age and
+  /// the new pass countdown, so the journal the
+  /// Diagnostics export carries shows every boundary; up
+  /// to 2115 a session's log simply ended at a breakage
+  /// with no boundary ever recorded.
+  String? passBoundaryLine(int prevExpiresAt, DateTime now) {
+    if (state.phase != Phase.running ||
+        passExpiresAt <= 0 ||
+        passExpiresAt == prevExpiresAt) {
+      return null;
+    }
+    final started = proxy?.startedAt;
+    final age = started == null
+        ? 'session age unknown'
+        : 'session age ${now.difference(started).inMinutes} min';
+    final countdown = passExpiresAt - now.millisecondsSinceEpoch ~/ 1000;
+    final cd = countdown < 0
+        ? 'the pass is already past its expiry'
+        : 'pass expires in ${(countdown / 60).ceil()} min';
+    return prevExpiresAt <= 0
+        ? 'Mozilla session running — $age; $cd.'
+        : 'Mozilla pass renewed — $age; $cd.';
+  }
+
   /// The core's bootstrap egress state (build 2034).
   final BootstrapInfo? bootstrap;
 

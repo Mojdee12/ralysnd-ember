@@ -140,8 +140,8 @@ class _MapV2rayPageState extends State<MapV2rayPage> {
     }).toList();
     return Positioned(
       left: 24,
-      top: 112,
-      bottom: 124,
+      top: 84,
+      bottom: 216,
       width: 484,
       child: MapGlass(
         padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
@@ -261,11 +261,7 @@ class _FallbackGroupCard extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Icon(
-              Icons.alt_route_rounded,
-              size: 14,
-              color: Ember.orange,
-            ),
+            const Icon(Icons.alt_route_rounded, size: 14, color: Ember.orange),
             const SizedBox(width: 6),
             Expanded(
               child: Text(

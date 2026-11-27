@@ -76,7 +76,7 @@ class _MapPsiphonPageState extends State<MapPsiphonPage> {
     final psiphon = widget.psiphon;
     return Positioned(
       left: 24,
-      bottom: 124,
+      bottom: 216,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
         child: Column(

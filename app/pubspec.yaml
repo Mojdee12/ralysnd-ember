@@ -2,7 +2,7 @@ name: firefox_vpn
 description: "Ralysnd Ember — Mozilla, V2Ray and Psiphon in one client (a cross-platform shell for the Go VPN core)"
 publish_to: 'none'
 
-version: 2.2.0+2038
+version: 2.2.0+2039
 
 environment:
   sdk: ^3.13.5
@@ -22,6 +22,9 @@ dependencies:
   # Browser sign-in on Windows (Kumiho contract): WebView2 host —
   # webview_flutter has no Windows implementation.
   flutter_inappwebview: 6.1.5
+  # Clash YAML subscription import (Android build 2075, W1 sync):
+  # the real YAML parser — resolved from the offline pub cache.
+  yaml: 3.1.3
 
 # Packages published less than two weeks ago are held back until they have
 # been out longer.
@@ -58,7 +61,14 @@ flutter:
     # The baked Map Control backdrop (tool/bake_backdrop.py renders
     # world_map_data.dart's raster at 3600x1800 with the samples'
     # detail stack; the live pins/arc keep the painter projection).
+    # W1 sync: the fine-halftone HOME bake from Android
+    # (map_backdrop_home.webp, the one asset every surface paints
+    # since Android build 2148) joins the older shared bake here.
     - assets/backdrop/
+    # The offline IP→country tables (Android build 2129):
+    # v2fly/geoip-derived range tables, CC BY-SA 4.0 — see
+    # assets/licenses/geoip-notice.txt and lib/net/geo_country.dart.
+    - assets/geoip/
 
   fonts:
     # Vazirmatn (SIL Open Font License 1.1, assets/fonts/OFL.txt) for Persian.

@@ -148,6 +148,15 @@ class _EmberShellState extends State<EmberShell>
   @override
   void initState() {
     super.initState();
+    // W1: the desktop capture choice (XraySettings.tunCapture)
+    // reaches the Windows Xray backend through the facade
+    // resolver — the synced 2157 controller no longer passes it
+    // (Android's VpnService has no such choice). Set once here,
+    // where the live settings object lives; the resolver reads
+    // it fresh on every connect.
+    if (Platform.isWindows) {
+      XrayPlatform.tunCaptureResolver = () => _xray.settings.tunCapture;
+    }
     _xray.stopOtherEngine = () async {
       await _stopMozilla();
       await _stopPsiphon();
@@ -761,99 +770,43 @@ class _EmberShellState extends State<EmberShell>
           }
           return Stack(
             children: [
-              // The backdrop: the navy gradient + the static
-              // dotted map with its faint grid, painted once
-              // behind its own RepaintBoundary.
-              const Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [MapUi.baseTop, MapUi.baseBottom],
-                    ),
-                  ),
-                ),
-              ),
-              Positioned.fill(
-                child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: WorldMapPainter(
-                      pins: const {},
-                      selected: null,
-                      connected: false,
-                      pulse: 0,
-                      homeLabel: '',
-                      faint: true,
-                      darkMap: true,
-                      grid: true,
-                    ),
-                  ),
-                ),
-              ),
-              // The baked backdrop (fidelity round 3): the dot
-              // field rendered OFFLINE at 3600x1800 with the
-              // samples' full detail stack (tool/bake_backdrop.py)
-              // from the same raster and the same equirect cover
-              // projection the live painter uses — BoxFit.cover
-              // IS that transform — so the actors above stay
-              // aligned at any window size. The live painter
-              // beneath is the fallback until the asset's first
-              // frame decodes.
-              const Positioned.fill(
-                child: RepaintBoundary(
-                  child: Image(
-                    image: AssetImage('assets/backdrop/map_backdrop.png'),
-                    fit: BoxFit.cover,
-                    filterQuality: FilterQuality.medium,
-                  ),
-                ),
-              ),
-              // A gentle vignette over the dot field, so the
-              // scene's weight sits at the center like the
-              // samples (the actors paint above it, undimmed).
-              const Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: RadialGradient(
-                      center: Alignment(0, -0.08),
-                      radius: 1.25,
-                      colors: [Colors.transparent, Color(0x5904090E)],
-                      stops: [0.55, 1],
-                    ),
-                  ),
-                ),
-              ),
+              // The backdrop (W1 recomposition, owner order
+              // 2026-11-27 — «map control خودمون باشه»): the
+              // shipped Map Control's own backdrop, the same
+              // MapBackdropVisual the Android Home paints — base
+              // gradient, the baked FINE-halftone field
+              // (map_backdrop_home.webp) laid out by the shared
+              // MapViewTransform cover projection, the top shade
+              // and the Home faint scrim. The 2038 desktop stack
+              // (navy gradient + live dot painter with grid + the
+              // coarse 3600px PNG bake + vignette) is retired:
+              // the map on this window is the app's own map, not
+              // a reinterpretation of it.
+              const Positioned.fill(child: MapBackdropVisual(faint: true)),
               // The map actors: pins, the arc, the home marker —
-              // only ever from derivable data (see _actors).
+              // only ever from derivable data (see _actors),
+              // drawn by the shipped MapActorsPainter in its
+              // Home (filament) language: the hollow-ring home
+              // marker, the thin filament arc with its nodes,
+              // the pulsing exit pin.
               Positioned.fill(
                 child: RepaintBoundary(
                   child: CustomPaint(
-                    painter: WorldMapPainter(
+                    painter: MapActorsPainter(
                       pins: actors.pins,
                       selected: actors.selected,
                       connected: actors.connected,
-                      pulse: 0,
                       homeLabel: actors.homeLabel,
-                      darkMap: true,
-                      selectedLabel: actors.selectedLabel,
-                      drawPulse: false,
-                      dots: false,
-                    ),
-                  ),
-                ),
-              ),
-              if (actors.connected && actors.selected != null)
-                Positioned.fill(
-                  child: CustomPaint(
-                    painter: PulseRingPainter(
-                      selected: actors.selected,
-                      anim: _pulse,
-                      screenSpace: true,
+                      exitBadge: actors.selectedLabel.isEmpty
+                          ? null
+                          : actors.selectedLabel,
+                      pulseAnim: _pulse,
+                      filament: true,
                       repaint: _pulse,
                     ),
                   ),
                 ),
+              ),
               // The pages float over the map.
               Positioned.fill(
                 child: IndexedStack(
@@ -879,48 +832,85 @@ class _EmberShellState extends State<EmberShell>
                   right: 300,
                   child: widget.banner!,
                 ),
-              // The brand panel.
+              // The header (W1 recomposition): the shipped
+              // Home's own header — the EMBER wordmark with its
+              // orange dot at the left; at the right, the
+              // protection state (dot + tracked micro-label)
+              // and, in Mozilla mode, the Account action under
+              // it. The 2038 glass brand panel and the vertical
+              // engine-chip stack are retired: the switcher is
+              // the shipped Home's chip row, down with the bar.
               Positioned(
                 top: 20,
                 left: 24,
-                child: MapBrandPanel(
-                  versionLine: 'v$appVersion • BUILD $appBuildNumber',
-                ),
-              ),
-              // The engine chips (the navigation) + Settings.
-              Positioned(
-                top: 20,
                 right: 24,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    for (final m in Features.engineModes) ...[
-                      MapEngineChip(
-                        name: _engineLabel(l, m),
-                        active: bar.connectedEngine == m,
-                        highlight:
-                            bar.connectedEngine == m ||
-                            (bar.connectedEngine == null &&
-                                mode == m &&
-                                _tab != 3),
-                        onTap: () => setState(() {
-                          if (_pausedEngine != null && m != _pausedEngine) {
-                            _cancelPause();
-                          }
-                          if (m != 0) _bootstrap.cancel();
-                          mode = m;
-                          _tab = 0;
-                        }),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                    // The Settings chip sits slightly apart
-                    // from the engine stack, as in the samples.
-                    const SizedBox(height: 6),
-                    MapSettingsChip(
-                      label: l.navSettings,
-                      active: _tab == 3,
-                      onTap: () => setState(() => _tab = 3),
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'EMBER',
+                          style: TextStyle(
+                            fontSize: 21,
+                            fontWeight: FontWeight.w300,
+                            letterSpacing: 6,
+                            color: MapUi.text,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Ember.orange,
+                          ),
+                          child: SizedBox(width: 6, height: 6),
+                        ),
+                      ],
+                    ),
+                    const Spacer(),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            DecoratedBox(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: bar.on
+                                    ? const Color(0xFF3DDC84)
+                                    : const Color(0xFF6E6E73),
+                              ),
+                              child: const SizedBox(width: 7, height: 7),
+                            ),
+                            const SizedBox(width: 7),
+                            Text(
+                              bar.on ? 'PROTECTED' : 'NOT PROTECTED',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 2.2,
+                                color: MapUi.dim,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (mode == 0) ...[
+                          const SizedBox(height: 4),
+                          GestureDetector(
+                            onTap: () => setState(() => _tab = 2),
+                            child: const Text(
+                              'Account',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Ember.orange,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
@@ -931,7 +921,9 @@ class _EmberShellState extends State<EmberShell>
               // Resume now / Cancel.
               if (_pausedEngine != null || bar.on)
                 Positioned(
-                  bottom: 104,
+                  // Above the W1 bottom stack (switcher row +
+                  // slim bar + gaps ≈ 195 px from the bottom).
+                  bottom: 206,
                   left: 0,
                   right: 0,
                   child: Center(
@@ -950,8 +942,7 @@ class _EmberShellState extends State<EmberShell>
                                 ),
                                 const SizedBox(width: 10),
                                 TextButton(
-                                  onPressed: () =>
-                                      _resumePause(bar.onToggle),
+                                  onPressed: () => _resumePause(bar.onToggle),
                                   child: const Text('Resume now'),
                                 ),
                                 TextButton(
@@ -968,14 +959,8 @@ class _EmberShellState extends State<EmberShell>
                             itemBuilder: (context) => [
                               for (final (label, d) in const [
                                 ('Pause for 5 minutes', Duration(minutes: 5)),
-                                (
-                                  'Pause for 15 minutes',
-                                  Duration(minutes: 15),
-                                ),
-                                (
-                                  'Pause for 30 minutes',
-                                  Duration(minutes: 30),
-                                ),
+                                ('Pause for 15 minutes', Duration(minutes: 15)),
+                                ('Pause for 30 minutes', Duration(minutes: 30)),
                                 ('Pause for 1 hour', Duration(hours: 1)),
                               ])
                                 PopupMenuItem(value: d, child: Text(label)),
@@ -994,30 +979,166 @@ class _EmberShellState extends State<EmberShell>
                                     color: MapUi.text,
                                   ),
                                   SizedBox(width: 6),
-                                  Text('Pause', style: TextStyle(color: MapUi.text)),
+                                  Text(
+                                    'Pause',
+                                    style: TextStyle(color: MapUi.text),
+                                  ),
                                 ],
                               ),
                             ),
                           ),
                   ),
                 ),
-              // The bottom control bar.
+              // The bottom stack (W1 recomposition): the
+              // shipped Home's engine switcher directly above
+              // the shipped slim control bar — one centred
+              // column, tray width capped at 720 on the desktop
+              // canvas. The 2038 wide glass MapBottomBar and the
+              // top-right chip stack are retired.
               Positioned(
                 bottom: 22,
                 left: 0,
                 right: 0,
-                child: Center(
-                  child: FractionallySizedBox(
-                    widthFactor: 0.90,
-                    child: MapBottomBar(
-                      on: bar.on,
-                      busy: bar.busy,
-                      onToggle: bar.onToggle,
-                      stateWord: bar.stateWord,
-                      segments: bar.segments,
-                      microLine: bar.microLine,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // The switcher: while an engine is connected
+                    // it is the shipped quiet line — the engine
+                    // names joined by '·', the connected one in
+                    // orange; otherwise the one row of compact
+                    // hairline chips, flexed by name length, the
+                    // current engine in orange.
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 720),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: bar.connectedEngine != null
+                              ? Text.rich(
+                                  TextSpan(
+                                    children: [
+                                      for (
+                                        var i = 0;
+                                        i < Features.engineModes.length;
+                                        i++
+                                      )
+                                        TextSpan(
+                                          text:
+                                              _engineLabel(
+                                                l,
+                                                Features.engineModes[i],
+                                              ) +
+                                              (i ==
+                                                      Features
+                                                              .engineModes
+                                                              .length -
+                                                          1
+                                                  ? ''
+                                                  : '  ·  '),
+                                          style: TextStyle(
+                                            color:
+                                                Features.engineModes[i] ==
+                                                    bar.connectedEngine
+                                                ? Ember.orange
+                                                : MapUi.dim,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(fontSize: 12),
+                                )
+                              : Row(
+                                  children: [
+                                    for (
+                                      var i = 0;
+                                      i < Features.engineModes.length;
+                                      i++
+                                    ) ...[
+                                      if (i > 0) const SizedBox(width: 4),
+                                      Expanded(
+                                        flex:
+                                            _engineLabel(
+                                              l,
+                                              Features.engineModes[i],
+                                            ).length +
+                                            2,
+                                        child: GestureDetector(
+                                          onTap: () => setState(() {
+                                            final m = Features.engineModes[i];
+                                            if (_pausedEngine != null &&
+                                                m != _pausedEngine) {
+                                              _cancelPause();
+                                            }
+                                            if (m != 0) _bootstrap.cancel();
+                                            mode = m;
+                                            _tab = 0;
+                                          }),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 7,
+                                            ),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF141518),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color:
+                                                    mode ==
+                                                            Features
+                                                                .engineModes[i] &&
+                                                        _tab != 3
+                                                    ? Ember.orange
+                                                    : MapUi.line,
+                                              ),
+                                            ),
+                                            child: Text(
+                                              _engineLabel(
+                                                l,
+                                                Features.engineModes[i],
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color:
+                                                    mode ==
+                                                            Features
+                                                                .engineModes[i] &&
+                                                        _tab != 3
+                                                    ? Ember.orange
+                                                    : MapUi.dim,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(height: 10),
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 720),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          child: _DesktopControlBar(
+                            busy: bar.busy,
+                            onToggle: bar.onToggle,
+                            stateWord: bar.stateWord,
+                            segments: bar.segments,
+                            microLine: bar.microLine,
+                            onSettings: () => setState(() => _tab = 3),
+                            onServers: () => setState(() => _tab = 1),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -1140,11 +1261,7 @@ class _EmberShellState extends State<EmberShell>
             (label: 'ACTIVE CONFIG', value: selected?.name ?? '—', flex: 5),
             (label: 'LOCATION', value: location, flex: 5),
             (label: 'EXIT IP', value: exit?.ip ?? '—', flex: 4),
-            (
-              label: 'UP',
-              value: running ? fmtRate(xray.upRate) : '—',
-              flex: 3,
-            ),
+            (label: 'UP', value: running ? fmtRate(xray.upRate) : '—', flex: 3),
             (
               label: 'DOWN',
               value: running ? fmtRate(xray.downRate) : '—',
@@ -1239,16 +1356,8 @@ class _EmberShellState extends State<EmberShell>
           stateColor: wOn ? MapUi.text : MapUi.dim,
           segments: [
             (label: 'EXIT IP', value: wExit?.ip ?? '—', flex: 4),
-            (
-              label: 'COUNTRY',
-              value: wExit?.countryCode ?? '—',
-              flex: 3,
-            ),
-            (
-              label: 'UP',
-              value: wOn ? fmtRate(warpPlus.upRate) : '—',
-              flex: 3,
-            ),
+            (label: 'COUNTRY', value: wExit?.countryCode ?? '—', flex: 3),
+            (label: 'UP', value: wOn ? fmtRate(warpPlus.upRate) : '—', flex: 3),
             (
               label: 'DOWN',
               value: wOn ? fmtRate(warpPlus.downRate) : '—',
@@ -1269,16 +1378,8 @@ class _EmberShellState extends State<EmberShell>
           stateWord: wgOn ? 'Connected' : 'Not connected',
           stateColor: wgOn ? MapUi.text : MapUi.dim,
           segments: [
-            (
-              label: 'ACTIVE CONFIG',
-              value: wgSelected?.name ?? '—',
-              flex: 5,
-            ),
-            (
-              label: 'UP',
-              value: wgOn ? fmtRate(_xray.upRate) : '—',
-              flex: 3,
-            ),
+            (label: 'ACTIVE CONFIG', value: wgSelected?.name ?? '—', flex: 5),
+            (label: 'UP', value: wgOn ? fmtRate(_xray.upRate) : '—', flex: 3),
             (
               label: 'DOWN',
               value: wgOn ? fmtRate(_xray.downRate) : '—',
@@ -1311,16 +1412,8 @@ class _EmberShellState extends State<EmberShell>
               value: ovpn.state.exitIp.isNotEmpty ? ovpn.state.exitIp : '—',
               flex: 4,
             ),
-            (
-              label: 'UP',
-              value: oOn ? fmtRate(ovpn.upRate) : '—',
-              flex: 3,
-            ),
-            (
-              label: 'DOWN',
-              value: oOn ? fmtRate(ovpn.downRate) : '—',
-              flex: 3,
-            ),
+            (label: 'UP', value: oOn ? fmtRate(ovpn.upRate) : '—', flex: 3),
+            (label: 'DOWN', value: oOn ? fmtRate(ovpn.downRate) : '—', flex: 3),
           ],
           microLine: 'OPENVPN',
           onToggle: () => unawaited(_toggleOpenVpn(l)),
@@ -1464,9 +1557,9 @@ class _EmberShellState extends State<EmberShell>
           selectedLabel: selected == null
               ? ''
               : (exitCode != null && exitCode.isNotEmpty && exitCity.isNotEmpty
-                    ? '$countryName • $exitCity'
-                    : countryName
-                  ).toUpperCase(),
+                        ? '$countryName • $exitCity'
+                        : countryName)
+                    .toUpperCase(),
         );
       case 2:
         final state = _psiphon.state;
@@ -1706,4 +1799,210 @@ class _EmberShellState extends State<EmberShell>
       }
     }
   }
+}
+
+/// The desktop shell's control bar (W1 recomposition): the
+/// shipped Map Control's slim bar — the same composition the
+/// Android Home's _ShellControlBar renders in its quiet form —
+/// carried on the desktop canvas. The telemetry cells exactly as
+/// the shell's bar model settled them, the state word verbatim
+/// as a tracked micro-label with the micro-line verbatim at the
+/// right, a hairline, then the control row: the round Settings
+/// and Locations buttons flanking the pill. The pill follows the
+/// shipped 2148 ruling: a settled Connected word fills it ORANGE
+/// with dark text; every other settled state is the neutral dark
+/// pill (hairline rim, light text, orange glyph); busy keeps the
+/// dark pill with its spinner.
+class _DesktopControlBar extends StatelessWidget {
+  const _DesktopControlBar({
+    required this.busy,
+    required this.onToggle,
+    required this.stateWord,
+    required this.segments,
+    required this.microLine,
+    required this.onSettings,
+    required this.onServers,
+  });
+
+  final bool busy;
+  final VoidCallback? onToggle;
+  final String stateWord;
+  final List<({String label, String value, int flex})> segments;
+  final String microLine;
+  final VoidCallback onSettings;
+  final VoidCallback onServers;
+
+  bool get _pillConnected => stateWord.startsWith('Connected');
+
+  String get _actionWord {
+    if (!busy) {
+      if (stateWord == 'Not connected') return 'CONNECT';
+      if (stateWord.startsWith('Connected')) {
+        return 'DISCONNECT';
+      }
+    }
+    return stateWord.toUpperCase();
+  }
+
+  Widget _roundButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) => Tooltip(
+    message: tooltip,
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: MapUi.line),
+          ),
+          child: Icon(icon, size: 20, color: MapUi.dim),
+        ),
+      ),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      color: MapUi.card,
+      borderRadius: BorderRadius.circular(24),
+      border: Border.all(color: MapUi.line),
+    ),
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var i = 0; i < segments.length; i++) ...[
+              if (i > 0) const SizedBox(width: 10),
+              Expanded(
+                flex: segments[i].flex,
+                child: MapBarCell(
+                  label: segments[i].label,
+                  value: segments[i].value,
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Flexible(
+              child: Text(
+                stateWord,
+                style: Ember.microLabel.copyWith(color: MapUi.text),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              microLine,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: Ember.fontMicro,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.8,
+                color: Color(0xFF8E8E93),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(height: 1, color: MapUi.line),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            _roundButton(
+              icon: Icons.settings_rounded,
+              tooltip: 'Settings',
+              onTap: onSettings,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: busy ? null : onToggle,
+                  borderRadius: BorderRadius.circular(999),
+                  child: Container(
+                    height: 48,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: _pillConnected ? Ember.orange : null,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: _pillConnected
+                            ? Ember.orange
+                            : const Color(0x40FFFFFF),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (busy) ...[
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _pillConnected
+                                  ? const Color(0xFF1A1206)
+                                  : Ember.orange,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                        ] else ...[
+                          Icon(
+                            Icons.power_settings_new_rounded,
+                            size: 16,
+                            color: _pillConnected
+                                ? const Color(0xFF1A1206)
+                                : Ember.orange,
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        Flexible(
+                          child: Text(
+                            _actionWord,
+                            style: TextStyle(
+                              fontSize: Ember.fontBody,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 2,
+                              color: _pillConnected
+                                  ? const Color(0xFF1A1206)
+                                  : MapUi.text,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            _roundButton(
+              icon: Icons.shield_rounded,
+              tooltip: 'Locations',
+              onTap: onServers,
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
 }

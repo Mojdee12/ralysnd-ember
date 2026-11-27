@@ -47,7 +47,15 @@ bool isIpLiteralAddress(String address) =>
 /// Protocols whose transport is UDP-only: stages 1–2 do not
 /// apply to them.
 bool funnelSkipsCheapStages(Profile p) =>
-    p.protocol == Protocol.wireguard || p.protocol == Protocol.hysteria2;
+    p.protocol == Protocol.wireguard ||
+    p.protocol == Protocol.hysteria2 ||
+    // Build 2075: TUIC is UDP-only like Hysteria2, and the
+    // endpoint protocols have no plain TCP endpoint to probe
+    // (Tailscale has no server at all) — their real test runs
+    // through the sidecar instead.
+    p.protocol == Protocol.tuic ||
+    p.protocol == Protocol.tailscale ||
+    p.protocol == Protocol.openconnect;
 
 /// Stage 1: a plain TCP connect to [host]:[port]. The connect
 /// time in ms, or -1 when the endpoint does not answer inside
@@ -116,7 +124,8 @@ List<Profile> funnelStage3Order({
   required List<Profile> realtime,
   required List<Profile> fallThrough,
 }) {
-  final ranked = List.of(survivors)
-    ..sort((a, b) => (tcpMs[a.id] ?? 1 << 30).compareTo(tcpMs[b.id] ?? 1 << 30));
+  final ranked = List.of(
+    survivors,
+  )..sort((a, b) => (tcpMs[a.id] ?? 1 << 30).compareTo(tcpMs[b.id] ?? 1 << 30));
   return [...ranked, ...realtime, ...fallThrough];
 }

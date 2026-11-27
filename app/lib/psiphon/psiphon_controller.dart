@@ -47,9 +47,32 @@ const psiphonTransports = <PsiphonTransport>[
 /// (AvailableEgressRegions notice, tunnel-core v2.0.42); the live list
 /// from the running core replaces it whenever the engine has run.
 const psiphonFallbackRegions = <String>[
-  'AT', 'AU', 'BE', 'BR', 'CA', 'CH', 'CZ', 'DE', 'DK', 'ES', 'FI',
-  'FR', 'GB', 'IE', 'IN', 'IT', 'JP', 'LT', 'NL', 'NO', 'PL', 'RO',
-  'RS', 'SE', 'SG', 'US',
+  'AT',
+  'AU',
+  'BE',
+  'BR',
+  'CA',
+  'CH',
+  'CZ',
+  'DE',
+  'DK',
+  'ES',
+  'FI',
+  'FR',
+  'GB',
+  'IE',
+  'IN',
+  'IT',
+  'JP',
+  'LT',
+  'NL',
+  'NO',
+  'PL',
+  'RO',
+  'RS',
+  'SE',
+  'SG',
+  'US',
 ];
 
 class PsiphonSettings {
@@ -68,11 +91,11 @@ class PsiphonSettings {
   Set<String> protocols = {};
 
   Map<String, dynamic> toJson() => {
-        'vpnMode': vpnMode,
-        'region': region,
-        'upstream': upstream,
-        'protocols': protocols.toList(),
-      };
+    'vpnMode': vpnMode,
+    'region': region,
+    'upstream': upstream,
+    'protocols': protocols.toList(),
+  };
 
   static PsiphonSettings fromJson(Map<String, dynamic> j) {
     final s = PsiphonSettings();
@@ -208,11 +231,14 @@ class PsiphonController extends ChangeNotifier {
       if (last != null && lastAt != null && sample.running) {
         final dt = now.difference(lastAt).inMilliseconds / 1000.0;
         if (dt > 0) {
-          upRate =
-              ((sample.upBytes - last.upBytes) / dt).round().clamp(0, 1 << 62);
-          downRate = ((sample.downBytes - last.downBytes) / dt)
-              .round()
-              .clamp(0, 1 << 62);
+          upRate = ((sample.upBytes - last.upBytes) / dt).round().clamp(
+            0,
+            1 << 62,
+          );
+          downRate = ((sample.downBytes - last.downBytes) / dt).round().clamp(
+            0,
+            1 << 62,
+          );
         }
       }
       _lastSample = sample;
@@ -261,6 +287,12 @@ class PsiphonController extends ChangeNotifier {
         upstream: settings.upstream.trim(),
         protocols: settings.protocols.toList(),
         dns: '1.1.1.1',
+        // The XraySettings tunnelMtu default (W1): the W2
+        // Psiphon stack mirror wires the live setting through
+        // the tunnelMtu() callback, as Android's controller
+        // does. The Windows backend is proxy-only and does not
+        // consume the value.
+        mtu: 1500,
       );
       // The service reports itself once the core is up; a tunnel to a
       // Psiphon server can take a while longer (state.connected).

@@ -33,6 +33,72 @@ const (
 	defaultTTL = 5 * time.Minute
 )
 
+// IP version policy (build 2105): which address families this
+// process dials with, chosen by dns.ip_version in the config and
+// installed through SetIPVersion whenever the configuration is
+// applied. The zero value is the auto policy — the behaviour of
+// every build before 2105: IPv4 first, IPv6 as fallback, and the
+// DoH server asking for AAAA only when no A exists.
+type ipVersionPolicy int
+
+const (
+	ipVersionAuto ipVersionPolicy = iota
+	ipVersionIPv6First
+	ipVersionIPv4Only
+	ipVersionIPv6Only
+)
+
+var ipVersion atomic.Int32
+
+// SetIPVersion installs the policy named by dns.ip_version
+// ("auto", "ipv6_first", "ipv4_only", "ipv6_only"; anything else,
+// including "", is auto — config validation rejects other values
+// before they can reach here).
+func SetIPVersion(name string) {
+	var p ipVersionPolicy
+	switch name {
+	case "ipv6_first":
+		p = ipVersionIPv6First
+	case "ipv4_only":
+		p = ipVersionIPv4Only
+	case "ipv6_only":
+		p = ipVersionIPv6Only
+	}
+	ipVersion.Store(int32(p))
+}
+
+func currentIPVersion() ipVersionPolicy { return ipVersionPolicy(ipVersion.Load()) }
+
+// CurrentIPVersion reports the live policy's config name (build
+// 2105), for the settings path and diagnostics.
+func CurrentIPVersion() string {
+	switch currentIPVersion() {
+	case ipVersionIPv6First:
+		return "ipv6_first"
+	case ipVersionIPv4Only:
+		return "ipv4_only"
+	case ipVersionIPv6Only:
+		return "ipv6_only"
+	default:
+		return "auto"
+	}
+}
+
+// allows reports whether the policy ever uses addr's family. A
+// 4-in-6 mapped address is classified by the address it maps to —
+// every other source in this package is Unmap()ed, and a mapped
+// literal must not slip past (or be refused by) the wrong family.
+func (p ipVersionPolicy) allows(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	switch p {
+	case ipVersionIPv4Only:
+		return addr.Is4()
+	case ipVersionIPv6Only:
+		return !addr.Is4()
+	}
+	return true
+}
+
 // server answers queries for one configured DNS server.
 type server interface {
 	lookup(ctx context.Context, host string) ([]netip.Addr, time.Duration, error)
@@ -270,19 +336,43 @@ func systemLookup(ctx context.Context, host string) (Result, error) {
 // in turn.
 func (r *Resolver) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	d := egress.Dialer(0)
-	if r.System() {
-		return d.DialContext(ctx, network, address)
-	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
+		// The system path keeps the historic behaviour for an
+		// address it cannot split (the dialer reports it).
+		if r.System() {
+			return d.DialContext(ctx, network, address)
+		}
 		return nil, err
 	}
+	// Build 2105: a literal address of the family the IP version
+	// policy excludes is refused here, before either dial path —
+	// Lookup returns literals untouched, and the system dialer
+	// would otherwise dial it without ever consulting the policy.
+	if addr, perr := netip.ParseAddr(strings.Trim(host, "[]")); perr == nil && !currentIPVersion().allows(addr) {
+		return nil, fmt.Errorf("address %s excluded by dns.ip_version", addr)
+	}
+	if r.System() && currentIPVersion() == ipVersionAuto {
+		return d.DialContext(ctx, network, address)
+	}
+	// With a policy on, the system path resolves first too: handing
+	// the unresolved name to the system dialer would let it use the
+	// excluded family (happy eyeballs), and the transports would
+	// disagree about what dns.ip_version means. Lookup on a system
+	// resolver still uses the system lookup — only the ordering and
+	// filtering are the policy's.
 	result, err := r.Lookup(ctx, host)
 	if err != nil {
 		return nil, err
 	}
+	addrs := orderAddrs(result.Addrs)
+	if len(addrs) == 0 {
+		// The policy filtered every answer out (or the name has
+		// none): say so instead of returning a nil error.
+		return nil, fmt.Errorf("no usable addresses for %s (dns.ip_version)", host)
+	}
 	var lastErr error
-	for _, addr := range orderAddrs(result.Addrs) {
+	for _, addr := range addrs {
 		conn, err := d.DialContext(ctx, network, net.JoinHostPort(addr.String(), port))
 		if err == nil {
 			return conn, nil
@@ -295,18 +385,19 @@ func (r *Resolver) DialContext(ctx context.Context, network, address string) (ne
 	return nil, lastErr
 }
 
-// orderAddrs puts IPv4 addresses first; IPv6 is often unusable on the
-// networks this program targets.
+// orderAddrs orders one answer's addresses for dialing and applies
+// the IP version policy: auto puts IPv4 first (IPv6 is often
+// unusable on the networks this program targets) with IPv6 as
+// fallback; ipv6_first swaps the families; ipv4_only and ipv6_only
+// drop the other family entirely.
 func orderAddrs(addrs []netip.Addr) []netip.Addr {
+	p := currentIPVersion()
 	out := make([]netip.Addr, 0, len(addrs))
-	for _, a := range addrs {
-		if a.Is4() {
-			out = append(out, a)
-		}
-	}
-	for _, a := range addrs {
-		if !a.Is4() {
-			out = append(out, a)
+	for _, want4 := range []bool{p != ipVersionIPv6First, p == ipVersionIPv6First} {
+		for _, a := range addrs {
+			if a.Is4() == want4 && p.allows(a) {
+				out = append(out, a)
+			}
 		}
 	}
 	return out
@@ -327,7 +418,8 @@ func Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	return Current().DialContext(ctx, network, address)
 }
 
-// LookupNetIP resolves host through the installed resolver, IPv4 first.
+// LookupNetIP resolves host through the installed resolver, ordered
+// and filtered by the IP version policy (auto: IPv4 first).
 func LookupNetIP(ctx context.Context, host string) ([]netip.Addr, error) {
 	result, err := Current().Lookup(ctx, host)
 	if err != nil {

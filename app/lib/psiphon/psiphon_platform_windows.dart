@@ -65,25 +65,24 @@ Map<String, dynamic> buildPsiphonConfig({
   required List<String> protocols,
   int socksPort = PsiphonPlatform.socksPort,
   int httpPort = PsiphonPlatform.httpPort,
-}) =>
-    {
-      'ClientVersion': PsiphonBootstrap.clientVersion,
-      'PropagationChannelId': PsiphonBootstrap.propagationChannelId,
-      'SponsorId': PsiphonBootstrap.sponsorId,
-      'RemoteServerListSignaturePublicKey':
-          PsiphonBootstrap.remoteServerListSignaturePublicKey,
-      'ServerEntrySignaturePublicKey':
-          PsiphonBootstrap.serverEntrySignaturePublicKey,
-      'AdditionalParameters': PsiphonBootstrap.additionalParameters,
-      'DataRootDirectory': dataRoot,
-      'LocalSocksProxyPort': socksPort,
-      'LocalHttpProxyPort': httpPort,
-      'EmitDiagnosticNotices': true,
-      'EmitBytesTransferred': true,
-      'EgressRegion': region,
-      if (upstream.isNotEmpty) 'UpstreamProxyURL': upstream,
-      if (protocols.isNotEmpty) 'LimitTunnelProtocols': protocols,
-    };
+}) => {
+  'ClientVersion': PsiphonBootstrap.clientVersion,
+  'PropagationChannelId': PsiphonBootstrap.propagationChannelId,
+  'SponsorId': PsiphonBootstrap.sponsorId,
+  'RemoteServerListSignaturePublicKey':
+      PsiphonBootstrap.remoteServerListSignaturePublicKey,
+  'ServerEntrySignaturePublicKey':
+      PsiphonBootstrap.serverEntrySignaturePublicKey,
+  'AdditionalParameters': PsiphonBootstrap.additionalParameters,
+  'DataRootDirectory': dataRoot,
+  'LocalSocksProxyPort': socksPort,
+  'LocalHttpProxyPort': httpPort,
+  'EmitDiagnosticNotices': true,
+  'EmitBytesTransferred': true,
+  'EgressRegion': region,
+  if (upstream.isNotEmpty) 'UpstreamProxyURL': upstream,
+  if (protocols.isNotEmpty) 'LimitTunnelProtocols': protocols,
+};
 
 class WindowsPsiphonBackend implements PsiphonBackend {
   Process? _proc;
@@ -151,6 +150,10 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     required String upstream,
     required List<String> protocols,
     required String dns,
+    // Accepted for contract parity: the Windows backend is
+    // proxy-only (system capture rides the Xray TUN bridge), so
+    // there is no Psiphon TUN interface to size.
+    required int mtu,
   }) async {
     if (_proc != null) await stop();
     if (!File(_coreExe).existsSync()) {
@@ -213,26 +216,30 @@ class WindowsPsiphonBackend implements PsiphonBackend {
 
     final configFile = File('${dir.path}/psiphon.config');
     await configFile.writeAsString(
-      jsonEncode(buildPsiphonConfig(
-        dataRoot: dataRoot.path,
-        region: region,
-        upstream: upstream,
-        protocols: protocols,
-        socksPort: _socksPort,
-        httpPort: _httpPort,
-      )),
+      jsonEncode(
+        buildPsiphonConfig(
+          dataRoot: dataRoot.path,
+          region: region,
+          upstream: upstream,
+          protocols: protocols,
+          socksPort: _socksPort,
+          httpPort: _httpPort,
+        ),
+      ),
       flush: true,
     );
 
     Process proc;
     try {
-      proc = await Process.start(
-        _coreExe,
-        ['-config', configFile.path, '-serverList', serversFile.path],
-        workingDirectory: dir.path,
-      );
+      proc = await Process.start(_coreExe, [
+        '-config',
+        configFile.path,
+        '-serverList',
+        serversFile.path,
+      ], workingDirectory: dir.path);
     } catch (e) {
-      _lastError = 'could not start psiphon-core.exe: $e. '
+      _lastError =
+          'could not start psiphon-core.exe: $e. '
           '$firewallGuidance';
       sink.writeln('[ember] $_lastError');
       await _closeLog();
@@ -254,29 +261,32 @@ class WindowsPsiphonBackend implements PsiphonBackend {
     proc.stdout.transform(utf8.decoder).listen((s) {
       sink.write(s);
     }, onError: (_) {});
-    unawaited(proc.exitCode.then((code) {
-      if (identical(_proc, proc)) {
-        _proc = null;
-        _listening = false;
-        _connected = false;
-        // The exit itself is evidence: keep it in the log the UI
-        // shows, with the guidance when the core died at once.
-        final instant = _spawnedAt != null &&
-            DateTime.now().difference(_spawnedAt!) <
-                const Duration(seconds: 2);
-        if (_lastError.isEmpty) {
-          _lastError = instant
-              ? 'psiphon-core.exe exited at once (code $code). '
-                  '$firewallGuidance'
-              : 'psiphon-core.exe exited (code $code)';
+    unawaited(
+      proc.exitCode.then((code) {
+        if (identical(_proc, proc)) {
+          _proc = null;
+          _listening = false;
+          _connected = false;
+          // The exit itself is evidence: keep it in the log the UI
+          // shows, with the guidance when the core died at once.
+          final instant =
+              _spawnedAt != null &&
+              DateTime.now().difference(_spawnedAt!) <
+                  const Duration(seconds: 2);
+          if (_lastError.isEmpty) {
+            _lastError = instant
+                ? 'psiphon-core.exe exited at once (code $code). '
+                      '$firewallGuidance'
+                : 'psiphon-core.exe exited (code $code)';
+          }
+          _logSink?.writeln(
+            '[ember] psiphon-core exited (code $code)'
+            '${instant ? ' — within 2s of start' : ''}',
+          );
+          unawaited(_closeLog());
         }
-        _logSink?.writeln(
-          '[ember] psiphon-core exited (code $code)'
-          '${instant ? ' — within 2s of start' : ''}',
-        );
-        unawaited(_closeLog());
-      }
-    }));
+      }),
+    );
 
     // The tunnel (and, in VPN mode, the TUN) is only real once the
     // proxies listen; the smoke-proven core binds them in ~a second.
@@ -297,7 +307,8 @@ class WindowsPsiphonBackend implements PsiphonBackend {
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     if (!_listening) {
-      _lastError = 'psiphon-core started but did not open its local '
+      _lastError =
+          'psiphon-core started but did not open its local '
           'proxies within 15s — the core\'s own notices in '
           'psiphon.log above show what it was doing (it may still '
           'be retrying servers, or something stopped it binding)';
@@ -326,13 +337,15 @@ class WindowsPsiphonBackend implements PsiphonBackend {
         throw StateError(_lastError);
       }
       final bridge = _bridge!;
-      unawaited(bridge.down.then((_) {
-        // The TUN ended under a live core: tear the run down so the
-        // state goes stopped instead of leaking traffic direct.
-        if (identical(_bridge, bridge) && _proc != null) {
-          unawaited(stop());
-        }
-      }));
+      unawaited(
+        bridge.down.then((_) {
+          // The TUN ended under a live core: tear the run down so the
+          // state goes stopped instead of leaking traffic direct.
+          if (identical(_bridge, bridge) && _proc != null) {
+            unawaited(stop());
+          }
+        }),
+      );
     }
   }
 
@@ -407,8 +420,9 @@ class WindowsPsiphonBackend implements PsiphonBackend {
         }
         if (!_connected) _sinceMs = 0;
       case 'AvailableEgressRegions':
-        _regions =
-            ((data['regions'] as List?) ?? []).map((e) => e.toString()).toList();
+        _regions = ((data['regions'] as List?) ?? [])
+            .map((e) => e.toString())
+            .toList();
       case 'ClientRegion':
         _region = data['region'] as String? ?? '';
       case 'ClientAddress':

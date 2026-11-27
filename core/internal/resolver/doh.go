@@ -55,13 +55,61 @@ func newDoHServer(u string) *dohServer {
 
 func (s *dohServer) String() string { return s.url }
 
-// lookup asks for A records, and for AAAA records when there are none.
+// lookup asks for the address families the IP version policy uses
+// (build 2105). Auto keeps the historic shape — A records, and
+// AAAA only when there are none — so an auto answer never gains an
+// IPv6 candidate it did not have before. ipv4_only never asks for
+// AAAA; ipv6_only asks only for AAAA; ipv6_first asks for both at
+// once and merges the answers (orderAddrs puts IPv6 first).
 func (s *dohServer) lookup(ctx context.Context, host string) ([]netip.Addr, time.Duration, error) {
-	addrs, ttl, err := s.query(ctx, host, dnsmessage.TypeA)
-	if err != nil || len(addrs) > 0 {
-		return addrs, ttl, err
+	switch currentIPVersion() {
+	case ipVersionIPv4Only:
+		return s.query(ctx, host, dnsmessage.TypeA)
+	case ipVersionIPv6Only:
+		return s.query(ctx, host, dnsmessage.TypeAAAA)
+	case ipVersionIPv6First:
+		type outcome struct {
+			addrs []netip.Addr
+			ttl   time.Duration
+			err   error
+		}
+		results := make(chan outcome, 2)
+		for _, qtype := range []dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
+			go func() {
+				addrs, ttl, err := s.query(ctx, host, qtype)
+				results <- outcome{addrs, ttl, err}
+			}()
+		}
+		var merged []netip.Addr
+		var ttl time.Duration
+		var firstErr error
+		for range 2 {
+			r := <-results
+			if r.err != nil {
+				if firstErr == nil {
+					firstErr = r.err
+				}
+				continue
+			}
+			merged = append(merged, r.addrs...)
+			// Only a family that answered carries a TTL: an empty
+			// family's zero must not zero out the other's real TTL
+			// (the merge order is whichever goroutine landed first).
+			if len(r.addrs) > 0 && (ttl == 0 || r.ttl < ttl) {
+				ttl = r.ttl
+			}
+		}
+		if len(merged) == 0 && firstErr != nil {
+			return nil, 0, firstErr
+		}
+		return merged, ttl, nil
+	default:
+		addrs, ttl, err := s.query(ctx, host, dnsmessage.TypeA)
+		if err != nil || len(addrs) > 0 {
+			return addrs, ttl, err
+		}
+		return s.query(ctx, host, dnsmessage.TypeAAAA)
 	}
-	return s.query(ctx, host, dnsmessage.TypeAAAA)
 }
 
 func (s *dohServer) query(ctx context.Context, host string, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, error) {

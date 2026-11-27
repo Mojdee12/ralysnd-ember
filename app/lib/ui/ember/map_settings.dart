@@ -161,7 +161,9 @@ class _MapSettingsPageState extends State<MapSettingsPage> {
         final mode = status == null ? 'clear' : connectionModeShown(status);
         final note = status == null ? null : tunNote(l, status);
         return Padding(
-          padding: const EdgeInsets.fromLTRB(24, 96, 24, 118),
+          // W1 geometry: clear of the slim header above and
+          // the switcher + slim bar stack below.
+          padding: const EdgeInsets.fromLTRB(24, 84, 24, 228),
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 1060),
@@ -171,22 +173,26 @@ class _MapSettingsPageState extends State<MapSettingsPage> {
                   children: [
                     LayoutBuilder(
                       builder: (context, constraints) {
+                        // Panel arrangement per the phase-1
+                        // Settings composition (W1): General and
+                        // Connection on the left; DNS, Routing,
+                        // More and About on the right.
                         final left = Column(
                           children: [
-                            _connectionPanel(l, mode, note),
-                            const SizedBox(height: 20),
                             _generalPanel(l),
+                            const SizedBox(height: 20),
+                            _connectionPanel(l, mode, note),
                           ],
                         );
                         final right = Column(
                           children: [
-                            _AboutPanel(core: core),
-                            const SizedBox(height: 20),
                             _dnsPanel(l),
                             const SizedBox(height: 20),
                             _routingPanel(l),
                             const SizedBox(height: 20),
                             _morePanel(l),
+                            const SizedBox(height: 20),
+                            _AboutPanel(core: core),
                           ],
                         );
                         if (constraints.maxWidth < 900) {
@@ -194,20 +200,17 @@ class _MapSettingsPageState extends State<MapSettingsPage> {
                             children: [left, const SizedBox(height: 20), right],
                           );
                         }
-                        // The right column starts below the engine
-                        // chips' stack (shell chrome at the top
-                        // right) — the samples' staggered masonry.
+                        // W1: the columns align at the top — the
+                        // 2038 stagger existed to clear the old
+                        // vertical engine-chip stack at the top
+                        // right, which the recomposition retired
+                        // (the header is one slim row now).
                         return Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(child: left),
                             const SizedBox(width: 20),
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.only(top: 148),
-                                child: right,
-                              ),
-                            ),
+                            Expanded(child: right),
                           ],
                         );
                       },

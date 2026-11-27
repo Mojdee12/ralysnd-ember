@@ -139,6 +139,12 @@ abstract final class Updates {
     AppSettings settings, {
     List<String> args = const [],
   }) {
+    // Build 2071 (review §3.3): never on Android — the checker
+    // targets the upstream repo, and the Ember shell has no
+    // update feed of its own; a scheduled poll there could only
+    // ever offer a foreign app's release. Desktop platforms keep
+    // the inherited behaviour unchanged.
+    if (Platform.isAndroid) return;
     if (githubRepo.isEmpty || _timer != null) return;
     _core = core;
     _settings = settings;

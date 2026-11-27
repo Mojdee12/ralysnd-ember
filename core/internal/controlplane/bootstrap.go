@@ -134,9 +134,24 @@ func WithBootstrapEgress(ctx context.Context, fn func(context.Context) error) er
 // then exit through the live Mozilla tunnel instead of the local
 // network, as Kumiho's tunnel-first control plane does.
 func WithSelfEgress(ctx context.Context, listenAddr string, fn func(context.Context) error) error {
+	return WithSelfEgressURL(ctx, "http://"+listenAddr, fn)
+}
+
+// WithSelfEgressURL is WithSelfEgress with the listener's full
+// proxy URL, so a listener login rides along when one is
+// configured (build 2114: the pass renewal path passes the
+// engine's own endpoint, credentials included when set).
+func WithSelfEgressURL(ctx context.Context, proxyURL string, fn func(context.Context) error) error {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" || u.Host == "" {
+		return errors.New("self egress must be an http:// proxy URL")
+	}
 	return withEgress(ctx, func(http.RoundTripper) (http.RoundTripper, error) {
 		transport := defaultTransport.Clone()
-		transport.Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: listenAddr})
+		transport.Proxy = http.ProxyURL(u)
 		return transport, nil
 	}, fn)
 }

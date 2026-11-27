@@ -3,9 +3,13 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,12 +34,16 @@ type managedSession struct {
 }
 
 type ControllerConfig struct {
-	Guardian   string
-	ProxyURL   *url.URL
-	Timeout    time.Duration
-	Auth       *runtimeAuth
-	Pass       *guardian.ProxyPassInfo
-	UseH3      bool
+	Guardian string
+	ProxyURL *url.URL
+	Timeout  time.Duration
+	Auth     *runtimeAuth
+	Pass     *guardian.ProxyPassInfo
+	UseH3    bool
+	// UseH1 (build 2105): sessions speak HTTP/1.1 CONNECT, one TLS
+	// connection per tunnel (upstream_h1.go). Set only when the
+	// configured transport is "h1"; UseH3 stays false then.
+	UseH1      bool
 	Sessions   int
 	StatusFile string
 	Accounts   *AccountPool // optional; multi-account mode with threshold failover
@@ -50,6 +58,13 @@ type ControllerConfig struct {
 	// when Server keeps failing. Both are unset for a server set by hand.
 	Location []Candidate
 	Failover *ServerFailover
+	// SelfEgress is the http proxy URL of the engine's own local
+	// listener (build 2114; mozilla-regression-plan.md mechanism
+	// 1): a pass renewal exits through the live tunnel, so a
+	// region that refuses the direct path (Guardian HTTP 451)
+	// can still renew while the current pass lives. Empty (the
+	// desktop, tests) renews direct, as before.
+	SelfEgress string
 }
 
 type Controller struct {
@@ -71,6 +86,8 @@ type Controller struct {
 	sessionFactory func(token string) (proxySession, error)
 	refreshSession func() error
 	accounts       *AccountPool
+	// selfEgress is ControllerConfig.SelfEgress.
+	selfEgress string
 
 	// trafficSinceCheck counts tunnel bytes since the last quota check;
 	// crossing usageProbeBytes requests an early check on quotaCheckNow.
@@ -101,6 +118,40 @@ type Controller struct {
 	nextAttemptAt  time.Time
 	lastRenewalAt  time.Time
 
+	// The route the last renewal's pass fetch took (build
+	// 2116, renewal journaling): "self-egress", "direct" or
+	// "direct-fallback", guarded by mu. The renewal loop
+	// logs it with every outcome — up to 2115 a degradation
+	// at a renewal boundary left no trace of which route
+	// the fetch took or whether it ran at all.
+	lastRenewalRoute string
+
+	// Upstream tunnel-open failures by FailureCode class
+	// (build 2116): counted as openTunnel gives up on
+	// them, summarised into the renewal loop's outcome
+	// lines, so a mid-session upstream rot (the 502 shape)
+	// is visible in the log with its class and count
+	// instead of silence.
+	upstreamFailuresMu sync.Mutex
+	upstreamFailures   map[string]int
+
+	// Established-session failures by FailureCode class
+	// (build 2119, audit F-01): counted when a session
+	// that was already established is judged dead —
+	// the keepalive found it gone, or an open on it
+	// failed at session level and it is marked unusable.
+	// Build 2116 counted only the give-ups in
+	// noteUpstreamFailure, so rot that a rebuild absorbed
+	// (the request eventually served) left no count at
+	// all. Guarded by upstreamFailuresMu.
+	establishedFailures map[string]int
+
+	// The last failure summary the timer loop emitted
+	// (build 2119): it re-emits only on change, so a
+	// quiet controller stays quiet. Guarded by
+	// upstreamFailuresMu.
+	lastFailureSummary string
+
 	// The spacing of tunnel-triggered rebuilds: redials with the current
 	// pass, and new passes.
 	redialBackoff rebuildBackoff
@@ -112,11 +163,16 @@ type Controller struct {
 
 func NewController(cfg ControllerConfig) (*Controller, error) {
 	var baseFactory func(target *url.URL, token string) (proxySession, error)
-	if cfg.UseH3 {
+	switch {
+	case cfg.UseH1:
+		baseFactory = func(target *url.URL, token string) (proxySession, error) {
+			return newH1ProxySession(target, token, cfg.Timeout)
+		}
+	case cfg.UseH3:
 		baseFactory = func(target *url.URL, token string) (proxySession, error) {
 			return newH3ProxySession(target, token, cfg.Timeout)
 		}
-	} else {
+	default:
 		baseFactory = func(target *url.URL, token string) (proxySession, error) {
 			return newH2ProxySession(target, token, cfg.Timeout)
 		}
@@ -162,6 +218,7 @@ func NewController(cfg ControllerConfig) (*Controller, error) {
 		auth:           cfg.Auth,
 		statusFile:     cfg.StatusFile,
 		accounts:       cfg.Accounts,
+		selfEgress:     cfg.SelfEgress,
 		chosenLocation: cfg.ChosenLocation,
 		location:       cfg.Location,
 		failover:       cfg.Failover,
@@ -176,6 +233,7 @@ func NewController(cfg ControllerConfig) (*Controller, error) {
 			server:    server.Addr,
 		},
 	}
+	controller.notePoolAbsorbed(session)
 	controller.sessionFactory = func(token string) (proxySession, error) {
 		controller.mu.Lock()
 		target := controller.proxyURL
@@ -188,6 +246,128 @@ func NewController(cfg ControllerConfig) (*Controller, error) {
 
 func (c *Controller) OpenTunnel(authority string) (net.Conn, error) {
 	return c.openTunnel(authority, "")
+}
+
+// countFailure adds err to one of the failure maps and
+// returns its class and the class's new count.
+func (c *Controller) countFailure(m map[string]int, err error) (string, int) {
+	code := FailureCode(err)
+	if code == "" {
+		code = FailureOther
+	}
+	m[code]++
+	return code, m[code]
+}
+
+// noteUpstreamFailure counts a tunnel-open failure
+// openTunnel gave up on, by FailureCode class (build
+// 2116, renewal journaling): the first of a class and
+// every twentieth are logged at once, and the counts
+// ride the renewal outcome lines and the failure
+// timer's summary (build 2119).
+func (c *Controller) noteUpstreamFailure(err error) {
+	if err == nil {
+		return
+	}
+	c.upstreamFailuresMu.Lock()
+	if c.upstreamFailures == nil {
+		c.upstreamFailures = map[string]int{}
+	}
+	code, n := c.countFailure(c.upstreamFailures, err)
+	c.upstreamFailuresMu.Unlock()
+	if n == 1 || n%20 == 0 {
+		logx.Warn("upstream failure class=%s count=%d err=%s", code, n, logx.Err(err))
+	}
+}
+
+// noteEstablishedFailure counts a failure of a session
+// that was already established (build 2119, audit F-01):
+// the keepalive found it dead, or an open on it failed
+// at session level and openTunnel marks it unusable.
+// Build 2116 counted only tunnel-open give-ups, so rot
+// a rebuild absorbed — the mid-session 502 shape, the
+// request eventually served by a fresh session — left
+// no count anywhere.
+func (c *Controller) noteEstablishedFailure(err error) {
+	if err == nil {
+		return
+	}
+	c.upstreamFailuresMu.Lock()
+	if c.establishedFailures == nil {
+		c.establishedFailures = map[string]int{}
+	}
+	code, n := c.countFailure(c.establishedFailures, err)
+	c.upstreamFailuresMu.Unlock()
+	if n == 1 || n%20 == 0 {
+		logx.Warn("established session failure class=%s count=%d err=%s", code, n, logx.Err(err))
+	}
+}
+
+// failureSummary renders one failure map for a log line
+// ("none" while nothing has failed).
+func failureSummary(m map[string]int) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(m))
+	for _, code := range slices.Sorted(maps.Keys(m)) {
+		parts = append(parts, fmt.Sprintf("%s=%d", code, m[code]))
+	}
+	return strings.Join(parts, ",")
+}
+
+// upstreamFailureSummary renders the counted tunnel-open
+// classes for a log line ("none" while nothing has failed).
+func (c *Controller) upstreamFailureSummary() string {
+	c.upstreamFailuresMu.Lock()
+	defer c.upstreamFailuresMu.Unlock()
+	return failureSummary(c.upstreamFailures)
+}
+
+// establishedFailureSummary renders the counted
+// established-session classes for a log line.
+func (c *Controller) establishedFailureSummary() string {
+	c.upstreamFailuresMu.Lock()
+	defer c.upstreamFailuresMu.Unlock()
+	return failureSummary(c.establishedFailures)
+}
+
+// emitUpstreamFailureSummary logs both failure summaries
+// when either has changed since the last emission
+// (build 2119, audit F-01): the renewal loop's outcome
+// lines were the only place the counts surfaced, on a
+// ~8-minute cadence — a session dying at ~2 minutes
+// never reached one. The timer loop calls this every
+// minute; it reports whether a line was emitted.
+func (c *Controller) emitUpstreamFailureSummary() bool {
+	c.upstreamFailuresMu.Lock()
+	summary := "open=" + failureSummary(c.upstreamFailures) +
+		" established=" + failureSummary(c.establishedFailures)
+	if summary == c.lastFailureSummary {
+		c.upstreamFailuresMu.Unlock()
+		return false
+	}
+	c.lastFailureSummary = summary
+	c.upstreamFailuresMu.Unlock()
+	logx.Info("upstream failure summary %s", summary)
+	return true
+}
+
+// setRenewalRoute / renewalRoute: the route the last
+// renewal's pass fetch took (build 2116).
+func (c *Controller) setRenewalRoute(route string) {
+	c.mu.Lock()
+	c.lastRenewalRoute = route
+	c.mu.Unlock()
+}
+
+func (c *Controller) renewalRoute() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastRenewalRoute == "" {
+		return "unknown"
+	}
+	return c.lastRenewalRoute
 }
 
 func (c *Controller) OpenTunnelForClient(authority, clientKey string) (net.Conn, error) {
@@ -217,6 +397,7 @@ func (c *Controller) openTunnel(authority, clientKey string) (net.Conn, error) {
 			lastErr = errProxySessionUnhealthy
 			cause = lastErr
 			failedSession = ms
+			c.noteEstablishedFailure(lastErr)
 			c.markSessionUnusable(ms)
 			release()
 		} else {
@@ -231,13 +412,15 @@ func (c *Controller) openTunnel(authority, clientKey string) (net.Conn, error) {
 				c.passBackoff.opened()
 				c.failover.Worked(ms.server)
 				return &managedTunnelConn{
-					Conn:    conn,
-					release: release,
-					traffic: c.noteTraffic,
+					Conn:        conn,
+					release:     release,
+					traffic:     c.noteTraffic,
+					noteFailure: c.noteEstablishedFailure,
 				}, nil
 			}
 			if !shouldRebuildProxySession(err) {
 				release()
+				c.noteUpstreamFailure(err)
 				return nil, err
 			}
 			if c.refusedAgain(ms, err) {
@@ -245,11 +428,13 @@ func (c *Controller) openTunnel(authority, clientKey string) (net.Conn, error) {
 				if c.chosenLocation {
 					err = &LocationRefusedError{Err: err}
 				}
+				c.noteUpstreamFailure(err)
 				return nil, err
 			}
 			lastErr = err
 			cause = err
 			failedSession = ms
+			c.noteEstablishedFailure(err)
 			c.markSessionUnusable(ms)
 			release()
 		}
@@ -263,6 +448,7 @@ func (c *Controller) openTunnel(authority, clientKey string) (net.Conn, error) {
 			lastErr = fmt.Errorf("rebuilding upstream proxy session: %w", err)
 		}
 	}
+	c.noteUpstreamFailure(lastErr)
 	return nil, lastErr
 }
 
@@ -338,7 +524,20 @@ func (c *Controller) maybeCloseLocked(ms *managedSession) {
 	ms.session = nil
 }
 
+// notePoolAbsorbed installs the established-failure
+// counter on a session pool (build 2123, audit F-01
+// gap 1): slot failures the pool absorbs while serving
+// a request from another slot are counted there, since
+// the controller's own open path sees only success.
+// Non-pool sessions need nothing.
+func (c *Controller) notePoolAbsorbed(session proxySession) {
+	if pool, ok := session.(*proxySessionPool); ok {
+		pool.noteAbsorbed = c.noteEstablishedFailure
+	}
+}
+
 func (c *Controller) swapSession(newSession proxySession, rawToken string, expiresAt time.Time) bool {
+	c.notePoolAbsorbed(newSession)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -589,10 +788,30 @@ type managedTunnelConn struct {
 	release func()
 	traffic func(int)
 	once    sync.Once
+	// Build 2123 (audit F-01, gap 1): mid-stream death
+	// evidence. A tunnel that dies after opening used to
+	// be counted nowhere and logged nowhere — Read/Write
+	// only counted bytes. The first non-EOF stream error
+	// is now reported to the established-failure counter,
+	// once per tunnel; a clean EOF and errors after a
+	// local Close are normal endings, not deaths.
+	noteFailure func(error)
+	failureOnce sync.Once
+	closedFlag  atomic.Bool
+}
+
+func (c *managedTunnelConn) noteStreamFailure(err error) {
+	if err == nil || errors.Is(err, io.EOF) || c.closedFlag.Load() {
+		return
+	}
+	if c.noteFailure != nil {
+		c.failureOnce.Do(func() { c.noteFailure(err) })
+	}
 }
 
 func (c *managedTunnelConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
+	c.noteStreamFailure(err)
 	if c.traffic != nil {
 		c.traffic(n)
 	}
@@ -601,6 +820,7 @@ func (c *managedTunnelConn) Read(p []byte) (int, error) {
 
 func (c *managedTunnelConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
+	c.noteStreamFailure(err)
 	if c.traffic != nil {
 		c.traffic(n)
 	}
@@ -610,6 +830,7 @@ func (c *managedTunnelConn) Write(p []byte) (int, error) {
 func (c *managedTunnelConn) Close() error {
 	var err error
 	c.once.Do(func() {
+		c.closedFlag.Store(true)
 		err = c.Conn.Close()
 		if c.release != nil {
 			c.release()

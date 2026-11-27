@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -31,10 +32,31 @@ type proxySessionPool struct {
 	tokenMu        sync.RWMutex
 	currentToken   string
 
+	// Build 2123 (audit F-01, gap 1): absorbed-failure
+	// evidence. When the pool retires a slot and serves
+	// the request from another slot, the failure used to
+	// be invisible — the controller saw a successful open
+	// and neither failure counter moved, so a pool could
+	// rot slot by slot in silence. The controller installs
+	// its established-failure counter here; the pool calls
+	// it exactly when a slot is retired for a failure the
+	// caller will never see. Set before the pool serves;
+	// nil in tests that do not install it.
+	noteAbsorbed func(error)
+
 	mu        sync.Mutex
 	closed    bool
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+// noteAbsorbedFailure reports a slot failure the pool
+// absorbed (build 2123): the request is being served by
+// another slot, or the slot is being retired unseen.
+func (p *proxySessionPool) noteAbsorbedFailure(err error) {
+	if p.noteAbsorbed != nil && err != nil {
+		p.noteAbsorbed(err)
+	}
 }
 
 func newProxySessionPool(size int, create func() (proxySession, error), setCreateToken ...func(string)) (*proxySessionPool, error) {
@@ -51,18 +73,36 @@ func newProxySessionPool(size int, create func() (proxySession, error), setCreat
 	if len(setCreateToken) > 0 {
 		pool.setCreateToken = setCreateToken[0]
 	}
+	// Build 2116 (2105-R1): the slots are built in
+	// PARALLEL. The serial loop cost a connect up to
+	// size × the full session timeout when the server was
+	// slow to answer — the walk's deadline bounded attempt
+	// starts, never this construction. The outcome rules
+	// are unchanged: partial success stands (empty slots
+	// replenish below), zero successes fails with the
+	// lowest slot's error.
+	built := make([]proxySession, size)
+	buildErrs := make([]error, size)
+	var buildWg sync.WaitGroup
+	for i := 0; i < size; i++ {
+		buildWg.Add(1)
+		go func(slot int) {
+			defer buildWg.Done()
+			built[slot], buildErrs[slot] = create()
+		}(i)
+	}
+	buildWg.Wait()
 	successes := 0
 	var firstErr error
 	for i := 0; i < size; i++ {
-		session, err := create()
-		if err != nil {
+		if buildErrs[i] != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = buildErrs[i]
 			}
-			logx.Warn("creating upstream session failed slot=%d size=%d err=%s", i+1, size, logx.Err(err))
+			logx.Warn("creating upstream session failed slot=%d size=%d err=%s", i+1, size, logx.Err(buildErrs[i]))
 			continue
 		}
-		pool.sessions[i] = newPooledProxySession(session)
+		pool.sessions[i] = newPooledProxySession(built[i])
 		successes++
 	}
 	if successes == 0 {
@@ -174,6 +214,10 @@ func (p *proxySessionPool) openTunnel(authority, clientKey string) (net.Conn, er
 			// retired, so retire it here to trigger background replenishment.
 			if pooled.needsRetire() {
 				p.setClientFallback(clientKey, start, slot, (slot+1)%len(p.sessions))
+				// Build 2123 (audit F-01): the keepalive's
+				// death verdict is counted as it is retired —
+				// no error ever surfaces from this path.
+				p.noteAbsorbedFailure(errProxySessionUnhealthy)
 				p.retireSlot(slot, pooled)
 			}
 			continue
@@ -188,10 +232,23 @@ func (p *proxySessionPool) openTunnel(authority, clientKey string) (net.Conn, er
 		}
 		pooled.release()
 		lastErr = err
+		if errors.Is(err, errSessionSaturated) {
+			// Saturation is this slot's alone (build 2114;
+			// mozilla-regression-plan.md mechanism 3): the
+			// session is healthy and is NOT retired — try the
+			// next slot. The saturation error stands only when
+			// every slot is saturated, as lastErr after the loop.
+			continue
+		}
 		if !shouldRebuildProxySession(err) {
 			return nil, err
 		}
 		p.setClientFallback(clientKey, start, slot, (slot+1)%len(p.sessions))
+		// Build 2123 (audit F-01): this slot's failure is
+		// absorbed — the loop either serves the request
+		// from a later slot or returns a DIFFERENT slot's
+		// error, so the controller never counts this one.
+		p.noteAbsorbedFailure(err)
 		p.retireSlot(slot, pooled)
 	}
 	if lastErr != nil {

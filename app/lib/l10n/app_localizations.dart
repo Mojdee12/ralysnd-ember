@@ -3102,7 +3102,7 @@ abstract class AppLocalizations {
   /// No description provided for @muxSub.
   ///
   /// In en, this message translates to:
-  /// **'Multiplexes connections over one tunnel'**
+  /// **'Multiplexes VLESS, VMess, Trojan and Shadowsocks connections over one tunnel'**
   String get muxSub;
 
   /// No description provided for @navSubscriptions.
@@ -3168,7 +3168,7 @@ abstract class AppLocalizations {
   /// No description provided for @pasteHint.
   ///
   /// In en, this message translates to:
-  /// **'One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic) or a whole subscription body.'**
+  /// **'One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic), a subscription link (https://…), or a whole subscription body.'**
   String get pasteHint;
 
   /// No description provided for @perAppProxy.
@@ -3462,7 +3462,7 @@ abstract class AppLocalizations {
   /// No description provided for @testAllDelays.
   ///
   /// In en, this message translates to:
-  /// **'Test all delays'**
+  /// **'Test all'**
   String get testAllDelays;
 
   /// No description provided for @tuicNote.
@@ -3552,7 +3552,7 @@ abstract class AppLocalizations {
   /// No description provided for @psiphonRegionAuto.
   ///
   /// In en, this message translates to:
-  /// **'Automatic (fastest)'**
+  /// **'Automatic'**
   String get psiphonRegionAuto;
 
   /// No description provided for @psiphonExitRegion.
@@ -3788,6 +3788,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'MASQUE is not in warp-plus v1.2.6 — this engine always uses the WireGuard protocol.'**
   String get warpMasqueNote;
+
+  /// No description provided for @manualConfigsGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Manual configs'**
+  String get manualConfigsGroup;
+
+  /// No description provided for @bestPingResult.
+  ///
+  /// In en, this message translates to:
+  /// **'Best: {name} · {ms} ms'**
+  String bestPingResult(String name, int ms);
+
+  /// No description provided for @lastPingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Last ping: {when}'**
+  String lastPingLabel(String when);
+
+  /// No description provided for @notTestedYet.
+  ///
+  /// In en, this message translates to:
+  /// **'Not tested yet'**
+  String get notTestedYet;
+
+  /// No description provided for @tabSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{subs} subscriptions · {servers} servers'**
+  String tabSummary(int subs, int servers);
+
+  /// Shown when a backup is requested but there is no data to back up.
+  ///
+  /// In en, this message translates to:
+  /// **'There is nothing to back up yet'**
+  String get backupEmpty;
 }
 
 class _AppLocalizationsDelegate

@@ -54,13 +54,21 @@ class WarpPlatform {
   /// Spawns the core with [args]. Returns once the process
   /// exists; readiness completes asynchronously — poll [state]
   /// until [WarpCoreState.ready] (the native wait is a single
-  /// SOCKS greeting, up to 45 s).
-  static Future<bool> start(List<String> args, {int port = 20850}) async {
+  /// SOCKS greeting, up to 45 s). [greetingWaitMs] overrides the
+  /// native greeting wait (Android build 2157 contract); the
+  /// Windows backend's readiness poll is its own and accepts the
+  /// value unused.
+  static Future<bool> start(
+    List<String> args, {
+    int port = 20850,
+    int? greetingWaitMs,
+  }) async {
     if (Platform.isWindows) return _windows.start(args, port: port);
     try {
       final v = await _channel.invokeMethod<bool>('warpStart', {
         'args': args,
         'port': port,
+        if (greetingWaitMs != null) 'greetingWaitMs': greetingWaitMs,
       });
       return v ?? false;
     } catch (_) {
@@ -104,9 +112,7 @@ class WarpPlatform {
   static Future<bool> renew(String kind) async {
     if (Platform.isWindows) return _windows.renew(kind);
     try {
-      final v = await _channel.invokeMethod<bool>('warpRenew', {
-        'kind': kind,
-      });
+      final v = await _channel.invokeMethod<bool>('warpRenew', {'kind': kind});
       return v ?? false;
     } catch (_) {
       return false;

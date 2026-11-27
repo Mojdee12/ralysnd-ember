@@ -2211,7 +2211,10 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 
     testWidgets('a refused call offers to send it directly', (tester) async {
-      final settings = AppSettings();
+      // W1: the notice's default follows Android now (off until
+      // enabled — build 2149's default-off pass); the test opts
+      // in explicitly.
+      final settings = AppSettings()..udpNotice = true;
       final (api, core, _) = await pumpTun(
         tester,
         mode: 'tun',

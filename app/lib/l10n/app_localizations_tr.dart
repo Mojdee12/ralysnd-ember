@@ -1752,7 +1752,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get pasteHint =>
-      'One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic) or a whole subscription body.';
+      'One or more share links (vless, vmess, trojan, ss, wireguard, hysteria2, tuic), a subscription link (https://…), or a whole subscription body.';
 
   @override
   String get perAppProxy => 'Per-app routing';
@@ -1957,7 +1957,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get modePsiphon => 'Psiphon';
 
   @override
-  String get psiphonRegionAuto => 'Automatic (fastest)';
+  String get psiphonRegionAuto => 'Automatic';
 
   @override
   String get psiphonExitRegion => 'Exit region';
@@ -2086,4 +2086,28 @@ class AppLocalizationsTr extends AppLocalizations {
   @override
   String get warpMasqueNote =>
       'MASQUE is not in warp-plus v1.2.6 — this engine always uses the WireGuard protocol.';
+
+  @override
+  String get manualConfigsGroup => 'Manual configs';
+
+  @override
+  String bestPingResult(String name, int ms) {
+    return 'Best: $name · $ms ms';
+  }
+
+  @override
+  String lastPingLabel(String when) {
+    return 'Last ping: $when';
+  }
+
+  @override
+  String get notTestedYet => 'Not tested yet';
+
+  @override
+  String tabSummary(int subs, int servers) {
+    return '$subs subscriptions · $servers servers';
+  }
+
+  @override
+  String get backupEmpty => 'There is nothing to back up yet';
 }

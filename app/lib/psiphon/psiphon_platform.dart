@@ -73,6 +73,10 @@ abstract interface class PsiphonBackend {
     required String upstream,
     required List<String> protocols,
     required String dns,
+    // The tunnel MTU (Android build 2157 contract): the Android
+    // VpnService builder's input. The Windows backend runs
+    // proxy-only (no TUN), so it accepts and documents it unused.
+    required int mtu,
   });
 
   Future<void> stop();
@@ -98,15 +102,16 @@ class AndroidPsiphonBackend implements PsiphonBackend {
     required String upstream,
     required List<String> protocols,
     required String dns,
-  }) =>
-      _channel.invokeMethod('psiphonSetOn', {
-        'on': true,
-        'vpnMode': vpnMode,
-        'region': region,
-        'upstream': upstream,
-        'protocols': protocols,
-        'dns': dns,
-      });
+    required int mtu,
+  }) => _channel.invokeMethod('psiphonSetOn', {
+    'on': true,
+    'vpnMode': vpnMode,
+    'region': region,
+    'upstream': upstream,
+    'protocols': protocols,
+    'dns': dns,
+    'mtu': mtu,
+  });
 
   @override
   Future<void> stop() => _channel.invokeMethod('psiphonStop');
@@ -124,15 +129,18 @@ class AndroidPsiphonBackend implements PsiphonBackend {
       downBytes: (m['down'] as num?)?.toInt() ?? 0,
       region: m['region'] as String? ?? '',
       clientAddress: m['clientAddress'] as String? ?? '',
-      regions: ((m['regions'] as List?) ?? []).map((e) => e.toString()).toList(),
+      regions: ((m['regions'] as List?) ?? [])
+          .map((e) => e.toString())
+          .toList(),
     );
   }
 
   @override
   Future<Map<String, String>?> exitInfo() async {
     try {
-      final m =
-          await _channel.invokeMapMethod<String, dynamic>('psiphonExitInfo');
+      final m = await _channel.invokeMapMethod<String, dynamic>(
+        'psiphonExitInfo',
+      );
       if (m == null) return null;
       return m.map((k, v) => MapEntry(k, v.toString()));
     } catch (_) {
@@ -152,8 +160,9 @@ abstract final class PsiphonPlatform {
   static const socksPort = 11808;
   static const httpPort = 11809;
 
-  static final PsiphonBackend backend =
-      Platform.isWindows ? WindowsPsiphonBackend() : AndroidPsiphonBackend();
+  static final PsiphonBackend backend = Platform.isWindows
+      ? WindowsPsiphonBackend()
+      : AndroidPsiphonBackend();
 
   static Future<void> setOn({
     required bool vpnMode,
@@ -161,14 +170,15 @@ abstract final class PsiphonPlatform {
     required String upstream,
     required List<String> protocols,
     required String dns,
-  }) =>
-      backend.setOn(
-        vpnMode: vpnMode,
-        region: region,
-        upstream: upstream,
-        protocols: protocols,
-        dns: dns,
-      );
+    required int mtu,
+  }) => backend.setOn(
+    vpnMode: vpnMode,
+    region: region,
+    upstream: upstream,
+    protocols: protocols,
+    dns: dns,
+    mtu: mtu,
+  );
 
   static Future<void> stop() => backend.stop();
 

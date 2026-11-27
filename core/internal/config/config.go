@@ -187,10 +187,27 @@ type Proxy struct {
 	Country string `json:"country"`
 	// Server pins an exact upstream host:port.
 	Server string `json:"server"`
-	// Transport is "h2" (HTTP/2 over TCP) or "h3" (HTTP/3 over QUIC).
-	Transport           string `json:"transport"`
-	UpstreamConnections int    `json:"upstream_connections"`
-	MaxConnections      int    `json:"max_connections"`
+	// Transport is "h2" (HTTP/2 over TCP), "h3" (HTTP/3 over QUIC), or
+	// "h1" (HTTP/1.1: one TLS connection per site connection, no
+	// multiplexing — build 2105, for networks that cut long-lived
+	// HTTP/2 connections). The default stays "h2".
+	Transport string `json:"transport"`
+	// FastFailover (build 2105): when true, a first-connect failure
+	// blamed on the selected server retries the next server of the
+	// same location inside the same connect attempt (same city
+	// first) instead of failing the attempt and waiting for the
+	// third strike. One shared deadline bounds when the walk may
+	// START another server (never with under 5 s of it left); each
+	// attempt keeps the standard connect timeout, so a walk that
+	// keeps failing can take up to three attempts' timeouts, and
+	// a first server that blackholes (timeout-class failure)
+	// consumes the deadline by itself — the walk helps fast
+	// failures first. Default false: the shipped 3-strike
+	// behaviour, unchanged. The mid-session failover is not
+	// affected either way.
+	FastFailover        bool `json:"fast_failover"`
+	UpstreamConnections int  `json:"upstream_connections"`
+	MaxConnections      int  `json:"max_connections"`
 	// IdleSleep, when not 0, lets the proxy sleep after this long without
 	// a connection through Mozilla: its upstream session closes and the
 	// account renews no proxy pass and checks no quota until the next
@@ -264,6 +281,17 @@ type DNS struct {
 	Servers []string `json:"servers"`
 	// FallbackToSystem uses the system resolver when every server fails.
 	FallbackToSystem bool `json:"fallback_to_system"`
+	// IPVersion (build 2105) chooses which address families this
+	// program dials with: "auto" (the default — IPv4 first, IPv6 as
+	// fallback, and DoH asks for AAAA only when no A exists: the
+	// behaviour of every earlier build, bit for bit), "ipv6_first"
+	// (IPv6 first, IPv4 as fallback; DoH asks for both families),
+	// "ipv4_only" and "ipv6_only" (the other family is never used).
+	// The resolver is process-wide, so the choice governs the
+	// control-plane APIs (sign-in, Guardian, server list) as well
+	// as the Mozilla proxy dials — broader than a proxy-only knob,
+	// recorded in BUILD-LOG-2.md for build 2105.
+	IPVersion string `json:"ip_version"`
 }
 
 // Logging configures log detail.
@@ -289,7 +317,11 @@ func Default() Config {
 		Proxy: Proxy{
 			Listen:              DefaultProxyListen,
 			Transport:           "h2",
-			UpstreamConnections: 1,
+			// Build 2112 (Ember): 4, not the desktop-shaped 1 —
+			// on Android this client carries a whole phone, and
+			// one H2 session's server-set stream ceiling is not
+			// enough for it (mozilla-fix-plan.md, fix A).
+			UpstreamConnections: 4,
 			MaxConnections:      256,
 			IdleSleep:           Duration(DefaultIdleSleep),
 		},
@@ -307,6 +339,7 @@ func Default() Config {
 		DNS: DNS{
 			Servers:          append([]string(nil), DefaultDNSServers...),
 			FallbackToSystem: true,
+			IPVersion:        "auto",
 		},
 		// Proxy only until the user chooses the system proxy; the choice is
 		// kept here.
@@ -540,8 +573,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(p.Country) != "" && strings.TrimSpace(p.Server) != "" {
 		return errors.New("proxy.country and proxy.server are mutually exclusive")
 	}
-	if p.Transport != "h2" && p.Transport != "h3" {
-		return fmt.Errorf("proxy.transport must be \"h2\" or \"h3\", not %q", p.Transport)
+	if p.Transport != "h2" && p.Transport != "h3" && p.Transport != "h1" {
+		return fmt.Errorf("proxy.transport must be \"h2\", \"h3\" or \"h1\", not %q", p.Transport)
 	}
 	if p.UpstreamConnections < 1 {
 		return errors.New("proxy.upstream_connections must be at least 1")
@@ -576,6 +609,12 @@ func (c Config) Validate() error {
 	}
 	if err := resolver.Validate(c.DNS.Servers); err != nil {
 		return fmt.Errorf("dns.servers: %w", err)
+	}
+	switch c.DNS.IPVersion {
+	case "", "auto", "ipv6_first", "ipv4_only", "ipv6_only":
+		// "" is a hand-edited or pre-2105 file: it means "auto".
+	default:
+		return fmt.Errorf("dns.ip_version must be \"auto\", \"ipv6_first\", \"ipv4_only\" or \"ipv6_only\", not %q", c.DNS.IPVersion)
 	}
 	if err := ValidateRelay(c.Network.APIRelay); err != nil {
 		return fmt.Errorf("network.api_relay: %w", err)

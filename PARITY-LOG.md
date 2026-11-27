@@ -173,3 +173,68 @@ state) → Windows 2.2.0+2038.
   EmberWarp and MASQUE engines report unavailable, exactly as the
   script's warning and the app's own state say. Everything else
   is present and wired.
+
+## W1 — 2.2.0+2039 (2026-11-27): the new face + the great Dart sync
+
+Owner activation 2026-11-27 19:39 + design ruling 19:40 (the
+Windows appearance must FULLY match the new Android app) +
+Home-render rejection 19:51 ("it must be OUR OWN Map Control").
+Plan + renders: ~/workspace/ember-app/windows-parity/ (plan.md,
+w1-progress.md, renders/win-home-mapcontrol-2026-11-27.*).
+
+- **Face.** The desktop shell is recomposed onto the shipped
+  Map Control: the app's own baked backdrop asset
+  (map_backdrop_home.webp, replacing win's coarse
+  map_backdrop.png, removed), MapActorsPainter filament pins/
+  arc, the shipped EMBER header + protection state, the
+  shipped chip-row engine switcher, and the shipped slim bar
+  (cells + hairline + round buttons + the 2148 orange pill).
+  The 2038 navy-gradient/grid backdrop, glass brand panel and
+  wide glass bar are retired. Servers = Android 2157's page
+  (desktop padding flag); Settings = win's panel page
+  reordered to the approved arrangement. Mode numbering stays
+  WINDOWS' (0 Mozilla … 8 MASQUE) — src2's shell/home were NOT
+  copied (they would corrupt persisted modes).
+- **Stack sync (2039→2157, Dart + Go).** xray_controller and
+  the whole portable xray stack at 2157 (config builder, chain/
+  underlays, DNS presets/transports incl. DoH default, DPI
+  Lab + ByeDPI/zapret args, dnstt/wstunnel/olcrtc args, Senpai,
+  sudoku, mieru, smart groups, problem report, traffic
+  history, clash import, sandbox/service checks, ping sweep);
+  xray_platform.dart rewritten as win's backend architecture
+  carrying the 2157 facade contract, with REAL Windows
+  implementations for dnsPing (wire/DoT/DoH, direct + through
+  SOCKS/HTTP), speedTestUp, sandboxTest, serviceCheck;
+  AmneziaWG start refuses honestly on Windows (falls back to
+  the plain WG leg, as an Android engine failure does).
+  Go core synced (2105 Mozilla pack + 2152 renewal repair).
+  Model merges keep win-only fields (desktop defaults/
+  transport pins, allowInsecure, tunCapture + its migration);
+  win-only helpers reinstated (delaySortRank, locationPingRank,
+  fallbackGroupKey, protectedShareExpiryHint, ExitInfo.city).
+  l10n union-merged (15 locales) + gen-l10n.
+- **Compile-only passengers (pages arrive in their phases):**
+  regionhop_client (+ PUBLIC PLACEHOLDER defaults — never the
+  real panel file), urnetwork_client, dpi_lab, problem_report.
+  UR engine glue and the RegionHop page: W3. Psiphon stack
+  mirror, OpenVPN ovpn://: W2. Accounts page NOT ported
+  (Android's is webview_flutter sign-in; Windows keeps its
+  WebView2 flow).
+- **Updater.** githubRepo repointed armanlife →
+  Mojdee12/ralysnd-ember, and the latest-release fallback now
+  requires the release to carry this system's file (the repo's
+  latest is usually an Android vNNNN build, which must never
+  be offered to the Windows app). Pinned by a new test.
+- **Defaults law.** Synced features keep Android's defaults
+  (everything new OFF; DNS = v2rayNG's via the synced stack).
+  One visible consequence: udpNotice now defaults OFF on
+  Windows too (Android 2149); its widget test opts in.
+- **Gates.** flutter analyze 0 errors. flutter test +335 −8 —
+  the 8 are exactly the pre-existing baseline (CoreLocator
+  data-dir + 7 widget phone-layout timeouts, verified against
+  a pristine worktree); stale stack tests replaced by src2's
+  current versions; share-link/TUN/speaks failures seen under
+  full-suite load pass in focused runs. Go: build +
+  GOOS=windows build + vet clean; TestUDPLookupAndDial fails
+  identically on pristine HEAD (this VM's UDP loopback).
+- Version: pubspec 2.2.0+2039, appBuildNumber '2039'.

@@ -8,8 +8,11 @@ class ExitInfo {
   final String countryCode;
   final String countryEn;
 
-  /// The exit city, when the lookup named one (the Windows
-  /// backend's ip-api fallback does; kept for the desktop pages).
+  /// The exit city, when the lookup reported one. Android build
+  /// 2157's model dropped the field; the Windows tree's shell and
+  /// Lantern page display it and the Windows backend's ip-api path
+  /// still returns it, so the Windows tree keeps it (W1 sync
+  /// note) — '' whenever the lookup did not say.
   final String city;
   const ExitInfo({
     required this.ip,

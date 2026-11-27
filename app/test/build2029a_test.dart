@@ -47,9 +47,9 @@ Map<String, dynamic> decode(String json) =>
     jsonDecode(json) as Map<String, dynamic>;
 
 Map<String, dynamic> outboundByTag(Map<String, dynamic> config, String tag) =>
-    (config['outbounds'] as List)
-        .cast<Map<String, dynamic>>()
-        .firstWhere((o) => o['tag'] == tag);
+    (config['outbounds'] as List).cast<Map<String, dynamic>>().firstWhere(
+      (o) => o['tag'] == tag,
+    );
 
 void main() {
   group('cipherSuites (stock core surfacing)', () {
@@ -59,24 +59,25 @@ void main() {
         cipherSuites: 'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256',
       );
       final config = decode(buildTestConfig(p, XraySettings()));
-      final tls = outboundByTag(config, 'proxy')['streamSettings']
-          ['tlsSettings'];
+      final tls = outboundByTag(
+        config,
+        'proxy',
+      )['streamSettings']['tlsSettings'];
       expect(tls['cipherSuites'], 'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256');
       expect(tls['fingerprint'], 'unsafe');
     });
 
     test('no suites, no key', () {
       final config = decode(buildTestConfig(tlsProfile(), XraySettings()));
-      final tls = outboundByTag(config, 'proxy')['streamSettings']
-          ['tlsSettings'];
+      final tls = outboundByTag(
+        config,
+        'proxy',
+      )['streamSettings']['tlsSettings'];
       expect(tls.containsKey('cipherSuites'), isFalse);
     });
 
     test('the share link round-trips cs', () {
-      final p = tlsProfile(
-        fingerprint: 'unsafe',
-        cipherSuites: 'TLS_A:TLS_B',
-      );
+      final p = tlsProfile(fingerprint: 'unsafe', cipherSuites: 'TLS_A:TLS_B');
       final link = profileToLink(p);
       expect(link, contains('cs=TLS_A%3ATLS_B'));
       final back = parseLinks(link).single;
@@ -127,8 +128,10 @@ void main() {
     test('the test config routes the lookup through ech-out', () {
       final p = tlsProfile(afEch: true);
       final config = decode(buildTestConfig(p, XraySettings()));
-      final tls = outboundByTag(config, 'proxy')['streamSettings']
-          ['tlsSettings'];
+      final tls = outboundByTag(
+        config,
+        'proxy',
+      )['streamSettings']['tlsSettings'];
       expect(tls['echConfigList'], afEchConfigList);
       expect(tls['echSockopt'], {'dialerProxy': 'ech-out'});
       expect(outboundByTag(config, 'ech-out')['protocol'], 'freedom');
@@ -139,8 +142,10 @@ void main() {
       final config = decode(
         buildTunnelConfig(p, XraySettings(), psiphonUnderlay: true),
       );
-      final tls = outboundByTag(config, 'proxy')['streamSettings']
-          ['tlsSettings'];
+      final tls = outboundByTag(
+        config,
+        'proxy',
+      )['streamSettings']['tlsSettings'];
       expect(tls['echSockopt'], {'dialerProxy': 'psiphon-underlay'});
       final tags = (config['outbounds'] as List)
           .cast<Map<String, dynamic>>()
@@ -172,10 +177,10 @@ void main() {
       );
       final underlay = outboundByTag(config, 'psiphon-underlay');
       expect(underlay['protocol'], 'socks');
-      expect(
-        underlay['settings']['servers'][0],
-        {'address': '127.0.0.1', 'port': 11808},
-      );
+      expect(underlay['settings']['servers'][0], {
+        'address': '127.0.0.1',
+        'port': 11808,
+      });
     });
 
     test('unchained configs have no underlay anywhere', () {
@@ -186,7 +191,14 @@ void main() {
           .toList();
       expect(tags, isNot(contains('psiphon-underlay')));
       final proxy = outboundByTag(config, 'proxy');
-      expect(proxy['streamSettings']['sockopt'], isNull);
+      // Build 2049: the proxy sockopt carried the IPv4-only
+      // server-dial strategy — REMOVED in build 2101 by the
+      // owner's order (full v2rayNG adoption; see
+      // build2101_test.dart). An unchained config has neither
+      // a dialerProxy nor a domainStrategy in it now.
+      final sockopt = proxy['streamSettings']['sockopt'] as Map;
+      expect(sockopt['dialerProxy'], isNull);
+      expect(sockopt['domainStrategy'], isNull);
     });
 
     test('with the fragment chain, the fragment outbound is chained', () {
@@ -276,14 +288,22 @@ void main() {
       );
       expect(networkFingerprintOf({'type': 'none', 'operator': 'x'}), '');
       expect(networkFingerprintOf(null), '');
-      expect(networkFingerprintOf({'type': 'cellular', 'operator': ''}),
-          'cellular');
+      expect(
+        networkFingerprintOf({'type': 'cellular', 'operator': ''}),
+        'cellular',
+      );
     });
   });
 
   group('device-state matrix: corrupt and carried-over state', () {
     test('a corrupt shape-cache document reads as empty', () {
-      for (final raw in [null, 'junk', 42, ['x'], {'a': 'b'}]) {
+      for (final raw in [
+        null,
+        'junk',
+        42,
+        ['x'],
+        {'a': 'b'},
+      ]) {
         expect(WinningShapeCache.fromJson(raw).length, 0);
       }
     });
@@ -307,12 +327,11 @@ void main() {
       // underlay, so the unknown probe uses another string —
       // the corrupt-value coverage lives in build2030_test.)
       expect(XraySettings.fromJson({'underlay': 'warp'}).underlay, 'warp');
+      expect(XraySettings.fromJson({'underlay': 'warp-plus'}).underlay, 'none');
       expect(
-        XraySettings.fromJson({'underlay': 'warp-plus'}).underlay,
-        'none',
+        XraySettings.fromJson({'underlay': 'psiphon'}).underlay,
+        'psiphon',
       );
-      expect(XraySettings.fromJson({'underlay': 'psiphon'}).underlay,
-          'psiphon');
       expect(XraySettings.fromJson({}).underlay, 'none');
       expect(XraySettings.fromJson({'underlay': 42}).underlay, 'none');
     });

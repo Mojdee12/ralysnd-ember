@@ -97,6 +97,22 @@ func (p *AccountPool) ActiveName() string {
 // account set aside at the switch threshold goes on with the pass it
 // supplied when no other account supplies one after all.
 func (p *AccountPool) AcquirePass(ctx context.Context, endpoint string) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
+	return p.acquirePass(ctx, endpoint, false)
+}
+
+// AcquirePassForced is AcquirePass that always fetches a fresh
+// pass: the stored pass is never reused. The renewal path uses
+// it (build 2114; mozilla-regression-plan.md mechanism 1): a
+// renewal satisfied by the stored pass it exists to replace is
+// no renewal at all — with the reuse margin (1 min) below the
+// renewal lead (2 min), the scheduled renewal re-adopted the
+// expiring pass until its last minute, when the first real
+// fetch went direct and met the region refusal.
+func (p *AccountPool) AcquirePassForced(ctx context.Context, endpoint string) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
+	return p.acquirePass(ctx, endpoint, true)
+}
+
+func (p *AccountPool) acquirePass(ctx context.Context, endpoint string, force bool) (*runtimeAuth, *guardian.ProxyPassInfo, error) {
 	previous, hadActive := p.mgr.Active()
 	tried := make(map[string]bool)
 	// setAside is the first account this call set aside at the switch
@@ -109,7 +125,7 @@ func (p *AccountPool) AcquirePass(ctx context.Context, endpoint string) (*runtim
 		}
 		tried[acc.ID] = true
 
-		auth, pass, err := p.passFor(ctx, endpoint, acc, false)
+		auth, pass, err := p.passFor(ctx, endpoint, acc, force)
 		switch outcome := p.Record(acc, pass, err); outcome {
 		case accountUsable:
 			if err := p.mgr.Activate(acc.ID); err != nil {

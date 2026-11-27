@@ -1,0 +1,21 @@
+{
+  "source_sha256": "4ff4b2ec242a9e87b296ba27ddb85f8311e8d3e071eaebac5be9231c60e408dd",
+  "source_release": "202610050438",
+  "ignored_groups": [
+    "PRIVATE",
+    "TEST",
+    "ZZ"
+  ],
+  "ipv4": {
+    "source_cidrs": 597286,
+    "normalized_ranges": 362108,
+    "bytes": 3621088,
+    "sha256": "8ca653afe84199af7d3c0ea1a2e34956b5835010a658b8e74f3aecfb6bdc2bd0"
+  },
+  "ipv6": {
+    "source_cidrs": 785617,
+    "normalized_ranges": 348691,
+    "bytes": 11855502,
+    "sha256": "0d88780db0257f2e8e3a2319a6f17544d2e1278912473b356dc19356fd2d5335"
+  }
+}

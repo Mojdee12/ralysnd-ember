@@ -34,10 +34,18 @@ func (d resolverDialer) Dial(network, address string) (net.Conn, error) {
 // configureDNS installs the configured DNS servers for every connection
 // this program opens itself.
 func configureDNS(cfg config.DNS) error {
+	// The resolver is built BEFORE the policy flips (build 2105,
+	// verification iteration 2): if the new servers are invalid,
+	// the old resolver AND the old policy stay installed together
+	// — never the new policy over the old servers.
 	r, err := resolver.New(cfg.Servers, cfg.FallbackToSystem)
 	if err != nil {
 		return err
 	}
+	// Build 2105: the IP version policy rides along with every DNS
+	// (re)configuration, including the system-resolver path (the
+	// policy still filters literal addresses there).
+	resolver.SetIPVersion(cfg.IPVersion)
 	if r.System() {
 		resolver.Set(nil)
 		logx.Info("DNS: system resolver")

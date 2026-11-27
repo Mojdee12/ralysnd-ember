@@ -62,6 +62,7 @@ void main() {
         upstream: '',
         protocols: const [],
         dns: '1.1.1.1',
+        mtu: 1500,
       );
       // The listener wait passed — quickly, not via the 15 s timeout.
       expect(sw.elapsed, lessThan(const Duration(seconds: 10)));

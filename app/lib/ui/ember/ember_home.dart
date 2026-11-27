@@ -1518,12 +1518,11 @@ String maskEmail(String email) {
   return '${email[0]}•••${email.substring(at)}';
 }
 
-
 /// A floating glass panel at the window's left for the
 /// parity-port engine pages: the mobile Map Control pages keep
 /// their own panels inside, this wrapper only gives them the
-/// desktop overlay's placement (clear of the brand panel above,
-/// the engine chips at the right, and the bottom bar below).
+/// desktop overlay's placement (clear of the header above and
+/// the switcher + slim bar stack below — W1 geometry).
 class _DesktopEnginePanel extends StatelessWidget {
   const _DesktopEnginePanel({required this.child});
 
@@ -1531,11 +1530,11 @@ class _DesktopEnginePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final height = MediaQuery.of(context).size.height - 214;
+    final height = MediaQuery.of(context).size.height - 288;
     return Align(
       alignment: Alignment.topLeft,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 96, 24, 118),
+        padding: const EdgeInsets.fromLTRB(24, 84, 24, 24),
         child: SizedBox(
           width: 460,
           height: height > 200 ? height : 200,

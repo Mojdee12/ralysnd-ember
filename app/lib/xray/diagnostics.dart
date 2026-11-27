@@ -126,10 +126,18 @@ Future<bool> socksPortAnswers(int port) async {
 /// addressed by DOMAIN name (so the proxy's own DNS resolves
 /// it — this is the in-tunnel DNS proof), expecting the
 /// generate_204 answer. The round trip in ms, or -1.
+///
+/// [user]/[pass] (build 2062, feature queue #2, LAN sharing):
+/// when both are non-empty the greeting offers username/
+/// password auth (method 2) and the subnegotiation runs before
+/// CONNECT. Empty credentials take the byte-identical noauth
+/// path of every earlier build.
 Future<int> socksDomainRequestMs(
   int port, {
   String host = 'connectivitycheck.gstatic.com',
   Duration timeout = const Duration(seconds: 8),
+  String user = '',
+  String pass = '',
 }) async {
   final sw = Stopwatch()..start();
   Socket? socket;
@@ -137,9 +145,27 @@ Future<int> socksDomainRequestMs(
     socket = await Socket.connect('127.0.0.1', port, timeout: timeout);
     final s = socket;
     final responses = StreamQueue(s.timeout(timeout));
-    s.add(const [5, 1, 0]);
+    final authed = user.isNotEmpty && pass.isNotEmpty;
+    s.add(authed ? const [5, 2, 0, 2] : const [5, 1, 0]);
     var reply = await responses.next;
     if (reply.length < 2 || reply[0] != 5) return -1;
+    if (authed) {
+      if (reply[1] != 2) return -1;
+      // RFC 1929 username/password subnegotiation: version 1,
+      // one-byte lengths, then the credentials.
+      final userBytes = user.codeUnits;
+      final passBytes = pass.codeUnits;
+      if (userBytes.length > 255 || passBytes.length > 255) return -1;
+      s.add([
+        1,
+        userBytes.length,
+        ...userBytes,
+        passBytes.length,
+        ...passBytes,
+      ]);
+      reply = await responses.next;
+      if (reply.length < 2 || reply[0] != 1 || reply[1] != 0) return -1;
+    }
     final hostBytes = host.codeUnits;
     s.add([
       5, 1, 0, 3, hostBytes.length, ...hostBytes, 0, 80, // port 80
@@ -206,11 +232,18 @@ class ConnectionChecker {
     Future<bool> Function(int port)? socksOpen,
     Future<int> Function(int port)? socksDomain,
     Future<Map<String, String>?> Function(int port)? exit,
+    // LAN sharing (build 2062): the SOCKS credentials for the
+    // default domain probe only — injected lambdas keep their
+    // (int) signature and are untouched by these.
+    String socksUser = '',
+    String socksPass = '',
   }) : _tcp = tcp ?? ((h, p) => tcpProbe(h, p)),
        _tls = tls ?? ((h, p, s) => tlsSniAnswers(h, p, s)),
        _delay = delay,
        _socksOpen = socksOpen ?? socksPortAnswers,
-       _socksDomain = socksDomain ?? ((p) => socksDomainRequestMs(p)),
+       _socksDomain =
+           socksDomain ??
+           ((p) => socksDomainRequestMs(p, user: socksUser, pass: socksPass)),
        _exit = exit;
 
   final Future<int> Function(String, int) _tcp;
@@ -277,8 +310,14 @@ class ConnectionChecker {
 
   /// Checks the tunnel that is already running: the local
   /// proxy port, a by-domain request through it (in-tunnel
-  /// DNS + data plane), and the exit identity.
-  Future<List<CheckStage>> checkLive({required int socksPort}) async {
+  /// DNS + data plane), and the exit identity. [listenHost]
+  /// (build 2062, LAN sharing) is only the address the
+  /// "listening on …" detail names — the probes themselves
+  /// always go to 127.0.0.1.
+  Future<List<CheckStage>> checkLive({
+    required int socksPort,
+    String listenHost = '127.0.0.1',
+  }) async {
     final stages = <CheckStage>[];
     final open = await _socksOpen(socksPort);
     stages.add(
@@ -286,8 +325,8 @@ class ConnectionChecker {
         title: 'Local proxy port is open',
         ok: open,
         detail: open
-            ? 'The tunnel core is listening on 127.0.0.1:$socksPort.'
-            : 'Nothing is listening on 127.0.0.1:$socksPort — the '
+            ? 'The tunnel core is listening on $listenHost:$socksPort.'
+            : 'Nothing is listening on $listenHost:$socksPort — the '
                   'tunnel core is not running.',
       ),
     );

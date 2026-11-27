@@ -589,6 +589,9 @@ class _XraySection extends StatelessWidget {
                           RoutingPreset.global => l.presetGlobal,
                           RoutingPreset.bypassLan => l.presetBypassLan,
                           RoutingPreset.bypassIran => l.presetBypassIran,
+                          // Android 2157's own wording (its
+                          // settings hard-code this label too).
+                          RoutingPreset.bypassChina => 'Bypass China',
                           RoutingPreset.directAll => l.presetDirectAll,
                         },
                         selected: s.routingPreset == preset,
@@ -745,7 +748,11 @@ class _XraySection extends StatelessWidget {
                       const SizedBox(height: 7),
                       Text(
                         'Resolution order: ${primaryResolver(s)}'
-                        '${s.dnsGroup ? ' → group: ${dnsGroupMembers.map((m) => resolverUnderTransport(m, s.remoteDnsProto)).join(' → ')}' : s.dnsFallback ? ' → ${resolverUnderTransport(s.fallbackDns.trim(), s.remoteDnsProto)}' : ''}'
+                        '${s.dnsGroup
+                            ? ' → group: ${dnsGroupMembers.map((m) => resolverUnderTransport(m, s.remoteDnsProto)).join(' → ')}'
+                            : s.dnsFallback
+                            ? ' → ${resolverUnderTransport(s.fallbackDns.trim(), s.remoteDnsProto)}'
+                            : ''}'
                         ' • server names resolve through the provider DNS, never the local one',
                         style: Ember.caption,
                       ),
@@ -802,8 +809,7 @@ class _XraySection extends StatelessWidget {
           ),
           _ToggleCard(
             title: 'DNS group',
-            subtitle:
-                'Google, Cloudflare and Quad9 asked in turn; the working one sticks',
+            subtitle: 'Google, Cloudflare and Quad9 asked in turn; the working one sticks',
             value: s.dnsGroup,
             onChanged: (v) async {
               s.dnsGroup = v;
@@ -916,8 +922,15 @@ class _XraySection extends StatelessWidget {
 
   Future<void> _showBackup(BuildContext context) async {
     final l = AppLocalizations.of(context);
+    // Android 2157's export refuses an empty state with null
+    // (nothing to back up) instead of emitting an empty backup.
     final backup = await xray.exportBackup();
     if (!context.mounted) return;
+    if (backup == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.backupEmpty)));
+      return;
+    }
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -990,11 +1003,17 @@ class _XraySection extends StatelessWidget {
           ),
           TextButton(
             onPressed: () async {
-              final ok = await xray.importBackup(controller.text);
+              // Android 2157's import answers a result object
+              // (null = the backup could not be restored).
+              final result = await xray.importBackup(controller.text);
               if (dialogContext.mounted) Navigator.of(dialogContext).pop();
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(ok ? l.restoreOk : l.restoreFailed)),
+                  SnackBar(
+                    content: Text(
+                      result != null ? l.restoreOk : l.restoreFailed,
+                    ),
+                  ),
                 );
               }
             },

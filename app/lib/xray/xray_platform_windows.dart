@@ -61,6 +61,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../core/core_api.dart';
 import '../core/orphan_cleanup.dart';
@@ -108,6 +109,18 @@ class WindowsXrayBackend implements XrayBackend {
   /// Consecutive throwaway-instance start failures; two in a row
   /// (or one instant exit) raise the firewall/antivirus guidance.
   int _startFailures = 0;
+
+  /// Successful config rotations this run (the facade's
+  /// generation proof reads it through [state]).
+  int _rotationGen = 0;
+
+  /// The AmneziaWG refusal (see [setOnAwg]): a problem sequence
+  /// that advances on every refused start, and its words. The
+  /// sequence survives [stop] (the controller's walk reads it
+  /// after its own teardown, exactly as on Android) and resets
+  /// on the next plain [setOn].
+  int _awgProblemSeq = 0;
+  String _awgProblem = '';
 
   /// Shown when the sidecar dies at once or will not start at all:
   /// the usual cause on a real PC is a security product, and a
@@ -158,7 +171,8 @@ class WindowsXrayBackend implements XrayBackend {
     try {
       final dir = await workDir();
       await dir.create(recursive: true);
-      final sink = File('${dir.path}/xray.log').openWrite(mode: FileMode.append);
+      final sink = File('${dir.path}/xray.log')
+          .openWrite(mode: FileMode.append);
       sink.writeln(line);
       await sink.flush();
       await sink.close();
@@ -205,17 +219,36 @@ class WindowsXrayBackend implements XrayBackend {
     required int socksPort,
     required String dns,
     required bool ipv6,
+    // The Android TUN builder's MTU (build 2157 contract): the
+    // Windows TUN service owns its interface MTU, so the value is
+    // accepted and unused here — the config carries everything
+    // else this backend needs.
+    required int mtu,
     bool tunCapture = false,
     // Chain underlay arguments (build 2032 contract): on Windows
     // the controller starts the underlay engines itself (the
     // Psiphon / EmberWarp Dart backends) and the chain wiring is
     // already inside the config's dialerProxy, so there is
-    // nothing left for the backend to supervise.
+    // nothing left for the backend to supervise. The same holds
+    // for the 2072/2134 helper legs (dnsttArgs / wstunnelArgs /
+    // olcrtcArgs): the controller owns those processes on
+    // Windows. socksUser/socksPass are inside the config's
+    // inbounds already; killSwitch is W4 scope on Windows and
+    // bridge names an Android in-process bridge the desktop
+    // does not have — all accepted for contract parity.
     String underlay = 'none',
     String underlayRegion = '',
     String underlayUpstream = '',
     List<String> underlayProtocols = const [],
     List<String> warpArgs = const [],
+    String socksUser = '',
+    String socksPass = '',
+    bool killSwitch = false,
+    List<String> dnsttArgs = const [],
+    bool wgWstunnel = false,
+    List<String> wstunnelArgs = const [],
+    List<String> olcrtcArgs = const [],
+    String bridge = 'hev',
   }) async {
     final dir = await workDir();
     await dir.create(recursive: true);
@@ -226,6 +259,7 @@ class WindowsXrayBackend implements XrayBackend {
     await _ensureCleaned();
     await stop();
     _lastError = '';
+    _awgProblem = '';
     // The config's inbound ports: SOCKS (the [socksPort] argument,
     // confirmed from the JSON), its HTTP companion (the exit-info
     // requests ride it — see the library doc) and the stats-API
@@ -271,7 +305,8 @@ class WindowsXrayBackend implements XrayBackend {
         }
       }
       if (chosen < 0) {
-        _lastError = 'the local ports around $origSocks are all in '
+        _lastError =
+            'the local ports around $origSocks are all in '
             'use by other programs, so the xray core has nowhere to '
             'listen. Close the other proxy app (for example v2rayN) '
             'and try again.';
@@ -287,7 +322,8 @@ class WindowsXrayBackend implements XrayBackend {
         if (inbound['tag'] == 'api') inbound['port'] = chosen + 5000;
       }
       runConfig = jsonEncode(doc);
-      fallbackNote = 'Local port $origSocks was busy; this session '
+      fallbackNote =
+          'Local port $origSocks was busy; this session '
           'runs on $chosen.';
     }
     _localPort = chosen;
@@ -343,9 +379,9 @@ class WindowsXrayBackend implements XrayBackend {
       final tail = await _logTail(logFile.path);
       _lastError = e.message == 'xray-exited'
           ? 'the xray core exited at start. $firewallGuidance'
-              '${tail.isEmpty ? '' : '\nCore log:\n$tail'}'
+                '${tail.isEmpty ? '' : '\nCore log:\n$tail'}'
           : 'the xray core did not start listening on port $chosen.'
-              '${tail.isEmpty ? '' : '\nCore log:\n$tail'}';
+                '${tail.isEmpty ? '' : '\nCore log:\n$tail'}';
       await stop();
       throw StateError(_lastError);
     }
@@ -385,13 +421,15 @@ class WindowsXrayBackend implements XrayBackend {
       throw StateError(_lastError);
     }
     final bridge = _bridge!;
-    unawaited(bridge.down.then((_) {
-      // The TUN ended under a live core: tear the run down so the
-      // state goes stopped instead of leaking traffic direct.
-      if (identical(_bridge, bridge) && _process != null) {
-        unawaited(stop());
-      }
-    }));
+    unawaited(
+      bridge.down.then((_) {
+        // The TUN ended under a live core: tear the run down so the
+        // state goes stopped instead of leaking traffic direct.
+        if (identical(_bridge, bridge) && _process != null) {
+          unawaited(stop());
+        }
+      }),
+    );
   }
 
   /// Waits until the fresh core accepts on its SOCKS port (10 s),
@@ -424,8 +462,12 @@ class WindowsXrayBackend implements XrayBackend {
     required String name,
     required String dns,
     required bool ipv6,
+    // Accepted for contract parity (see setOn's note on MTU);
+    // killSwitch is W4 scope on Windows.
+    required int mtu,
     bool tunCapture = false,
     List<String> warpArgs = const [],
+    bool killSwitch = false,
   }) async {
     await _ensureCleaned();
     await stop();
@@ -436,7 +478,9 @@ class WindowsXrayBackend implements XrayBackend {
     final dir = await workDir();
     await dir.create(recursive: true);
     final sink = File('${dir.path}/xray.log').openWrite(mode: FileMode.append);
-    sink.writeln('--- emberwarp session ${DateTime.now().toIso8601String()} ---');
+    sink.writeln(
+      '--- emberwarp session ${DateTime.now().toIso8601String()} ---',
+    );
     if (!tunCapture) {
       _portNote = 'Proxy only — system capture off';
       sink.writeln(
@@ -462,13 +506,44 @@ class WindowsXrayBackend implements XrayBackend {
       throw StateError(_lastError);
     }
     final bridge = _bridge!;
-    unawaited(bridge.down.then((_) {
-      if (identical(_bridge, bridge) && _warpSinceMs != 0) {
-        unawaited(stop());
-      }
-    }));
+    unawaited(
+      bridge.down.then((_) {
+        if (identical(_bridge, bridge) && _warpSinceMs != 0) {
+          unawaited(stop());
+        }
+      }),
+    );
     await sink.flush();
     await sink.close();
+  }
+
+  @override
+  Future<void> setOnAwg({
+    required String settings,
+    required String name,
+    required String addresses,
+    required String dns,
+    required bool ipv6,
+    required bool ipv4,
+    required int mtu,
+    bool killSwitch = false,
+  }) async {
+    // W1: Windows has no WG Tunnel engine (the Android AmneziaWG
+    // backend); W2 owns the Windows answer. The refusal is
+    // recorded exactly the way an Android engine start failure
+    // surfaces — a NEW problem (sequence advanced, words in
+    // coreProblem) with nothing running — so the controller's
+    // walk stops waiting, words the failure as its own kind and
+    // falls back to the plain Xray WireGuard leg, whose outbound
+    // applies none of the Amnezia parameters (the profile's
+    // diagnostics say that too). Nothing is faked up.
+    _awgProblemSeq++;
+    _awgProblem =
+        'the AmneziaWG engine is not available on Windows yet — '
+        'this profile continues on the plain WireGuard leg, '
+        'without its Amnezia obfuscation parameters';
+    _lastError = _awgProblem;
+    await _noteToLog('[ember] awg refused: $_awgProblem');
   }
 
   @override
@@ -513,9 +588,7 @@ class WindowsXrayBackend implements XrayBackend {
       return false;
     }
     _process = np;
-    final sink = File(
-      '${dir.path}/xray.log',
-    ).openWrite(mode: FileMode.append);
+    final sink = File('${dir.path}/xray.log').openWrite(mode: FileMode.append);
     np.stdout.listen(sink.add, onError: (_) {});
     np.stderr.listen(sink.add, onError: (_) {});
     unawaited(
@@ -530,6 +603,7 @@ class WindowsXrayBackend implements XrayBackend {
     } catch (_) {
       return false;
     }
+    _rotationGen++;
     return true;
   }
 
@@ -565,12 +639,31 @@ class WindowsXrayBackend implements XrayBackend {
         sinceMs: _warpSinceMs,
         upBytes: 0,
         downBytes: 0,
+        rotationGen: _rotationGen,
         lastError: _lastError,
         localPort: _localPort,
         note: _portNote,
       );
     }
-    if (_process == null) return XrayState.stopped;
+    if (_process == null) {
+      // A recorded AWG refusal must stay visible on the stopped
+      // sample: the controller's walk polls state() for the
+      // problem sequence after setOnAwg (see setOnAwg).
+      if (_awgProblemSeq > 0 && _awgProblem.isNotEmpty) {
+        return XrayState(
+          running: false,
+          name: '',
+          sinceMs: 0,
+          upBytes: 0,
+          downBytes: 0,
+          coreProblem: _awgProblem,
+          awgProblemSeq: _awgProblemSeq,
+          rotationGen: _rotationGen,
+          lastError: _lastError,
+        );
+      }
+      return XrayState.stopped;
+    }
     final up = await _counter(
       'outbound>>>proxy>>>traffic>>>uplink',
       reset: false,
@@ -589,6 +682,7 @@ class WindowsXrayBackend implements XrayBackend {
       sinceMs: _sinceMs,
       upBytes: _up,
       downBytes: _down,
+      rotationGen: _rotationGen,
       lastError: _lastError,
       localPort: _localPort,
       note: _portNote,
@@ -613,13 +707,16 @@ class WindowsXrayBackend implements XrayBackend {
         name,
         if (reset) '-reset',
       ]);
-      final out = await p.stdout.transform(utf8.decoder).join().timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {
-          p.kill(ProcessSignal.sigkill);
-          return '';
-        },
-      );
+      final out = await p.stdout
+          .transform(utf8.decoder)
+          .join()
+          .timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              p.kill(ProcessSignal.sigkill);
+              return '';
+            },
+          );
       final code = await p.exitCode.timeout(
         const Duration(seconds: 5),
         onTimeout: () {
@@ -640,8 +737,7 @@ class WindowsXrayBackend implements XrayBackend {
     // While a session runs, its own API port is the truth: it is
     // the configured port shifted by any fallback [setOn] took,
     // which the caller's settings-derived value cannot know.
-    final effective =
-        (_process != null && _apiPort != 0) ? _apiPort : apiPort;
+    final effective = (_process != null && _apiPort != 0) ? _apiPort : apiPort;
     final saved = _apiPort;
     _apiPort = effective;
     try {
@@ -696,10 +792,9 @@ class WindowsXrayBackend implements XrayBackend {
   /// proxy form findProxy implements (see the library doc). The
   /// target host name travels in the request/CONNECT, so it
   /// resolves at the exit.
-  static HttpClient _viaProxy(int httpPort, Duration timeout) =>
-      HttpClient()
-        ..connectionTimeout = timeout
-        ..findProxy = (_) => 'PROXY 127.0.0.1:$httpPort';
+  static HttpClient _viaProxy(int httpPort, Duration timeout) => HttpClient()
+    ..connectionTimeout = timeout
+    ..findProxy = (_) => 'PROXY 127.0.0.1:$httpPort';
 
   /// Starts a throwaway instance of [configJson] on [port] and waits
   /// for its SOCKS port. The config is decoded, not string-patched:
@@ -754,10 +849,12 @@ class WindowsXrayBackend implements XrayBackend {
     }
     p.stdout.listen(sink.add, onError: (_) {});
     p.stderr.listen(sink.add, onError: (_) {});
-    unawaited(p.exitCode.then((_) async {
-      await sink.flush();
-      await sink.close();
-    }));
+    unawaited(
+      p.exitCode.then((_) async {
+        await sink.flush();
+        await sink.close();
+      }),
+    );
     if (await _waitForPort(p, port, const Duration(seconds: 12))) {
       _startFailures = 0;
       return p;
@@ -824,7 +921,7 @@ class WindowsXrayBackend implements XrayBackend {
   }
 
   @override
-  Future<int> measureDelay(String testConfig) async {
+  Future<int> measureDelay(String testConfig, {int timeoutMs = 8000}) async {
     await _ensureCleaned();
     final port = await _takeTestPort();
     final proc = await _startInstance(testConfig, port);
@@ -832,7 +929,10 @@ class WindowsXrayBackend implements XrayBackend {
     try {
       var best = -1;
       for (var i = 0; i < 2; i++) {
-        final ms = await _timeRequest(port + 1);
+        final ms = await _timeRequest(
+          port + 1,
+          timeout: Duration(milliseconds: timeoutMs),
+        );
         if (ms >= 0 && (best < 0 || ms < best)) best = ms;
       }
       return best;
@@ -842,9 +942,26 @@ class WindowsXrayBackend implements XrayBackend {
   }
 
   @override
-  Future<Map<String, dynamic>> measureDelayEx(String testConfig) async {
-    final ms = await measureDelay(testConfig);
-    if (ms >= 0) return {'ms': ms, 'error': ''};
+  Future<Map<String, dynamic>> measureDelayEx(
+    String testConfig, {
+    int rounds = 2,
+    int budgetMs = 0,
+    int timeoutMs = 8000,
+  }) async {
+    // The Windows tester measures with its own pair of requests
+    // per instance; [rounds] repeats the measurement on fresh
+    // instances and keeps the best, [timeoutMs] is the
+    // per-request timeout. [budgetMs] is accepted for contract
+    // parity — one Windows measurement already fits the bulk
+    // pass's ~10 s shape, and a hard mid-measurement cut would
+    // only discard answers that arrived.
+    var best = -1;
+    final tries = rounds < 1 ? 1 : rounds;
+    for (var i = 0; i < tries; i++) {
+      final ms = await measureDelay(testConfig, timeoutMs: timeoutMs);
+      if (ms >= 0 && (best < 0 || ms < best)) best = ms;
+    }
+    if (best >= 0) return {'ms': best, 'error': ''};
     return {
       'ms': -1,
       'error': _lastError.isNotEmpty
@@ -854,7 +971,16 @@ class WindowsXrayBackend implements XrayBackend {
   }
 
   @override
-  Future<int> tunnelCheck(int socksPort) async {
+  Future<int> tunnelCheck(
+    int socksPort, {
+    // LAN-sharing credentials (Android build 2062): the Windows
+    // probe rides the session's HTTP inbound, which carries no
+    // separate credential slot in dart:io's PROXY form — accepted
+    // for contract parity. A session whose HTTP inbound requires
+    // auth the probe cannot present reads -1, never a fake pass.
+    String socksUser = '',
+    String socksPass = '',
+  }) async {
     // One real request through the RUNNING session (its HTTP
     // inbound — see the library doc for why not SOCKS).
     if (_process == null && _warpSinceMs == 0) return -1;
@@ -874,10 +1000,7 @@ class WindowsXrayBackend implements XrayBackend {
     final proc = await _startInstance(testConfig, port);
     if (proc == null) return null;
     try {
-      final client = _viaProxy(
-        port + 1,
-        const Duration(seconds: 10),
-      );
+      final client = _viaProxy(port + 1, const Duration(seconds: 10));
       final sw = Stopwatch()..start();
       Future<int> probe() async {
         final target = _delayTargets.first;
@@ -886,9 +1009,7 @@ class WindowsXrayBackend implements XrayBackend {
           final req = await client
               .getUrl(Uri.parse(target))
               .timeout(const Duration(seconds: 10));
-          final resp = await req.close().timeout(
-            const Duration(seconds: 10),
-          );
+          final resp = await req.close().timeout(const Duration(seconds: 10));
           await resp.drain<void>();
           return sw.elapsedMilliseconds - t0;
         } catch (_) {
@@ -924,9 +1045,7 @@ class WindowsXrayBackend implements XrayBackend {
     // winning-shape cache), operator = the SSID / interface
     // description, hashed by the caller before it is stored.
     try {
-      final interfaces = await NetworkInterface.list(
-        includeLoopback: false,
-      );
+      final interfaces = await NetworkInterface.list(includeLoopback: false);
       for (final iface in interfaces) {
         if (iface.addresses.isEmpty) continue;
         final name = iface.name.toLowerCase();
@@ -935,10 +1054,7 @@ class WindowsXrayBackend implements XrayBackend {
             name.contains('wifi') ||
             name.contains('wlan') ||
             name.contains('wireless');
-        return {
-          'type': wifi ? 'wifi' : 'ethernet',
-          'operator': iface.name,
-        };
+        return {'type': wifi ? 'wifi' : 'ethernet', 'operator': iface.name};
       }
     } catch (_) {
       // Best-effort only.
@@ -955,14 +1071,12 @@ class WindowsXrayBackend implements XrayBackend {
     final file = File('${dir.path}/validate.json');
     try {
       await file.writeAsString(config, flush: true);
-      final result = await Process.run(_xrayExe, [
-        'run',
-        '-test',
-        '-c',
-        file.path,
-      ], workingDirectory: dir.path, environment: _xrayEnv).timeout(
-        const Duration(seconds: 15),
-      );
+      final result = await Process.run(
+        _xrayExe,
+        ['run', '-test', '-c', file.path],
+        workingDirectory: dir.path,
+        environment: _xrayEnv,
+      ).timeout(const Duration(seconds: 15));
       if (result.exitCode == 0) return null;
       final out = '${result.stdout}\n${result.stderr}'.trim();
       return out.isEmpty ? 'the core rejected the config' : out;
@@ -992,18 +1106,17 @@ class WindowsXrayBackend implements XrayBackend {
   /// HTTP proxy on [httpPort]: the clock stops when the response
   /// arrives, which is what HttpURLConnection's responseCode waits
   /// for on Android.
-  Future<int> _timeRequest(int httpPort) async {
+  Future<int> _timeRequest(
+    int httpPort, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
     for (final url in _delayTargets) {
-      final client = _viaProxy(httpPort, const Duration(seconds: 8));
+      final client = _viaProxy(httpPort, timeout);
       try {
         final started = Stopwatch()..start();
-        final request = await client
-            .getUrl(Uri.parse(url))
-            .timeout(const Duration(seconds: 8));
+        final request = await client.getUrl(Uri.parse(url)).timeout(timeout);
         request.followRedirects = false;
-        final response = await request
-            .close()
-            .timeout(const Duration(seconds: 8));
+        final response = await request.close().timeout(timeout);
         started.stop();
         unawaited(response.drain<void>().catchError((_) {}));
         if (response.statusCode == 204 || response.statusCode == 200) {
@@ -1027,16 +1140,16 @@ class WindowsXrayBackend implements XrayBackend {
     final client = _viaProxy(port + 1, const Duration(seconds: 8));
     try {
       final request = await client
-          .getUrl(Uri.parse('https://speed.cloudflare.com/__down?bytes=50000000'))
+          .getUrl(
+            Uri.parse('https://speed.cloudflare.com/__down?bytes=50000000'),
+          )
           .timeout(const Duration(seconds: 8));
       final started = Stopwatch()..start();
-      final response = await request
-          .close()
-          .timeout(const Duration(seconds: 15));
-      var total = 0;
-      await for (final chunk in response.timeout(
+      final response = await request.close().timeout(
         const Duration(seconds: 15),
-      )) {
+      );
+      var total = 0;
+      await for (final chunk in response.timeout(const Duration(seconds: 15))) {
         total += chunk.length;
         if (started.elapsed > const Duration(seconds: 8)) break;
       }
@@ -1053,11 +1166,150 @@ class WindowsXrayBackend implements XrayBackend {
   }
 
   @override
-  Future<Map<String, String>?> exitInfo(int socksPort) async {
-    // The requests ride the running config's HTTP inbound (recorded
-    // at setOn); [socksPort] is the Android-shaped parameter, kept
-    // for the fallback pairing when no port was recorded.
-    final httpPort = _httpPort != 0 ? _httpPort : socksPort + 1;
+  Future<int> speedTestUp(String testConfig) async {
+    // The download test's mirror (Android build 2149): POST
+    // generated bytes to the Cloudflare speed endpoint's upload
+    // path through a throwaway core for the same window; the
+    // figure is the bytes the proxied connection accepted per
+    // second.
+    await _ensureCleaned();
+    final port = await _takeTestPort();
+    final proc = await _startInstance(testConfig, port);
+    if (proc == null) return -1;
+    final client = _viaProxy(port + 1, const Duration(seconds: 8));
+    try {
+      final request = await client
+          .postUrl(Uri.parse('https://speed.cloudflare.com/__up'))
+          .timeout(const Duration(seconds: 8));
+      request.headers.contentType = ContentType.binary;
+      final chunk = List<int>.filled(65536, 0x61);
+      final started = Stopwatch()..start();
+      var total = 0;
+      while (started.elapsed < const Duration(seconds: 8)) {
+        request.add(chunk);
+        total += chunk.length;
+        await request.flush();
+      }
+      final response = await request.close().timeout(
+        const Duration(seconds: 15),
+      );
+      await response.drain<void>();
+      started.stop();
+      final seconds = started.elapsedMilliseconds / 1000.0;
+      if (seconds <= 0 || total == 0) return -1;
+      return (total / seconds).round();
+    } catch (_) {
+      return -1;
+    } finally {
+      client.close(force: true);
+      await _kill(proc);
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>> sandboxTest(
+    String testConfig, {
+    int timeoutMs = 8000,
+  }) async {
+    // The sandbox discipline (Android build 2061) on the Windows
+    // tester machinery: ONE throwaway core — a delay probe, a
+    // hold probe seconds later over the same instance, and the
+    // exit identity observed through it. The live tunnel is
+    // never touched.
+    await _ensureCleaned();
+    final port = await _takeTestPort();
+    final proc = await _startInstance(testConfig, port);
+    if (proc == null) {
+      return {
+        'ok': 0,
+        'error': _lastError.isNotEmpty
+            ? _lastError
+            : 'the sandbox test core did not start',
+      };
+    }
+    try {
+      final timeout = Duration(milliseconds: timeoutMs);
+      final ms = await _timeRequest(port + 1, timeout: timeout);
+      if (ms < 0) {
+        return {
+          'ok': 0,
+          'error': _lastError.isNotEmpty
+              ? _lastError
+              : 'the sandbox test did not answer through the tunnel',
+        };
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 2500));
+      final heldMs = await _timeRequest(port + 1, timeout: timeout);
+      final exit = await _exitInfoVia(port + 1);
+      return {
+        'ok': 1,
+        'ms': ms,
+        'held': heldMs >= 0 ? 1 : 0,
+        'ip': exit?['ip'] ?? '',
+        'countryCode': exit?['countryCode'] ?? '',
+        'country': exit?['country'] ?? '',
+        'error': '',
+      };
+    } finally {
+      await _kill(proc);
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>> serviceCheck(
+    String testConfig,
+    List<String> hosts,
+  ) async {
+    // The service check (Android build 2091) on the Windows
+    // tester machinery: ONE throwaway core, one real HTTPS HEAD
+    // per host through it; a host that does not answer maps to
+    // status 0 / ms -1 — never an invented verdict.
+    await _ensureCleaned();
+    final port = await _takeTestPort();
+    final proc = await _startInstance(testConfig, port);
+    if (proc == null) {
+      return {
+        'ok': 0,
+        'error': _lastError.isNotEmpty
+            ? _lastError
+            : 'the service check core did not start',
+        'results': <String, dynamic>{},
+      };
+    }
+    try {
+      final results = <String, dynamic>{};
+      final client = _viaProxy(port + 1, const Duration(seconds: 8));
+      try {
+        for (final host in hosts) {
+          final sw = Stopwatch()..start();
+          try {
+            final req = await client
+                .headUrl(Uri.parse('https://$host/'))
+                .timeout(const Duration(seconds: 8));
+            final resp = await req.close().timeout(const Duration(seconds: 8));
+            await resp.drain<void>();
+            sw.stop();
+            results[host] = {
+              'ms': sw.elapsedMilliseconds,
+              'status': resp.statusCode,
+            };
+          } catch (_) {
+            results[host] = {'ms': -1, 'status': 0};
+          }
+        }
+      } finally {
+        client.close(force: true);
+      }
+      return {'ok': 1, 'error': '', 'results': results};
+    } finally {
+      await _kill(proc);
+    }
+  }
+
+  /// The exit identity observed through the HTTP proxy on
+  /// [httpPort] — [exitInfo]'s body, parameterized so the
+  /// sandbox test can ask through its throwaway instance.
+  Future<Map<String, String>?> _exitInfoVia(int httpPort) async {
     try {
       final text = await _httpGetText(
         httpPort,
@@ -1098,6 +1350,435 @@ class WindowsXrayBackend implements XrayBackend {
     return null;
   }
 
+  @override
+  Future<Map<String, String>?> exitInfo(
+    int socksPort, {
+    // LAN-sharing credentials (Android build 2062): accepted for
+    // contract parity — the Windows probe rides the session's
+    // HTTP inbound (see tunnelCheck's note).
+    String socksUser = '',
+    String socksPass = '',
+  }) async {
+    // The requests ride the running config's HTTP inbound (recorded
+    // at setOn); [socksPort] is the Android-shaped parameter, kept
+    // for the fallback pairing when no port was recorded.
+    final httpPort = _httpPort != 0 ? _httpPort : socksPort + 1;
+    return _exitInfoVia(httpPort);
+  }
+
+  // ---- DNS ping (Android build 2149, Windows port) ----------------
+  //
+  // One real DNS query per server, timed individually, in wire
+  // format. Plain servers are asked over UDP directly, or over
+  // TCP through a SOCKS5 tunnel (the config/port modes);
+  // https:// servers are DoH POSTs (direct, or through the
+  // tunnel's HTTP proxy); tls:// (or :853) servers are DoT.
+  // quic:// and anything unparsable map to -2 (not a probed
+  // kind); a server that does not answer maps to -1. Nothing is
+  // invented: a probe that cannot run says -1.
+
+  static int _dnsIdCounter = 0x2a41;
+
+  static int _nextDnsId() {
+    _dnsIdCounter = (_dnsIdCounter + 1) & 0xffff;
+    return _dnsIdCounter;
+  }
+
+  /// A minimal A/IN query for example.com with id [id].
+  static Uint8List _dnsQueryBytes(int id) {
+    const labels = ['example', 'com'];
+    var len = 12 + 1 + 4;
+    for (final l in labels) {
+      len += 1 + l.length;
+    }
+    final b = Uint8List(len);
+    final d = ByteData.view(b.buffer);
+    d.setUint16(0, id);
+    d.setUint16(2, 0x0100); // RD
+    d.setUint16(4, 1); // QDCOUNT
+    var o = 12;
+    for (final l in labels) {
+      b[o++] = l.length;
+      for (final c in l.codeUnits) {
+        b[o++] = c;
+      }
+    }
+    b[o++] = 0;
+    d.setUint16(o, 1); // QTYPE A
+    d.setUint16(o + 2, 1); // QCLASS IN
+    return b;
+  }
+
+  static bool _dnsResponseOk(List<int> r, int id) =>
+      r.length >= 12 && ((r[0] << 8) | r[1]) == id && (r[2] & 0x80) != 0;
+
+  /// Splits a preset server string into its probe kind and
+  /// target: 'udp' (plain host[:port]), 'dot' (tls:// or :853),
+  /// 'doh' (https:// URL), 'unsupported' (quic://, anything else).
+  static ({String kind, String host, int port, Uri? url}) _parseDnsServer(
+    String s,
+  ) {
+    final v = s.trim();
+    if (v.startsWith('https://')) {
+      return (kind: 'doh', host: '', port: 0, url: Uri.tryParse(v));
+    }
+    if (v.startsWith('quic://')) {
+      return (kind: 'unsupported', host: '', port: 0, url: null);
+    }
+    var rest = v;
+    var dot = false;
+    if (rest.startsWith('tls://')) {
+      dot = true;
+      rest = rest.substring(6);
+    }
+    var host = rest;
+    var port = dot ? 853 : 53;
+    final colon = rest.lastIndexOf(':');
+    if (colon > 0) {
+      final p = int.tryParse(rest.substring(colon + 1));
+      if (p != null) {
+        host = rest.substring(0, colon);
+        port = p;
+      }
+    }
+    if (host.isEmpty) {
+      return (kind: 'unsupported', host: '', port: 0, url: null);
+    }
+    if (port == 853) dot = true;
+    return (kind: dot ? 'dot' : 'udp', host: host, port: port, url: null);
+  }
+
+  Future<int> _dnsUdpProbe(String host, int port, Duration timeout) async {
+    final id = _nextDnsId();
+    RawDatagramSocket? sock;
+    try {
+      final target = (await InternetAddress.lookup(host).timeout(timeout))
+          .firstWhere(
+            (a) => a.type == InternetAddressType.IPv4,
+            orElse: () => throw StateError('no ipv4'),
+          );
+      sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      final sw = Stopwatch()..start();
+      sock.send(_dnsQueryBytes(id), target, port);
+      await for (final ev in sock.timeout(timeout)) {
+        if (ev == RawSocketEvent.read) {
+          final dg = sock.receive();
+          if (dg != null && _dnsResponseOk(dg.data, id)) {
+            sw.stop();
+            return sw.elapsedMilliseconds;
+          }
+        }
+      }
+      return -1;
+    } catch (_) {
+      return -1;
+    } finally {
+      sock?.close();
+    }
+  }
+
+  /// A DNS-over-TCP exchange over an already-connected socket
+  /// read through [reader] (2-byte length framing).
+  Future<int> _dnsTcpProbe(
+    _SocketReader reader,
+    Socket sink,
+    Duration timeout,
+  ) async {
+    final id = _nextDnsId();
+    final q = _dnsQueryBytes(id);
+    final framed = Uint8List(q.length + 2);
+    ByteData.view(framed.buffer).setUint16(0, q.length);
+    framed.setRange(2, framed.length, q);
+    final sw = Stopwatch()..start();
+    try {
+      sink.add(framed);
+      await sink.flush().timeout(timeout);
+      final head = await reader.read(2, timeout);
+      if (head == null) return -1;
+      final n = (head[0] << 8) | head[1];
+      final body = await reader.read(n, timeout);
+      if (body == null) return -1;
+      sw.stop();
+      return _dnsResponseOk(body, id) ? sw.elapsedMilliseconds : -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  Future<int> _dnsDohProbe(HttpClient client, Uri url, Duration timeout) async {
+    final id = _nextDnsId();
+    final sw = Stopwatch()..start();
+    try {
+      final req = await client.postUrl(url).timeout(timeout);
+      req.headers.set('content-type', 'application/dns-message');
+      req.headers.set('accept', 'application/dns-message');
+      req.add(_dnsQueryBytes(id));
+      final resp = await req.close().timeout(timeout);
+      final body = await resp
+          .fold<List<int>>(<int>[], (a, b) => a..addAll(b))
+          .timeout(timeout);
+      sw.stop();
+      return resp.statusCode == 200 && _dnsResponseOk(body, id)
+          ? sw.elapsedMilliseconds
+          : -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  /// Opens a SOCKS5 CONNECT tunnel from 127.0.0.1:[socksPort] to
+  /// [host]:[port]; returns the socket and its reader, or null.
+  Future<({Socket socket, _SocketReader reader})?> _socksConnect(
+    int socksPort,
+    String host,
+    int port, {
+    String user = '',
+    String pass = '',
+    required Duration timeout,
+  }) async {
+    Socket? s;
+    try {
+      s = await Socket.connect('127.0.0.1', socksPort, timeout: timeout);
+      final reader = _SocketReader(s);
+      final useAuth = user.isNotEmpty;
+      s.add(useAuth ? [5, 2, 0, 2] : [5, 1, 0]);
+      await s.flush().timeout(timeout);
+      final g = await reader.read(2, timeout);
+      if (g == null || g[0] != 5) {
+        await s.close();
+        return null;
+      }
+      if (g[1] == 2) {
+        final u = user.codeUnits, p = pass.codeUnits;
+        s.add([1, u.length, ...u, p.length, ...p]);
+        await s.flush().timeout(timeout);
+        final a = await reader.read(2, timeout);
+        if (a == null || a[1] != 0) {
+          await s.close();
+          return null;
+        }
+      } else if (g[1] != 0) {
+        await s.close();
+        return null;
+      }
+      final ip = InternetAddress.tryParse(host);
+      final List<int> addr;
+      if (ip != null && ip.type == InternetAddressType.IPv4) {
+        addr = [1, ...ip.rawAddress];
+      } else {
+        final hb = host.codeUnits;
+        addr = [3, hb.length, ...hb];
+      }
+      s.add([5, 1, 0, ...addr, (port >> 8) & 0xff, port & 0xff]);
+      await s.flush().timeout(timeout);
+      final h = await reader.read(4, timeout);
+      if (h == null || h[0] != 5 || h[1] != 0) {
+        await s.close();
+        return null;
+      }
+      final atyp = h[3];
+      if (atyp == 1) {
+        await reader.read(6, timeout);
+      } else if (atyp == 4) {
+        await reader.read(18, timeout);
+      } else if (atyp == 3) {
+        final l = await reader.read(1, timeout);
+        if (l == null) {
+          await s.close();
+          return null;
+        }
+        await reader.read(l[0] + 2, timeout);
+      } else {
+        await s.close();
+        return null;
+      }
+      return (socket: s, reader: reader);
+    } catch (_) {
+      try {
+        await s?.close();
+      } catch (_) {}
+      return null;
+    }
+  }
+
+  /// One server probed directly (no tunnel).
+  Future<int> _dnsProbeDirect(
+    ({String kind, String host, int port, Uri? url}) t,
+    Duration timeout,
+  ) async {
+    switch (t.kind) {
+      case 'doh':
+        if (t.url == null) return -2;
+        final client = HttpClient()..connectionTimeout = timeout;
+        try {
+          return await _dnsDohProbe(client, t.url!, timeout);
+        } finally {
+          client.close(force: true);
+        }
+      case 'dot':
+        try {
+          final s = await SecureSocket.connect(
+            t.host,
+            t.port,
+            timeout: timeout,
+          );
+          final reader = _SocketReader(s);
+          try {
+            return await _dnsTcpProbe(reader, s, timeout);
+          } finally {
+            await reader.cancel();
+            await s.close();
+          }
+        } catch (_) {
+          return -1;
+        }
+      case 'udp':
+        final udp = await _dnsUdpProbe(t.host, t.port, timeout);
+        if (udp >= 0) return udp;
+        // TCP fallback, the resolver's own second chance.
+        try {
+          final s = await Socket.connect(t.host, t.port, timeout: timeout);
+          final reader = _SocketReader(s);
+          try {
+            return await _dnsTcpProbe(reader, s, timeout);
+          } finally {
+            await reader.cancel();
+            await s.close();
+          }
+        } catch (_) {
+          return -1;
+        }
+      default:
+        return -2;
+    }
+  }
+
+  /// One server probed through the tunnel whose SOCKS is on
+  /// [socksPort] and whose HTTP proxy is on [httpPort] (0 = no
+  /// HTTP proxy known; DoH then reads -1).
+  Future<int> _dnsProbeVia(
+    ({String kind, String host, int port, Uri? url}) t,
+    int socksPort,
+    int httpPort, {
+    String user = '',
+    String pass = '',
+    required Duration timeout,
+  }) async {
+    switch (t.kind) {
+      case 'doh':
+        if (t.url == null) return -2;
+        if (httpPort == 0) return -1;
+        final client = _viaProxy(httpPort, timeout);
+        try {
+          return await _dnsDohProbe(client, t.url!, timeout);
+        } finally {
+          client.close(force: true);
+        }
+      case 'dot':
+      case 'udp':
+        final conn = await _socksConnect(
+          socksPort,
+          t.host,
+          t.port,
+          user: user,
+          pass: pass,
+          timeout: timeout,
+        );
+        if (conn == null) return -1;
+        try {
+          if (t.kind == 'dot') {
+            await conn.reader.cancel();
+            final secure = await SecureSocket.secure(
+              conn.socket,
+              host: t.host,
+            ).timeout(timeout);
+            final reader = _SocketReader(secure);
+            try {
+              return await _dnsTcpProbe(reader, secure, timeout);
+            } finally {
+              await reader.cancel();
+              await secure.close();
+            }
+          }
+          return await _dnsTcpProbe(conn.reader, conn.socket, timeout);
+        } catch (_) {
+          return -1;
+        } finally {
+          try {
+            await conn.socket.close();
+          } catch (_) {}
+        }
+      default:
+        return -2;
+    }
+  }
+
+  @override
+  Future<Map<String, int>> dnsPingDirect(
+    List<String> servers, {
+    int timeoutMs = 5000,
+  }) async {
+    final timeout = Duration(milliseconds: timeoutMs);
+    final out = <String, int>{};
+    for (final s in servers) {
+      out[s] = await _dnsProbeDirect(_parseDnsServer(s), timeout);
+    }
+    return out;
+  }
+
+  @override
+  Future<Map<String, int>> dnsPingViaPort(
+    int socksPort,
+    List<String> servers, {
+    String socksUser = '',
+    String socksPass = '',
+    int timeoutMs = 5000,
+  }) async {
+    final timeout = Duration(milliseconds: timeoutMs);
+    final httpPort = _process != null ? _httpPort : 0;
+    final out = <String, int>{};
+    for (final s in servers) {
+      out[s] = await _dnsProbeVia(
+        _parseDnsServer(s),
+        socksPort,
+        httpPort,
+        user: socksUser,
+        pass: socksPass,
+        timeout: timeout,
+      );
+    }
+    return out;
+  }
+
+  @override
+  Future<Map<String, int>> dnsPing(
+    String testConfig,
+    List<String> servers, {
+    int timeoutMs = 5000,
+  }) async {
+    // Through a throwaway instance of the config — the sandbox
+    // discipline; the live tunnel is never touched.
+    await _ensureCleaned();
+    final port = await _takeTestPort();
+    final proc = await _startInstance(testConfig, port);
+    if (proc == null) return {for (final s in servers) s: -1};
+    try {
+      final timeout = Duration(milliseconds: timeoutMs);
+      final out = <String, int>{};
+      for (final s in servers) {
+        out[s] = await _dnsProbeVia(
+          _parseDnsServer(s),
+          port,
+          port + 1,
+          timeout: timeout,
+        );
+      }
+      return out;
+    } finally {
+      await _kill(proc);
+    }
+  }
+
   /// A whole small GET through the tunnel, as text; null on failure.
   Future<String?> _httpGetText(int httpPort, String url) async {
     const timeout = Duration(seconds: 6);
@@ -1106,12 +1787,64 @@ class WindowsXrayBackend implements XrayBackend {
       final request = await client.getUrl(Uri.parse(url)).timeout(timeout);
       final response = await request.close().timeout(timeout);
       if (response.statusCode != 200) return null;
-      return await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(timeout);
+      return await response.transform(utf8.decoder).join().timeout(timeout);
     } finally {
       client.close(force: true);
     }
   }
+}
+
+/// A buffered reader over a [Socket]'s single-subscription
+/// stream: the SOCKS5 handshake and the DNS-over-TCP exchange
+/// share one socket, and each needs exact-length reads the raw
+/// stream does not offer. Bytes are consumed in order; a read
+/// that cannot complete before its timeout (or EOF) returns
+/// null.
+class _SocketReader {
+  _SocketReader(Socket socket) {
+    _sub = socket.listen(
+      (data) {
+        _buf.addAll(data);
+        _pump();
+      },
+      onError: (_) {
+        _eof = true;
+        _pump();
+      },
+      onDone: () {
+        _eof = true;
+        _pump();
+      },
+    );
+  }
+
+  late final StreamSubscription<List<int>> _sub;
+  final List<int> _buf = [];
+  bool _eof = false;
+  Completer<void>? _waiter;
+
+  void _pump() {
+    final w = _waiter;
+    if (w != null && !w.isCompleted) w.complete();
+  }
+
+  Future<Uint8List?> read(int n, Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (_buf.length < n) {
+      if (_eof) return null;
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) return null;
+      _waiter = Completer<void>();
+      try {
+        await _waiter!.future.timeout(remaining);
+      } on TimeoutException {
+        return null;
+      }
+    }
+    final out = Uint8List.fromList(_buf.sublist(0, n));
+    _buf.removeRange(0, n);
+    return out;
+  }
+
+  Future<void> cancel() => _sub.cancel();
 }

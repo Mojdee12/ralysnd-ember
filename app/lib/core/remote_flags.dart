@@ -8,6 +8,11 @@ const bundledFlags = {
   'ar', 'at', 'au', 'be', 'bg', 'br', 'ca', 'cl', 'co', 'de', 'dk', //
   'es', 'fi', 'fr', 'gb', 'gh', 'ie', 'it', 'jp', 'kr', 'mx', 'my', //
   'nl', 'no', 'nz', 'pe', 'ph', 'pt', 'se', 'sg', 'th', 'us', 'za', //
+  // Build 2116 (AP-15): ten more bundled flags, hand-authored
+  // in the flag-icons format (assets/flags) — Poland, Czechia,
+  // Hungary, Romania, Ukraine, Switzerland, Greece, Croatia,
+  // Türkiye and India.
+  'pl', 'cz', 'hu', 'ro', 'ua', 'ch', 'gr', 'hr', 'tr', 'in', //
 };
 
 /// Flags the app does not carry (a location Mozilla added later), asked

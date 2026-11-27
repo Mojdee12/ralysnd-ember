@@ -45,12 +45,20 @@ List<String> buildWarpArgs(
   String upstream = '',
 }) {
   final args = <String>[
-    '--bind', '127.0.0.1:$port',
-    '--protocol', w.protocol,
-    '--scan', w.scan,
-    '--ip', w.ipVersion,
+    '--bind',
+    '127.0.0.1:$port',
+    '--protocol',
+    w.protocol,
+    '--scan',
+    w.scan,
+    '--ip',
+    w.ipVersion,
   ];
-  final masqueFamily = w.protocol == 'masque' || w.protocol == 'gool';
+  // Build 2129: mim is MASQUE-family here too — both hops
+  // ride the one carrier, so the SNI / H2 / fragment / obfs
+  // shape is the masque shape.
+  final masqueFamily =
+      w.protocol == 'masque' || w.protocol == 'gool' || w.protocol == 'mim';
   if (masqueFamily) {
     args.addAll(['--masque-sni', w.masqueSni]);
     if (w.transport == 'h2') {
@@ -67,8 +75,10 @@ List<String> buildWarpArgs(
   if (upstream.isNotEmpty) args.addAll(['--upstream', upstream]);
   if (w.ech) {
     args.addAll([
-      '--ech', 'auto',
-      '--ech-dns', w.echDns.isNotEmpty ? w.echDns : warpDefaultEchDns,
+      '--ech',
+      'auto',
+      '--ech-dns',
+      w.echDns.isNotEmpty ? w.echDns : warpDefaultEchDns,
     ]);
   }
   return args;
@@ -78,3 +88,16 @@ List<String> buildWarpArgs(
 /// this profile: the protocol whose identity the session
 /// needs (gool registers its own composed identity).
 String warpRegisterKind(WarpProfile w) => w.protocol;
+
+/// The well-known public WARP endpoints (build 2065, item 10):
+/// Cloudflare's published WireGuard gateway addresses on the
+/// standard port. Offered as one-tap pins in the EmberWarp settings;
+/// an empty peer hands the gateway search to the core's own
+/// scan.
+const kKnownWarpEndpoints = <String>[
+  '162.159.192.1:2408',
+  '162.159.193.1:2408',
+  '162.159.195.1:2408',
+  '188.114.96.1:2408',
+  '188.114.97.1:2408',
+];

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../atomic_json_store.dart';
 import 'models.dart';
 
 /// Where the core's API listens and the local token that authorizes the
@@ -156,6 +157,11 @@ abstract final class CoreLocator {
   /// Moves the core's API to [listen] in config.json while the core is not
   /// running (it could not start on the old address). Every other field is
   /// kept as it is.
+  ///
+  /// Build 2054 (audit F-M18): the write is atomic (tmp + flush +
+  /// rename, via AtomicJsonStore) — the old plain writeAsString
+  /// could tear the file mid-write, and Go's recoverCorrupt
+  /// would then reset ALL core settings to defaults.
   static Future<void> setDashboardListen(String dataDir, String listen) async {
     final config = await _readConfig(dataDir) ?? <String, Object?>{};
     final dashboard = switch (config['dashboard']) {
@@ -165,7 +171,8 @@ abstract final class CoreLocator {
     dashboard['listen'] = listen;
     final file = File('$dataDir${Platform.pathSeparator}$configFile');
     await file.parent.create(recursive: true);
-    await file.writeAsString(
+    await AtomicJsonStore.writeText(
+      file,
       const JsonEncoder.withIndent('  ').convert(config),
     );
   }

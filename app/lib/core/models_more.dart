@@ -225,16 +225,17 @@ class ProxyConnection {
   /// vpn, direct, blocked, port (Mozilla refuses the port), or failed.
   final String route;
 
-  /// h2 or h3, through Mozilla.
+  /// h1, h2 or h3, through Mozilla (h1 since build 2105).
   final String transport;
   final int up, down;
 
   bool get open => end == null;
 }
 
-/// The display rank of a location after a ping run: answered
-/// first (0), never-answered next (1), failed (the core returned
-/// an error) last (2).
+/// The ping-sort rank of a Mozilla location (Windows tree — kept
+/// through the W1 sync for the desktop Mozilla page and
+/// delay_sort_test.dart; see delaySortRank in xray_models.dart):
+/// measured first (0), unmeasured next (1), failed last (2).
 int locationPingRank(Location l) =>
     l.pingMs > 0 ? 0 : (l.pingError.isNotEmpty ? 2 : 1);
 

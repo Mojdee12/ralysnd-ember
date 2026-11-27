@@ -134,6 +134,12 @@ void main() {
         final url = await serve({
           if (file != null) 'GET /updates.json': (200, file),
           'GET /releases/latest': (200, latest),
+          // W1 guard: the fallback offers the latest release
+          // only when it carries this system's file.
+          'HEAD /releases/download/v1.0.6/Firefox-VPN-1.0.6-macOS.tar.gz': (
+            302,
+            '',
+          ),
         });
         final release = await checkForUpdate(
           server: url,
@@ -143,6 +149,18 @@ void main() {
         expect(release?.version, '1.0.6', reason: '$file');
         expect(release?.url, 'https://example.invalid/releases/tag/v1.0.6');
       }
+    });
+
+    test('the latest release without the system\'s file is not offered '
+        '(W1 guard)', () async {
+      // The project's repo's latest release is usually an
+      // Android build: it must never be offered to a desktop
+      // app whose file it does not carry.
+      final url = await serve({'GET /releases/latest': (200, latest)});
+      expect(
+        await checkForUpdate(server: url, os: 'macos', current: '1.0.4'),
+        isNull,
+      );
     });
 
     test('updates.json names versions only', () {

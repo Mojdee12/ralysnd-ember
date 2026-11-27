@@ -83,6 +83,84 @@ class VpnNotAllowed implements Exception {
 /// on, a foreground service (android/.../CoreService.kt) keeps it running
 /// for other apps while the UI is closed. The UI talks to it through the
 /// same HTTP API.
+/// Build 2116 (E-7): single-value secrets in the Android
+/// Keystore-backed vault (OpenVpnVault's generic entries —
+/// AES-256-GCM under a Keystore key, the plaintext never
+/// touches a JSON store). Every call is best-effort: a
+/// platform without the vault (desktop, tests) answers
+/// false/null and the caller keeps its previous behaviour.
+/// Build 2116 (B7-1, AB-08): the native VPN-slot claim's
+/// Dart face. Every engine start claims the slot natively
+/// (EngineClaim.kt); the shell reads the owner when the app
+/// returns to the foreground and re-arbitrates — adopting a
+/// natively-started engine's mode, or clearing a marker
+/// whose engine is no longer live. Best-effort throughout:
+/// a missing channel (desktop, tests) reads as no claim.
+abstract final class EngineClaimChannel {
+  static const _channel = MethodChannel('app/android');
+
+  static Future<String?> owner() async {
+    try {
+      return await _channel.invokeMethod<String>('engineClaimOwner');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> clear() async {
+    try {
+      await _channel.invokeMethod<bool>('engineClaimClear');
+    } catch (_) {
+      // Best effort — the next claim overwrites the marker.
+    }
+  }
+
+  /// Build 2125 (audit A25-17 / P-24): corrects the marker
+  /// to name [name] — the engine the shell's own live-state
+  /// evidence says is actually running — WITHOUT stopping
+  /// anything. Used when the marker names a different,
+  /// no-longer-live engine: later native readers (the WG
+  /// stand-down, the next claim's displacement) must act on
+  /// the true owner, not the stale name.
+  static Future<void> setOwner(String name) async {
+    try {
+      await _channel.invokeMethod<bool>('engineClaimRewrite', {'name': name});
+    } catch (_) {
+      // Best effort — the next claim overwrites the marker.
+    }
+  }
+}
+
+class SecretStore {
+  static const _channel = MethodChannel('app/android');
+
+  static Future<bool> store(String key, String value) async {
+    try {
+      return await _channel.invokeMethod<bool>('secretStore', {
+            'key': key,
+            'value': value,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String?> load(String key) async {
+    try {
+      return await _channel.invokeMethod<String>('secretLoad', {'key': key});
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> delete(String key) async {
+    try {
+      await _channel.invokeMethod<void>('secretDelete', {'key': key});
+    } catch (_) {}
+  }
+}
+
 class AndroidCore {
   static const _channel = MethodChannel('app/android');
 
@@ -98,7 +176,17 @@ class AndroidCore {
   /// run; it throws [CoreUnavailable] until the core answers.
   Future<CoreApi> connect() async {
     if (await _channel.invokeMethod<bool>('isRunning') != true) {
-      await _channel.invokeMethod<void>('startCore');
+      try {
+        await _channel.invokeMethod<void>('startCore');
+      } on PlatformException catch (e) {
+        // Build 2095 (third-pass audit 3-4): the native
+        // start failure IS the core problem — the core will
+        // never answer, so "starting" would spin forever.
+        throw CoreUnavailable(
+          CoreProblem.exited,
+          e.message ?? 'the core did not start',
+        );
+      }
       throw const CoreUnavailable(CoreProblem.starting);
     }
     try {
@@ -116,11 +204,30 @@ class AndroidCore {
     }
   }
 
+  /// The tunnel MTU (build 2038, Iran-priority queue 2f): the
+  /// XraySettings value, mirrored here so the Mozilla connect path
+  /// can send it — CoreController's turnOn takes only (bool), and
+  /// the shell owns the Xray settings, so the shell and the
+  /// settings page keep this in sync (see EmberShell initState
+  /// and the MTU chips). Default 1500, the unchanged behaviour.
+  static final tunnelMtu = ValueNotifier<int>(1500);
+
+  /// The kill switch for the Mozilla engine (build 2127,
+  /// H4): the XraySettings value, mirrored here like
+  /// [tunnelMtu] — the shell and the settings page keep it
+  /// in sync, and CoreService reads it from prefs when the
+  /// core dies. Default false, the unchanged behaviour.
+  static final killSwitch = ValueNotifier<bool>(false);
+
   /// Turns the VPN on (asking the user for the VPN permission the first
   /// time) or off. It throws [VpnNotAllowed] when the user refuses.
   static Future<void> setOn(bool on) async {
     try {
-      await _channel.invokeMethod<void>('setOn', {'on': on});
+      await _channel.invokeMethod<void>('setOn', {
+        'on': on,
+        'mtu': tunnelMtu.value,
+        'killSwitch': killSwitch.value,
+      });
     } on PlatformException catch (e) {
       if (e.code == 'vpn_denied') throw const VpnNotAllowed();
       throw CoreApiException(0, e.message ?? e.code);
@@ -138,6 +245,16 @@ class AndroidCore {
 
   /// Whether the notification shows the speed (CoreService.kt reads it).
   static final showSpeed = ValueNotifier<bool>(false);
+
+  /// Build 2095 (feature 5): keeps the home widget's
+  /// lock marker in step with the app-lock setting.
+  static Future<void> setWidgetLock(bool on) async {
+    try {
+      await _channel.invokeMethod<void>('setWidgetLock', {'on': on});
+    } catch (_) {
+      // The widget falls back to its last marker.
+    }
+  }
 
   static Future<void> setShowSpeed(bool on) async {
     await _channel.invokeMethod<void>('setShowSpeed', {'on': on});
@@ -213,4 +330,122 @@ class AndroidCore {
   /// Opens [url] in the app that handles it (such as a tg:// link).
   static Future<bool> openUrl(String url) async =>
       await _channel.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+
+  /// Build 2075 (in-app updater): whether Android currently
+  /// allows this app to install packages (the per-app "install
+  /// unknown apps" grant on Android 8+; always true below).
+  static Future<bool> canInstallPackages() async =>
+      await _channel.invokeMethod<bool>('canInstallPackages') ?? false;
+
+  /// Opens Android's per-app "install unknown apps" settings
+  /// page, where the user can grant the install permission.
+  static Future<bool> openInstallSettings() async =>
+      await _channel.invokeMethod<bool>('openInstallSettings') ?? false;
+
+  /// Hands the APK at [path] (inside the app's own files) to
+  /// the system installer. Throws a [PlatformException] with a
+  /// plain code ('apk_missing' / 'install_failed') on failure.
+  static Future<bool> installApk(String path) async =>
+      await _channel.invokeMethod<bool>('installApk', {'path': path}) ?? false;
+
+  /// Build 2129 (leg 6): the SHA-256 (lowercase hex) of the
+  /// first signing certificate of the APK file at [path],
+  /// read by the platform WITHOUT installing it — the
+  /// updater compares it against [ownSigningCertSha256]
+  /// before a downloaded update is ever offered for
+  /// install. Null when the platform cannot read it (no
+  /// handler, unparseable file): callers treat null as
+  /// "cannot verify", never as a match.
+  static Future<String?> apkSigningCertSha256(String path) async {
+    try {
+      return await _channel.invokeMethod<String>('apkSigningCertSha256', {
+        'path': path,
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Build 2129 (leg 6): the running app's own signing-cert
+  /// SHA-256, canonicalised exactly as
+  /// [apkSigningCertSha256] (SHA-256 over the first signer's
+  /// DER bytes, lowercase hex — see MainActivity). Null when
+  /// the platform cannot answer.
+  static Future<String?> ownSigningCertSha256() async {
+    try {
+      return await _channel.invokeMethod<String>('ownSigningCertSha256');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Build 2098 (Item C): the installed package's own
+  /// versionCode, read from the PackageManager — the one
+  /// build number that cannot silently go stale the way the
+  /// APP_BUILD dart-define's fallback could. Null when the
+  /// platform side cannot answer (tests, older builds) —
+  /// since build 2106 (journey audit F-09) callers treat
+  /// that null as UNKNOWN and offer nothing, never as the
+  /// define's stale value.
+  static Future<int?> appBuildNumber() async {
+    try {
+      return await _channel.invokeMethod<int>('appBuildNumber');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Build 2077 (feature queue #7, biometric half): whether
+  /// the device has a strong biometric enrolled (fingerprint
+  /// or face; Android 9+ with an enrolled credential). False
+  /// on anything older, on a device with nothing enrolled, or
+  /// when the platform side has no such call — the PIN pad is
+  /// the fallback either way, so false never locks anyone out.
+  static Future<bool> biometricsAvailable() async {
+    try {
+      return await _channel.invokeMethod<bool>('biometricsAvailable') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Shows the system biometric prompt ("Unlock Ralysnd
+  /// Ember"). True only when the biometric matches; false on
+  /// cancel, mismatch, lockout, or any platform error — the
+  /// caller falls back to the PIN pad and never treats a
+  /// false as a lockout.
+  static Future<bool> authenticateBiometric() async {
+    try {
+      return await _channel.invokeMethod<bool>('biometricAuthenticate') ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Overlay-attack protection (build 2075, feature item
+  /// 30): while [on], the app window refuses to be obscured
+  /// by another app's overlay (Android 12+; a no-op below).
+  /// Sensitive screens — config view, QR show/scan, account
+  /// pages — turn it on for their lifetime.
+  /// Build 2095 (whole-app journey audit #45, second half):
+  /// FLAG_SECURE for the window — recents thumbnails and
+  /// screenshots show a blank while it is set. Driven by the
+  /// same sensitive-surface lifecycle as the overlay guard
+  /// (the lock page included, via OverlayGuard).
+  static Future<void> setSecureFlag(bool on) async {
+    try {
+      await _channel.invokeMethod('setSecureFlag', {'on': on});
+    } catch (_) {
+      // Not Android, or no engine yet: nothing to protect.
+    }
+  }
+
+  static Future<void> setOverlayGuard(bool on) async {
+    try {
+      await _channel.invokeMethod('setOverlayGuard', {'on': on});
+    } catch (_) {
+      // A platform without the call must never break a page.
+    }
+  }
 }

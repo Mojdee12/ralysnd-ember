@@ -46,7 +46,7 @@ class MapMozillaPage extends StatelessWidget {
         // The floating actions under the brand panel.
         Positioned(
           left: 24,
-          top: 112,
+          top: 84,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -69,7 +69,7 @@ class MapMozillaPage extends StatelessWidget {
         // home carried, as a warning chip above the bar.
         Positioned(
           left: 24,
-          bottom: 124,
+          bottom: 216,
           child: ListenableBuilder(
             listenable: core,
             builder: (context, _) {
@@ -245,8 +245,8 @@ class _MapServersPanelState extends State<MapServersPanel> {
     final l = AppLocalizations.of(context);
     return Positioned(
       left: 24,
-      top: 112,
-      bottom: 124,
+      top: 84,
+      bottom: 216,
       width: 430,
       child: MapGlass(
         padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),

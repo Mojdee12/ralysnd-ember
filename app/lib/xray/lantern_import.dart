@@ -21,6 +21,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'link_parser.dart';
+import 'profile_validation.dart';
 import 'xray_models.dart';
 
 /// An import failure with a user-facing, English explanation.
@@ -65,12 +66,12 @@ class LanternPrivateServerLink {
   }
 
   Uri get connectConfigUri => Uri(
-        scheme: 'https',
-        host: ip,
-        port: port,
-        path: '/api/v1/connect-config',
-        queryParameters: {'token': token},
-      );
+    scheme: 'https',
+    host: ip,
+    port: port,
+    path: '/api/v1/connect-config',
+    queryParameters: {'token': token},
+  );
 }
 
 final _lanternLinkPattern = RegExp(
@@ -225,10 +226,7 @@ Future<Profile> fetchLanternPrivateServerProfile(
 /// to a Shadowsocks [Profile]: the first Shadowsocks outbound wins.
 /// Throws [LanternImportException] when the body is not the
 /// documented shape or carries no Shadowsocks outbound.
-Profile profileFromConnectConfig(
-  String body, {
-  required String fallbackName,
-}) {
+Profile profileFromConnectConfig(String body, {required String fallbackName}) {
   final dynamic doc;
   try {
     doc = jsonDecode(body);
@@ -258,12 +256,16 @@ Profile profileFromConnectConfig(
     if (outbound['type'] == 'shadowsocks') {
       sawShadowsocks = true;
       final profile = _singBoxShadowsocks(outbound, fallbackName);
-      if (profile != null) return profile;
+      // Build 2096 (post-2095 audit M4): the fetched
+      // config crosses the same import boundary as every
+      // other profile source — build 2095 returned it
+      // raw (port unbounded above, name unsanitized).
+      if (profile != null) return sanitizeImportedProfile(profile);
     } else if (outbound['protocol'] == 'shadowsocks') {
       // Xray-shaped outbound, tolerated for robustness.
       sawShadowsocks = true;
       final profile = _xrayShadowsocks(outbound, fallbackName);
-      if (profile != null) return profile;
+      if (profile != null) return sanitizeImportedProfile(profile);
     }
   }
   if (sawShadowsocks) {
@@ -301,10 +303,7 @@ Profile? _singBoxShadowsocks(
   );
 }
 
-Profile? _xrayShadowsocks(
-  Map<String, dynamic> outbound,
-  String fallbackName,
-) {
+Profile? _xrayShadowsocks(Map<String, dynamic> outbound, String fallbackName) {
   final settings = (outbound['settings'] as Map?)?.cast<String, dynamic>();
   final servers = settings?['servers'];
   if (servers is! List || servers.isEmpty || servers.first is! Map) {

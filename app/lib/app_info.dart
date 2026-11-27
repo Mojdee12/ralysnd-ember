@@ -9,11 +9,16 @@ const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.0.0');
 /// The build number shown beside the version in the desktop
 /// brand panel: pubspec.yaml's `+NNNN`, kept here as a literal
 /// because the build scripts pass only APP_VERSION through.
-const appBuildNumber = '2038';
+const appBuildNumber = '2039';
 
 /// The GitHub repository, "owner/name", for the source link and the update
-/// check.
-const githubRepo = 'armanlife/firefox-vpn-client';
+/// check. W1: repointed from the stale upstream
+/// (armanlife/firefox-vpn-client) to the project's own repo —
+/// the same Releases feed the Android app publishes to. The
+/// per-OS updates.json naming plus the published-file probe in
+/// [checkForUpdate] keep the Windows app from ever being offered
+/// an Android-only release (see _latestRelease's guard).
+const githubRepo = 'Mojdee12/ralysnd-ember';
 
 /// A newer release on GitHub.
 class Release {
@@ -103,7 +108,9 @@ Future<Release?> checkForUpdate({
           : '$srv/$updatesFile',
       system,
     );
-    if (wanted == null) return await _latestRelease(client, srv, repo, current);
+    if (wanted == null) {
+      return await _latestRelease(client, srv, repo, current, system);
+    }
     if (!newerVersion(wanted, current)) return null;
     final releases = srv.isEmpty
         ? 'https://github.com/$repo/releases'
@@ -138,12 +145,14 @@ Future<String?> _namedVersion(HttpClient client, String url, String os) async {
   }
 }
 
-/// The latest release on GitHub (GitHub's API), when newer than [current].
+/// The latest release on GitHub (GitHub's API), when newer than [current]
+/// and published with [system]'s file (see the W1 guard below).
 Future<Release?> _latestRelease(
   HttpClient client,
   String server,
   String repo,
   String current,
+  String system,
 ) async {
   final (status, body) = await _get(
     client,
@@ -159,7 +168,23 @@ Future<Release?> _latestRelease(
   final tag = j is Map<String, Object?> ? j['tag_name'] as String? ?? '' : '';
   final url = j is Map<String, Object?> ? j['html_url'] as String? ?? '' : '';
   final version = tag.replaceFirst(RegExp('^[vV]'), '');
-  return newerVersion(version, current) ? Release(version, url) : null;
+  if (!newerVersion(version, current)) return null;
+  // W1 guard: the project's repo publishes ANDROID builds under
+  // its own tag scheme (v2157, v2158, …) far more often than
+  // Windows builds, and "2157" compares newer than any desktop
+  // "2.2.x". The fallback must therefore hold the same
+  // discipline as the named path: offer the release only when
+  // it actually carries THIS system's file. An Android-only
+  // latest release is not an update for this app.
+  final part = releaseFilePart(system);
+  final file = part == null ? 'SHA256SUMS.txt' : 'Firefox-VPN-$version-$part';
+  final releases = server.isEmpty
+      ? 'https://github.com/$repo/releases'
+      : '$server/releases';
+  if (!await _published(client, '$releases/download/v$version/$file')) {
+    return null;
+  }
+  return Release(version, url);
 }
 
 /// Whether the release file at [url] is there: GitHub answers a published

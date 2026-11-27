@@ -24,7 +24,17 @@ import 'ember_format.dart';
 import 'ember_theme.dart';
 import 'map_widgets.dart';
 
-Future<void> openCfScanner(BuildContext context, XrayController xray) =>
+Future<void> openCfScanner(
+  BuildContext context,
+  XrayController xray, {
+  // Android build 2065: the scanner offers an add-as-Psiphon-edge
+  // action when the shell passes the Psiphon controller. The
+  // Windows scanner page (2038 form) has no such action yet —
+  // the parameter is accepted so the synced servers page
+  // compiles; the action itself is W2 scope, visibly absent
+  // rather than faked.
+  Object? psiphon,
+}) =>
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => CfScannerPage(xray: xray)));
 
