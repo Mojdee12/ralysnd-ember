@@ -52,6 +52,13 @@ jobs:
         shell: pwsh
         env:
           FIREFOX_VPN_SIGNING_KEY: ${{ secrets.FIREFOX_VPN_SIGNING_KEY }}
+          # The real RegionHop defaults reach the build the
+          # same way the Android workflow's do: a secret the
+          # build script decodes over the placeholder file
+          # for the build and restores afterwards. Without
+          # the secret the build carries the placeholder and
+          # the RegionHop page says so honestly.
+          EMBER_REGIONHOP_DEFAULTS_B64: ${{ secrets.EMBER_REGIONHOP_DEFAULTS_B64 }}
         run: ./scripts/build-windows.ps1
 
       - uses: actions/upload-artifact@v7
