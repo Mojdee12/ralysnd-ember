@@ -1,0 +1,40 @@
+{
+  "build": {
+    "appId": "com.ralysnd.ember",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "assets/**",
+      "package.json"
+    ],
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false
+    },
+    "productName": "Ralysnd Ember",
+    "win": {
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "target": [
+        "nsis"
+      ]
+    }
+  },
+  "description": "Ralysnd Ember \u2014 Windows shell (Electron client of the Ember service)",
+  "devDependencies": {
+    "electron": "45.5.0",
+    "electron-builder": "26.18.0"
+  },
+  "main": "main.js",
+  "name": "ralysnd-ember",
+  "scripts": {
+    "build": "electron-builder --dir",
+    "dist": "electron-builder",
+    "shoot": "ELECTRON_DISABLE_SANDBOX=1 electron shoot.js",
+    "start": "electron ."
+  },
+  "version": "2.2.0"
+}

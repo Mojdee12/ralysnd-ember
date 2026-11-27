@@ -5,3 +5,8 @@
 
 # Local sidecar/radiance trees (CI provisions its own)
 /tools/
+
+# Electron shell build products
+electron/node_modules/
+electron/dist/
+/dist/

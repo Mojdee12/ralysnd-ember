@@ -21,7 +21,7 @@
 ; again.
 
 #define AppName "Ralysnd Ember"
-#define AppExe "ralysnd-ember.exe"
+#define AppExe "Ralysnd Ember.exe"
 #define AppDir "Ralysnd Ember"
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -194,12 +194,17 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 ; existing service) — a reinstall over an older service must never leave
 ; a stale service behind to mismatch the new app's protocol.
 Filename: "{app}\core\firefox-vpn-tun.exe"; Parameters: "install"; Flags: waituntilterminated skipifsilent
+; The Ember service (the engines' supervisor), the same way: it
+; elevates itself, copies itself into Program Files, registers
+; and starts; every install refreshes it to the bundled build.
+Filename: "{app}\core\ember-service.exe"; Parameters: "install"; Flags: waituntilterminated skipifsilent
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 ; The TUN service goes with the app: through its pipe, with no prompt while
 ; it runs; it does nothing when the service is not installed.
 [UninstallRun]
 Filename: "{app}\core\firefox-vpn-tun.exe"; Parameters: "uninstall"; Flags: waituntilterminated; RunOnceId: "RemoveTunService"
+Filename: "{app}\core\ember-service.exe"; Parameters: "uninstall"; Flags: waituntilterminated; RunOnceId: "RemoveEmberService"
 
 ; The app updates itself (core\internal\update) by replacing its files, so
 ; this uninstaller does not know every file a later version brought: the
@@ -208,8 +213,30 @@ Filename: "{app}\core\firefox-vpn-tun.exe"; Parameters: "uninstall"; Flags: wait
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\core"
 Type: filesandordirs; Name: "{app}\data"
+Type: filesandordirs; Name: "{app}\resources"
+Type: filesandordirs; Name: "{app}\locales"
+Type: filesandordirs; Name: "{app}\xray"
+Type: filesandordirs; Name: "{app}\psiphon"
+Type: filesandordirs; Name: "{app}\aether"
+Type: filesandordirs; Name: "{app}\usque"
+Type: filesandordirs; Name: "{app}\openvpn"
+Type: filesandordirs; Name: "{app}\singbox"
+Type: filesandordirs; Name: "{app}\wireguard"
+Type: filesandordirs; Name: "{app}\lantern"
+Type: filesandordirs; Name: "{app}\sudokubox"
+Type: filesandordirs; Name: "{app}\zapret"
+Type: filesandordirs; Name: "{app}\mieru"
+Type: filesandordirs; Name: "{app}\dnscrypt"
+Type: filesandordirs; Name: "{app}\dnstt"
+Type: filesandordirs; Name: "{app}\wstunnel"
+Type: filesandordirs; Name: "{app}\olcrtc"
 Type: files; Name: "{app}\*.dll"
-Type: files; Name: "{app}\{#AppExe}"
+Type: files; Name: "{app}\*.exe"
+Type: files; Name: "{app}\*.pak"
+Type: files; Name: "{app}\*.bin"
+Type: files; Name: "{app}\*.dat"
+Type: files; Name: "{app}\LICENSE*"
+Type: files; Name: "{app}\version"
 Type: files; Name: "{app}\native_assets.json"
 
 [Code]

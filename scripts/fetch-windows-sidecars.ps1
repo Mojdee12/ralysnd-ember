@@ -42,17 +42,17 @@
 #     https://www.wintun.net/builds/wintun-0.14.1.zip
 #     SHA-256 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
 #     (wintun.net; the same hash Xray's own release pipeline pins)
-#   Psiphon tunnel-core v2.0.42 (source archive)
-#     https://github.com/Psiphon-Labs/psiphon-tunnel-core/archive/refs/tags/v2.0.42.zip
-#     SHA-256 ca901f48e7d43f92c67cd568b6d466a4cf08c8cf431c74027e75952126d882cb
-#     (GitHub's archive of the tag, hashed 2026-11-01; if GitHub ever
+#   Psiphon tunnel-core v2.0.43 (source archive)
+#     https://github.com/Psiphon-Labs/psiphon-tunnel-core/archive/refs/tags/v2.0.43.zip
+#     SHA-256 5cbcc4c080dee50009acc9a779e4923eaf5aa3926d0e4545b432155c56f2be77
+#     (GitHub's archive of the tag, hashed 2026-11-28; if GitHub ever
 #     regenerates its archives this check fails loudly, on purpose)
-#   warp-plus v1.2.6 (source archive; the WARP+ engine's sidecar,
-#     built here like Psiphon — the same version the Android app
-#     bundles)
-#     https://github.com/bepass-org/warp-plus/archive/refs/tags/v1.2.6.zip
-#     SHA-256 39bee06a3f943a18ccab8445b80142ea21f7f8eef9db1dd1eb2996c1649a2950
-#     (GitHub's archive of the tag, hashed 2026-11-12)
+#   warp-plus: RETIRED in the service rebuild (2026-11-28) —
+#     WARP is a WireGuard profile minted by the service's own
+#     registration; no warp-plus sidecar is fetched or shipped.
+#   usque v4.2.1 (the MASQUE core; MIT) — built from the pinned
+#     vendored fork at vendor\usque (tag v4.2.1, commit
+#     6aa03fc97d12848dce34eedbd187fb1077b5d1ea; see its PIN file)
 #   patterniha/Aether @ d58f9d568083129ce2c767c85054021eb3ee6a38
 #     (the EmberWarp/MASQUE engine core, AGPL-3.0; the exact commit
 #     the Android .so is built from)
@@ -125,15 +125,14 @@
 #     https://github.com/openlibrecommunity/olcrtc/archive/f3ad8fb.zip
 #     SHA-256 2773a64637bcb91c95cbfc1a9ead47f231edc12314ae7f747e74aeb0994f4e83
 #     (GitHub's archive of the commit, hashed 2026-11-27)
-#   radiance (Lantern) @ 051b4de9077337cd81fea5b6c1ab50e602959387
-#     (getlantern/radiance main snapshot — the Lantern
-#     engine's daemon, built here with the `novpn` tag so
-#     it serves a local mixed SOCKS/HTTP inbound instead
-#     of owning a TUN; the tree also stays at
-#     tools\radiance-src for the lantern-bridge build)
-#     https://github.com/getlantern/radiance/archive/051b4de.zip
-#     SHA-256 dd1db8bd65469c1134ca62f1de120ebb1b4e97d2e29a41919c3f1f0e4cd196b7
-#     (GitHub's archive of the commit, hashed 2026-11-27)
+#   radiance (Lantern) @ e28b97171b177fda824f06644c45a4c73df7782b
+#     (the pin Lantern v10.0.5-beta.1's go.mod carries —
+#     the daemon, built here FULL-VPN with radiance's own
+#     tag set under its declared Go 1.26.10 toolchain; see
+#     the build block for the recipe and the proof)
+#     https://github.com/getlantern/radiance/archive/e28b97171b177fda824f06644c45a4c73df7782b.zip
+#     SHA-256 831f4190419979a0bab356c5d7acaa907dc638ba57ef228d6b49c9667fe2a4bf
+#     (GitHub's archive of the commit, hashed 2026-11-28)
 #   ByeDPI (ciadpi) @ e2684772fbda45f2ff4fc220922a010370534216
 #     ("Fix Windows build", post-v0.17.3 — Android's
 #     libzapret.so source per engines/byedpi/PROVENANCE.md;
@@ -172,7 +171,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root 'tools\sidecars\xray'
 $psiDest = Join-Path $root 'tools\sidecars\psiphon'
-$warpDest = Join-Path $root 'tools\sidecars\warp'
+$usqueDest = Join-Path $root 'tools\sidecars\usque'
 $aetherDest = Join-Path $root 'tools\sidecars\aether'
 $ovpnDest = Join-Path $root 'tools\sidecars\openvpn'
 $singboxDest = Join-Path $root 'tools\sidecars\singbox'
@@ -185,7 +184,7 @@ $wstunnelDest = Join-Path $root 'tools\sidecars\wstunnel'
 $olcrtcDest = Join-Path $root 'tools\sidecars\olcrtc'
 $wireguardDest = Join-Path $root 'tools\sidecars\wireguard'
 $lanternDest = Join-Path $root 'tools\sidecars\lantern'
-$radianceSrcDir = Join-Path $root 'tools\radiance-src'
+$radianceSrcDir = Join-Path $root 'tools\radiance-src' # legacy (2040 lantern-bridge); unused by the service build
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "ember-sidecars-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
@@ -243,28 +242,9 @@ try {
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     }
 
-    # warp-plus.exe: verify the source archive, build the sidecar
-    # with the same ambient Go.
-    $warpZip = Join-Path $tmp 'warp-plus-1.2.6.zip'
-    Get-Verified `
-        'https://github.com/bepass-org/warp-plus/archive/refs/tags/v1.2.6.zip' `
-        '39bee06a3f943a18ccab8445b80142ea21f7f8eef9db1dd1eb2996c1649a2950' `
-        $warpZip
-    $warpDir = Join-Path $tmp 'warp-plus'
-    Expand-Archive -Path $warpZip -DestinationPath $warpDir -Force
-    $warpSrc = Join-Path $warpDir 'warp-plus-1.2.6'
-    New-Item -ItemType Directory -Force $warpDest | Out-Null
-    Push-Location $warpSrc
-    try {
-        $env:GOOS = 'windows'
-        $env:GOARCH = 'amd64'
-        $env:CGO_ENABLED = '0'
-        & go build -trimpath -ldflags '-s -w' -o (Join-Path $warpDest 'warp-plus.exe') ./cmd/warp-plus
-        if ($LASTEXITCODE -ne 0) { throw 'warp-plus build failed' }
-    } finally {
-        Pop-Location
-        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
-    }
+    # (warp-plus was built here until the service rebuild
+    # retired it — WARP is a service-minted WireGuard profile
+    # now; see the header note.)
 
     # Provisioned toolchains for the two native builds below
     # (aether's Rust/cc-rs and ciadpi's C): the runner's own
@@ -409,33 +389,34 @@ try {
     # Psiphon: verify the source archive, then build the
     # ConsoleClient for Windows from it (the vendored tree builds
     # offline).
-    $psiZip = Join-Path $tmp 'psiphon-tunnel-core-2.0.42.zip'
+    $psiZip = Join-Path $tmp 'psiphon-tunnel-core-2.0.43.zip'
     Get-Verified `
-        'https://github.com/Psiphon-Labs/psiphon-tunnel-core/archive/refs/tags/v2.0.42.zip' `
-        'ca901f48e7d43f92c67cd568b6d466a4cf08c8cf431c74027e75952126d882cb' `
+        'https://github.com/Psiphon-Labs/psiphon-tunnel-core/archive/refs/tags/v2.0.43.zip' `
+        '5cbcc4c080dee50009acc9a779e4923eaf5aa3926d0e4545b432155c56f2be77' `
         $psiZip
     $psiDir = Join-Path $tmp 'psiphon'
     Expand-Archive -Path $psiZip -DestinationPath $psiDir -Force
-    $psiSrc = Join-Path $psiDir 'psiphon-tunnel-core-2.0.42'
+    $psiSrc = Join-Path $psiDir 'psiphon-tunnel-core-2.0.43'
     New-Item -ItemType Directory -Force $psiDest | Out-Null
     $psiExe = Join-Path $psiDest 'psiphon-core.exe'
-    # The build's Go is pinned EXACTLY to go1.26.8 — never the
-    # ambient toolchain. tunnel-core v2.0.42's vendored psiphon-tls
+    # The build's Go is pinned EXACTLY to go1.26.10 — never the
+    # ambient toolchain. tunnel-core's vendored psiphon-tls
     # mirrors crypto/tls internals via unsafe and panics at init
     # ("tls: ConnectionState is not equal to tls.ConnectionState:
     # struct field count mismatch") when built with any other Go;
     # the ambient Go (the app core's 1.27.x) produced a
     # psiphon-core.exe that could never start at all, on any
-    # machine. Upstream's own pin is go1.26.8 in both places that
-    # state it: the go.mod toolchain line and ConsoleClient/
-    # Dockerfile's GOVERSION. GOTOOLCHAIN=local keeps the build on
-    # it. (Verified 2026-11-01 with Linux twins of both toolchains:
-    # go1.27.2 → the panic, verbatim; go1.26.8 → init, listeners
-    # and notices as normal.)
-    $goZip = Join-Path $tmp 'go1.26.8.windows-amd64.zip'
+    # machine. Upstream's own pin for v2.0.43 is go1.26.10 in both
+    # places that state it: the go.mod toolchain line and
+    # ConsoleClient/Dockerfile's GOVERSION. GOTOOLCHAIN=local
+    # keeps the build on it. (The pin discipline was verified
+    # 2026-11-01 on v2.0.42 with Linux twins of both toolchains:
+    # go1.27.2 → the panic, verbatim; the pinned Go → init,
+    # listeners and notices as normal.)
+    $goZip = Join-Path $tmp 'go1.26.10.windows-amd64.zip'
     Get-Verified `
-        'https://go.dev/dl/go1.26.8.windows-amd64.zip' `
-        'b92c3b2adae85a11ba71fe7216daf0d84e82af4c8ab6c5625807f28622043a59' `
+        'https://go.dev/dl/go1.26.10.windows-amd64.zip' `
+        '7ecd2d7260e82c59bcbd7f1077a07cee2dea607295b858df67195a1e4e09629b' `
         $goZip
     $goDir = Join-Path $tmp 'go-psiphon'
     Expand-Archive -Path $goZip -DestinationPath $goDir -Force
@@ -665,55 +646,72 @@ try {
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     }
 
-    # lanternd.exe + lantern-bridge.exe (the Lantern
-    # engine, W3): the radiance daemon built with the
-    # `novpn` tag — its sing-box then serves a mixed
-    # SOCKS/HTTP inbound (RADIANCE_SOCKS_ADDRESS) instead
-    # of owning a TUN, and Ember captures through its own
-    # TUN bridge. The daemon's control API lives on a
-    # named pipe Dart cannot dial, so the bridge
-    # (win-work\lantern-bridge, over radiance's own IPC
-    # client) re-serves it on stdio. The extracted tree
-    # also stays at tools\radiance-src: the bridge's
-    # go.mod replaces the radiance module with it. Warns
-    # instead of failing: without these the Lantern engine
-    # reports unavailable in-app.
+    # lanternd.exe (the Lantern engine, service rebuild):
+    # the radiance daemon at the pin Lantern v10.0.5-beta.1
+    # itself carries (its go.mod: radiance
+    # e28b97171b177fda824f06644c45a4c73df7782b), built
+    # FULL-VPN — radiance's own daemon tag set, NO `novpn`:
+    # radiance owns its TUN (sing-tun + Wintun) and serves
+    # its control API on its named pipe; the Ember service
+    # supervises it (with _LANTERND_CHILD=1) and is the
+    # pipe's only caller. The 2040 novpn build +
+    # lantern-bridge stdio shim are gone.
+    # TOOLCHAIN: this pin's sing-box-minimal predates
+    # Go 1.27 (its v2rayhttp linkname breaks at link time
+    # from a clean cache), so the build runs under
+    # radiance's own declared toolchain, Go 1.26.10, via
+    # GOTOOLCHAIN — proven host-side 2026-11-28 (binary
+    # 68,995,584 B, sha256 69efa166…). Warns instead of
+    # failing: without it the Lantern engine reports
+    # unavailable in-app.
     $radianceZip = Join-Path $tmp 'radiance-src.zip'
     Get-Verified `
-        'https://github.com/getlantern/radiance/archive/051b4de.zip' `
-        'dd1db8bd65469c1134ca62f1de120ebb1b4e97d2e29a41919c3f1f0e4cd196b7' `
+        'https://github.com/getlantern/radiance/archive/e28b97171b177fda824f06644c45a4c73df7782b.zip' `
+        '831f4190419979a0bab356c5d7acaa907dc638ba57ef228d6b49c9667fe2a4bf' `
         $radianceZip
     $radianceDir = Join-Path $tmp 'radiance'
     Expand-Archive -Path $radianceZip -DestinationPath $radianceDir -Force
-    $radianceSrc = Join-Path $radianceDir 'radiance-051b4de9077337cd81fea5b6c1ab50e602959387'
-    if (Test-Path $radianceSrcDir) { Remove-Item $radianceSrcDir -Recurse -Force }
-    Copy-Item $radianceSrc $radianceSrcDir -Recurse -Force
+    $radianceSrc = Join-Path $radianceDir 'radiance-e28b97171b177fda824f06644c45a4c73df7782b'
     New-Item -ItemType Directory -Force $lanternDest | Out-Null
-    Push-Location $radianceSrcDir
+    Push-Location $radianceSrc
     try {
         $env:GOOS = 'windows'
         $env:GOARCH = 'amd64'
         $env:CGO_ENABLED = '0'
-        & go build -p 2 -trimpath -tags novpn -ldflags '-s -w' -o (Join-Path $lanternDest 'lanternd.exe') ./cmd/lanternd
+        $env:GOTOOLCHAIN = 'go1.26.10'
+        $buildTime = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        & go build -p 2 -trimpath -tags 'with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api' -ldflags "-s -w -X github.com/getlantern/radiance/common.Commit=e28b971 -X github.com/getlantern/radiance/common.BuildTime=$buildTime" -o (Join-Path $lanternDest 'lanternd.exe') ./cmd/lanternd
         if ($LASTEXITCODE -ne 0) {
             Write-Warning 'lanternd build failed on this machine — the Lantern engine will report unavailable in this package.'
         }
     } finally {
         Pop-Location
-        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED, Env:GOTOOLCHAIN -ErrorAction SilentlyContinue
     }
-    Push-Location (Join-Path $root 'lantern-bridge')
-    try {
-        $env:GOOS = 'windows'
-        $env:GOARCH = 'amd64'
-        $env:CGO_ENABLED = '0'
-        & go build -p 2 -trimpath -ldflags '-s -w' -o (Join-Path $lanternDest 'lantern-bridge.exe').
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning 'lantern-bridge build failed on this machine — the Lantern engine will report unavailable in this package.'
+    # usque.exe (the MASQUE core, MIT): built from the
+    # pinned vendored fork at vendor\usque (v4.2.1). Its
+    # go.mod asks for Go 1.26.3; the ambient toolchain
+    # (1.27.x) builds it — proven host-side 2026-11-28
+    # (13,139,456 B, sha256 6b5db810…). Warns instead of
+    # failing: EmberWarp/MASQUE then fall back to aether.
+    $usqueSrc = Join-Path $root 'vendor\usque'
+    if (Test-Path (Join-Path $usqueSrc 'go.mod')) {
+        New-Item -ItemType Directory -Force $usqueDest | Out-Null
+        Push-Location $usqueSrc
+        try {
+            $env:GOOS = 'windows'
+            $env:GOARCH = 'amd64'
+            $env:CGO_ENABLED = '0'
+            & go build -p 2 -trimpath -ldflags '-s -w' -o (Join-Path $usqueDest 'usque.exe') .
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning 'usque build failed on this machine — MASQUE will fall back to aether in this package.'
+            }
+        } finally {
+            Pop-Location
+            Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
         }
-    } finally {
-        Pop-Location
-        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    } else {
+        Write-Warning 'vendor\usque is missing — MASQUE will fall back to aether in this package.'
     }
 
     # ciadpi.exe (the Zapret desync proxy): built from the
@@ -787,10 +785,10 @@ try {
 
 Write-Host "Sidecars in $dest (Xray-core v26.10.21, Wintun 0.14.1):"
 Get-ChildItem $dest | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
-Write-Host "Sidecars in $psiDest (Psiphon tunnel-core v2.0.42 ConsoleClient):"
+Write-Host "Sidecars in $psiDest (Psiphon tunnel-core v2.0.43 ConsoleClient):"
 Get-ChildItem $psiDest | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
-Write-Host "Sidecars in $warpDest (warp-plus v1.2.6):"
-Get-ChildItem $warpDest | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
+Write-Host "Sidecars in $usqueDest (usque v4.2.1, if built):"
+Get-ChildItem $usqueDest -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
 Write-Host "Sidecars in $aetherDest (Aether d58f9d5, if built):"
 Get-ChildItem $aetherDest -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
 Write-Host "Sidecars in $ovpnDest (OpenVPN 2.6.23):"
@@ -805,7 +803,7 @@ foreach ($pair in @(
     @($wstunnelDest, 'wstunnel v11.1.0'),
     @($olcrtcDest, 'olcrtc f3ad8fb'),
     @($wireguardDest, 'AmneziaWG 3.1.0'),
-    @($lanternDest, 'radiance lanternd (novpn) + bridge 051b4de')
+    @($lanternDest, 'radiance lanternd e28b971 (full-VPN)')
 )) {
     Write-Host "Sidecars in $($pair[0]) ($($pair[1])):"
     Get-ChildItem $pair[0] -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
