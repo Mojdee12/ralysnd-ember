@@ -326,3 +326,14 @@ back-to-back in ONE build. Running record:
   fails there, EmberWarp/MASQUE report unavailable
   honestly, as in 2038/2039.
 - Version: pubspec 2.2.0+2040, appBuildNumber '2040'.
+- **CI + package (2040).** Runs: 46054304209 fail (psiphon
+  smoke constant + aether CMake generator), 46055590275 fail
+  (sudoku submodules + AmneziaWG signer name), 46059818188
+  SUCCESS (commits 585f6da + e8fd6cc + 78f0f69). Installer
+  124,489,407 B sha256 3417ef58…; portable zip 225,042,781 B
+  sha256 ac7b6633…. Zip inventory verified complete — every
+  sidecar incl. aether.exe, lanternd + lantern-bridge,
+  sudokubox, amneziawg. Packages in ~/workspace/ember-app/
+  pkg-win-2040/. The windows.yml RegionHop-secret env change
+  remains unapplied (workflow scope) — this package carries
+  the placeholder defaults, honestly noticied in-app.
