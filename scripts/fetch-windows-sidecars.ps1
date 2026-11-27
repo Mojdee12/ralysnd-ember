@@ -558,6 +558,11 @@ try {
         Write-Warning 'sudokubox source clone failed — Sudoku profiles will report their engine unavailable in this package.'
     } else {
         & git -C $sudokuSrc checkout --quiet '1614c5edb52dd44a4cc079201ba1e790fdfad8a0'
+        # The fork's replace/ tree is git SUBMODULES
+        # (hiddify/psiphon-tls and friends) — a plain clone
+        # leaves them empty and the build dies reading
+        # replace/psiphon-tls/go.mod (CI run 46055590275).
+        & git -C $sudokuSrc submodule update --init --recursive --quiet
     }
     New-Item -ItemType Directory -Force $sudokuDest | Out-Null
     Push-Location $sudokuSrc
@@ -752,7 +757,13 @@ try {
         'a1b48ea8699cd347832a3691d832004574ef8ad65bcf887611ac8acb99b7de8b' `
         $awgMsi
     $awgSig = Get-AuthenticodeSignature $awgMsi
-    if ($awgSig.Status -ne 'Valid' -or $awgSig.SignerCertificate.Subject -notmatch 'Amnezia') {
+    # The 3.1.0 MSI's signer is the Amnezia project's legal
+    # entity "Privacy Technologies OU" (verified from the CI
+    # log of run 46055590275: Status Valid, subject
+    # "CN=Privacy Technologies OU, O=Privacy Technologies OU,
+    # S=Harjumaa, C=EE") — the sha256 pin above is the primary
+    # check; this is the second factor.
+    if ($awgSig.Status -ne 'Valid' -or $awgSig.SignerCertificate.Subject -notmatch 'Privacy Technologies') {
         throw "AmneziaWG MSI signature check failed: $($awgSig.Status) / $($awgSig.SignerCertificate.Subject)"
     }
     $awgExtract = Join-Path $tmp 'amneziawg-extract'
