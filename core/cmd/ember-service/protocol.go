@@ -10,6 +10,11 @@
 // (proc.*, tun.*) so an engine's binary can be swapped without
 // the service changing. Engine semantics — argv shapes, output
 // parsing, connect proofs — stay with the app's controllers.
+//
+// The config-fed process flow is three calls: proc.start with
+// {"stdin":true}, then proc.write {"name","line"} per config
+// line, then proc.close-stdin {"name"} to deliver the EOF the
+// core waits for before it serves anything.
 package main
 
 import "encoding/json"

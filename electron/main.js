@@ -3,7 +3,7 @@
  * Pure client of the Go Windows service (named pipe \\.\pipe\RalysndEmberService.v1,
  * JSON lines, protocol v=1). No engine logic lives here beyond the IPC client,
  * the persistent store, the safeStorage secret vault and the updater guard. */
-const { app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, shell, nativeImage, screen } = require('electron');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -54,7 +54,13 @@ const DEFAULT_STATE = {
     byedpiHop: false, dailyProblemReport: false, appLock: false,
     sessionBudget: false, batteryReport: false, leakTestOnConnect: false,
     tunMode: true, systemProxy: false,
+    startOnBoot: false, closeToTray: false,   // side effects applied in main (see applySettingsSideEffects)
     emberwarpEngine: 'usque',           // 'usque' (primary) | 'aether' (fallback)
+    // Renderer-consumed keys (2042 settings data layer): sniffing follows
+    // v2rayNG's default (on, http/tls), the rest are Ember features and
+    // therefore DEFAULT OFF / neutral per the owner's law.
+    sniffing: true, fakeDns: false,
+    routingPreset: 'global', domainStrategy: 'IPIfNonMatch',
     // DNS defaults = v2rayNG's own, verbatim.
     remoteDns: 'https://dns.google/dns-query',
     localDns: '8.8.8.8',
@@ -97,25 +103,85 @@ function secretSet(key, value) {
 }
 
 /* ---------- service client (JSON lines over the named pipe) ---------- */
+/* Tri-state service truthfulness (audit H-1/M-4). Three distinguishable
+ * states, never collapsed into one another:
+ *   'running' — pipe connected AND hello answered (svc:status additionally
+ *               requires service.status to answer; see the IPC handler).
+ *   'error'   — the pipe connected but something is wrong: hello failed, or
+ *               a live service.status call threw / timed out. `error`
+ *               carries the actual message.
+ *   'absent'  — the pipe connection itself is refused / unreachable; the
+ *               service is not there. `error` carries the connect error.
+ * Socket-connect and hello success are tracked SEPARATELY (pipeUp vs
+ * helloOk): a connected socket alone never proves a running service. */
+/* Per-method IPC timeouts (audit W1): the default stays 30 s, but
+ * methods whose service-side work legitimately runs longer get a
+ * budget that covers it — lantern.call wraps daemon calls the
+ * service allows 70 s, and wg.start polls the SCM through slow
+ * sc.exe runs. A shell timeout shorter than the service's own
+ * duration desyncs state: the shell marks Failed while the service
+ * completes the start. */
+const CALL_TIMEOUTS_MS = { 'lantern.call': 90000, 'wg.start': 75000 };
+const DEFAULT_CALL_TIMEOUT_MS = 30000;
+
 class ServiceClient {
   constructor() {
     this.sock = null; this.buf = ''; this.nextId = 1;
-    this.pending = new Map(); this.connected = false; this.retry = null;
+    this.pending = new Map(); this.retry = null;
+    this.pipeUp = false;      // socket connected to the pipe
+    this.helloOk = false;     // hello answered on this socket
+    this.helloSettled = false; // first hello outcome (ok OR fail) seen — latches
+    this.lastError = null;    // last connect / hello error message
     this.listeners = [];
   }
   onEvent(fn) { this.listeners.push(fn); }
   emitEvent(ev) { this.listeners.forEach(fn => { try { fn(ev); } catch {} }); }
+  emitState() { this.emitEvent({ event: 'service.state', data: this.snapshot() }); }
+  /* Current tri-state snapshot (no live call). `error` is present on
+   * 'error' and 'absent', absent on 'running'.
+   * Pre-hello phase (audit W12): until the FIRST hello settles, the
+   * snapshot is the sentinel {state:'error', error:'connecting'} —
+   * "not yet connected" must never be reported as 'absent' ("not
+   * installed"): at every launch there is a window where the socket
+   * is still connecting and hello has not answered. The first
+   * socket error/close also settles the phase (a refused pipe IS
+   * the first outcome). After that, normal tri-state rules apply. */
+  snapshot() {
+    if (!this.helloSettled) return { state: 'error', error: 'connecting' };
+    if (this.sock && this.pipeUp && this.helloOk) return { state: 'running' };
+    if (this.sock && this.pipeUp) {
+      return { state: 'error', error: this.lastError || 'Ember service hello failed' };
+    }
+    return { state: 'absent', error: this.lastError || 'Ember service unreachable' };
+  }
   connect() {
     if (this.sock) return;
-    const s = net.connect(PIPE);
+    // Dev/test override (never set in production): EMBER_SERVICE_ADDR=
+    // host:port dials the service's loopback console listener instead of
+    // the named pipe — this is how the contract suite and the end-to-end
+    // verification drive the real shell against the real service.
+    const devAddr = process.env.EMBER_SERVICE_ADDR;
+    let s;
+    if (devAddr) {
+      const i = devAddr.lastIndexOf(':');
+      s = net.connect({ host: devAddr.slice(0, i), port: Number(devAddr.slice(i + 1)) });
+    } else {
+      s = net.connect(PIPE);
+    }
     this.sock = s;
+    let sockError = null;
     s.setEncoding('utf8');
     s.on('connect', async () => {
-      this.connected = true;
-      this.emitEvent({ event: 'service.state', data: { state: 'connected' } });
-      try { await this.call('hello', { appRoot: appRoot() }); } catch (e) {
-        this.emitEvent({ event: 'service.state', data: { state: 'error', error: String(e.message || e) } });
+      this.pipeUp = true;
+      try {
+        await this.call('hello', { appRoot: appRoot() });
+        this.helloOk = true; this.lastError = null;
+      } catch (e) {
+        this.helloOk = false;
+        this.lastError = String(e.message || e);
       }
+      this.helloSettled = true; // first hello outcome, ok or fail (W12)
+      if (this.sock === s) this.emitState();
     });
     s.on('data', d => {
       this.buf += d;
@@ -130,22 +196,42 @@ class ServiceClient {
       }
     });
     const down = () => {
-      this.connected = false;
+      if (this.sock && this.sock !== s) return; // stale socket (reconnectNow already replaced it)
+      this.helloSettled = true; // a refused/closed pipe settles the pre-hello phase (W12)
+      const wasUp = this.pipeUp || this.helloOk;
+      this.pipeUp = false; this.helloOk = false;
+      if (sockError) this.lastError = String(sockError.message || sockError);
+      else if (!wasUp && !this.lastError) this.lastError = 'Ember service unreachable';
+      else if (wasUp) this.lastError = 'Ember service connection closed';
       for (const p of this.pending.values()) p.reject(new Error('Ember service unreachable'));
       this.pending.clear();
       if (this.sock === s) this.sock = null;
-      this.emitEvent({ event: 'service.state', data: { state: 'unreachable' } });
+      this.emitState(); // pipe is gone → 'absent' with the connect/close error
       if (!this.retry) this.retry = setTimeout(() => { this.retry = null; this.connect(); }, 4000);
     };
-    s.on('error', down); s.on('close', down);
+    s.on('error', e => { sockError = e; down(); });
+    s.on('close', down);
+  }
+  /* Kick an immediate reconnect (e.g. right after a successful install).
+   * No-op when the service is already proven running. */
+  reconnectNow() {
+    if (this.retry) { clearTimeout(this.retry); this.retry = null; }
+    if (this.sock && this.helloOk) return;
+    if (this.sock) {
+      const s = this.sock; this.sock = null;
+      this.pipeUp = false; this.helloOk = false;
+      try { s.destroy(); } catch {}
+    }
+    this.connect();
   }
   call(method, params) {
-    if (!this.sock || !this.connected) return Promise.reject(new Error('Ember service unreachable'));
+    if (!this.sock || !this.pipeUp) return Promise.reject(new Error('Ember service unreachable'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.sock.write(JSON.stringify({ v: 1, id, method, params: params || {} }) + '\n');
-      setTimeout(() => { if (this.pending.delete(id)) reject(new Error('service call timed out: ' + method)); }, 30000);
+      const timeoutMs = CALL_TIMEOUTS_MS[method] || DEFAULT_CALL_TIMEOUT_MS;
+      setTimeout(() => { if (this.pending.delete(id)) reject(new Error('service call timed out: ' + method)); }, timeoutMs);
     });
   }
 }
@@ -173,14 +259,55 @@ function checkUpdates() {
   });
 }
 
+/* ---------- settings side effects (audit H-4) ----------
+ * Only the side effects that genuinely exist in the main process are
+ * applied; every other canonical settings key is data for the renderer /
+ * controllers and gets NO fake behaviour here.
+ *   settings.startOnBoot → app.setLoginItemSettings({openAtLogin})
+ *   settings.closeToTray → honoured by the window 'close' handler below. */
+function applySettingsSideEffects() {
+  const st = (loadState().settings) || {};
+  try { app.setLoginItemSettings({ openAtLogin: !!st.startOnBoot }); } catch {}
+}
+
 /* ---------- window / tray ---------- */
-let win = null, tray = null, protectionWord = 'Not protected';
+let win = null, tray = null, protectionWord = 'Not protected', quitting = false;
+function trayIcon() {
+  const candidates = [
+    path.join(__dirname, '..', 'app', 'assets', 'logo.png'),   // dev tree
+    path.join(appRoot(), 'app', 'assets', 'logo.png'),          // beside the app, if shipped
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) {
+        const img = nativeImage.createFromPath(c);
+        if (!img.isEmpty()) return img.resize({ width: 16, height: 16 });
+      }
+    } catch {}
+  }
+  return nativeImage.createEmpty();
+}
 function createWindow() {
+  /* Clamp to the primary display's work area (audit B-4): never create a
+   * window larger than the usable screen, and never let the minimum size
+   * exceed it either. Centred in the work area. The renderer's fitStage
+   * scales to the window, so a clamped window fits the screen. */
+  const wa = screen.getPrimaryDisplay().workAreaSize;
+  const width = Math.min(1440, wa.width);
+  const height = Math.min(900, wa.height);
   win = new BrowserWindow({
-    width: 1440, height: 900, useContentSize: true, minWidth: 1100, minHeight: 700,
+    width, height, useContentSize: true,
+    minWidth: Math.min(1100, width), minHeight: Math.min(700, height),
     backgroundColor: '#050607', title: 'Ralysnd Ember', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  win.center();
+  /* settings.closeToTray: hide to the tray instead of quitting — only
+   * when a tray actually exists to bring the window back from. */
+  win.on('close', (e) => {
+    const st = (loadState().settings) || {};
+    if (!quitting && tray && st.closeToTray) { e.preventDefault(); win.hide(); }
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'),
     { hash: SHOOT ? '/home' : '' });
@@ -193,26 +320,94 @@ function refreshTray() {
     { label: `Ralysnd Ember — ${protectionWord}`, enabled: false },
     { type: 'separator' },
     { label: 'Show', click: () => { if (!win) createWindow(); win.show(); win.focus(); } },
-    { label: 'Quit', click: () => app.quit() },
+    { label: 'Quit', click: () => { quitting = true; app.quit(); } },
   ]));
 }
 
 /* ---------- IPC ---------- */
 ipcMain.handle('svc:call', (_e, method, params) => service.call(method, params));
+/* Tri-state status (audit H-1/M-4) — exact return shapes:
+ *   { state: 'running', detail: <service.status payload> }
+ *   { state: 'error',   error: <actual message> }   pipe up / status call failed
+ *   { state: 'absent',  error: <connect error> }    pipe unreachable
+ *   { state: 'error',   error: 'connecting' }       pre-hello sentinel (W12)
+ * A failed or timed-out service.status call is 'error', NEVER 'absent'. */
 ipcMain.handle('svc:status', async () => {
-  if (!service.connected) return { state: 'unreachable' };
-  try { return { state: 'connected', detail: await service.call('service.status', {}) }; }
-  catch (e) { return { state: 'unreachable', error: e.message }; }
+  const snap = service.snapshot();
+  if (snap.state !== 'running') return snap;
+  try { return { state: 'running', detail: await service.call('service.status', {}) }; }
+  catch (e) { return { state: 'error', error: String(e.message || e) }; }
 });
-ipcMain.handle('svc:install', () => {
+/* Install (audit H-3): run the service's `install` verb NOT detached —
+ * capture stdout/stderr, await the exit (120 s timeout), and report the
+ * verb's real outcome. ok:true means the verb exited 0, never "spawned".
+ * On success the ServiceClient reconnect is kicked immediately. */
+ipcMain.handle('svc:install', () => new Promise((resolve) => {
   const exe = enginePath('core', 'ember-service.exe');
-  if (!fs.existsSync(exe)) return { ok: false, error: 'ember-service.exe not found in the core folder.' };
-  const child = spawn(exe, ['install'], { detached: true, stdio: 'ignore' });
-  child.unref();
-  return { ok: true };
+  if (!fs.existsSync(exe)) return resolve({ ok: false, code: null, message: 'ember-service.exe not found in the core folder.' });
+  let child;
+  try { child = spawn(exe, ['install'], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) { return resolve({ ok: false, code: null, message: 'Failed to launch the service installer: ' + String(e.message || e) }); }
+  let out = '', err = '', done = false;
+  const finish = (r) => { if (done) return; done = true; clearTimeout(timer); resolve(r); };
+  const timer = setTimeout(() => {
+    try { child.kill(); } catch {}
+    finish({ ok: false, code: null, message: 'Service install timed out after 120 s.' });
+  }, 120000);
+  if (child.stdout) child.stdout.on('data', d => { out += d; });
+  if (child.stderr) child.stderr.on('data', d => { err += d; });
+  child.on('error', e => finish({ ok: false, code: null, message: 'Failed to launch the service installer: ' + String(e.message || e) }));
+  child.on('close', code => {
+    const message = err.trim() || out.trim() ||
+      (code === 0 ? 'Ember service installed.' : `Service install exited with code ${code}.`);
+    if (code === 0) service.reconnectNow();
+    finish({ ok: code === 0, code, message });
+  });
+}));
+/* TCP reachability probe for the renderer's Servers test buttons and
+ * SOCKS readiness checks: {host, port, timeoutMs} →
+ * {ok:true, ms} | {ok:false, error}. */
+ipcMain.handle('net:tcpPing', (_e, opts) => new Promise((resolve) => {
+  const host = String((opts && opts.host) || '');
+  const port = Number(opts && opts.port);
+  const timeoutMs = Math.min(Math.max(Number(opts && opts.timeoutMs) || 5000, 100), 30000);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return resolve({ ok: false, error: 'net:tcpPing needs a valid host and port.' });
+  }
+  const started = Date.now();
+  let sock, done = false;
+  const finish = (r) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(r); };
+  try { sock = net.connect({ host, port }); }
+  catch (e) { return resolve({ ok: false, error: String(e.message || e) }); }
+  sock.setTimeout(timeoutMs, () => finish({ ok: false, error: `TCP connect to ${host}:${port} timed out after ${timeoutMs} ms.` }));
+  sock.once('connect', () => finish({ ok: true, ms: Date.now() - started }));
+  sock.once('error', e => finish({ ok: false, error: String(e.message || e) }));
+}));
+/* Subscription fetch for the renderer (2042): renderer fetch() is bound
+ * by CORS, which subscription hosts do not grant; the main process is
+ * not. GET only, bounded size and time. {url} → {ok:true, text} |
+ * {ok:false, error}. */
+ipcMain.handle('net:fetchText', async (_e, opts) => {
+  const url = String((opts && opts.url) || '');
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'net:fetchText needs an http(s) URL.' };
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 20000);
+    const res = await fetch(url, { signal: ctl.signal, redirect: 'follow',
+      headers: { 'user-agent': 'RalysndEmber/2.2' } });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, error: 'HTTP ' + res.status };
+    const text = await res.text();
+    if (text.length > 8 * 1024 * 1024) return { ok: false, error: 'Subscription body too large.' };
+    return { ok: true, text };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('store:get', (_e, key) => { const s = loadState(); return key ? s[key] : s; });
-ipcMain.handle('store:set', (_e, key, value) => { const s = loadState(); s[key] = value; saveState(); return true; });
+ipcMain.handle('store:set', (_e, key, value) => {
+  const s = loadState(); s[key] = value; saveState();
+  applySettingsSideEffects();   // startOnBoot / closeToTray take effect on save
+  return true;
+});
 ipcMain.handle('secret:get', (_e, key) => secretGet(key));
 ipcMain.handle('secret:set', (_e, key, value) => { secretSet(key, value); return true; });
 ipcMain.handle('secret:has', (_e, key) => secretGet(key) != null);
@@ -227,12 +422,13 @@ ipcMain.on('app:protection', (_e, word) => { protectionWord = String(word || 'No
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   app.on('second-instance', () => { if (win) { win.show(); win.focus(); } });
+  app.on('before-quit', () => { quitting = true; });
   app.whenReady().then(() => {
-    loadState(); service.connect();
+    loadState(); applySettingsSideEffects(); service.connect();
     service.onEvent(ev => { if (win && !win.isDestroyed()) win.webContents.send('svc:event', ev); });
     createWindow();
     try {
-      tray = new Tray(nativeImage.createEmpty());
+      tray = new Tray(trayIcon());
       refreshTray();
     } catch { tray = null; /* headless (xvfb CI) — tray is optional */ }
   });

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -22,9 +24,14 @@ type server struct {
 	ovpn      *ovpnManager
 	warp      *warpManager
 	lantern   *lanternManager
+	wg        *wgManager
 	roots     *rootSet
 	events    *broadcaster
 	startedAt time.Time
+	// dispatchHook, when non-nil, runs at the top of dispatch.
+	// It is a test seam only (the panic-guard regression test
+	// installs a panicking hook); production code never sets it.
+	dispatchHook func(method string)
 }
 
 func newServer(roots *rootSet) *server {
@@ -36,6 +43,7 @@ func newServer(roots *rootSet) *server {
 		ovpn:      newOvpnManager(mgr, events),
 		warp:      newWarpManager(),
 		lantern:   newLanternManager(mgr),
+		wg:        newWGManager(roots),
 		roots:     roots,
 		events:    events,
 		startedAt: time.Now(),
@@ -90,7 +98,25 @@ func (s *server) handle(conn net.Conn) {
 	}
 }
 
-func (s *server) dispatch(req request) response {
+// dispatch runs one request. A panicking handler must never
+// take the SYSTEM service — and every engine it owns — down
+// with it (2041 audit A3): the panic is recovered here and
+// returned as an ordinary error frame, and the connection
+// stays up for the next request.
+func (s *server) dispatch(req request) (resp response) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ember-service: dispatch %s panicked: %v", req.Method, r)
+			resp = failResp(req.ID, fmt.Sprintf("internal error: %v", r))
+		}
+	}()
+	return s.dispatchChecked(req)
+}
+
+func (s *server) dispatchChecked(req request) response {
+	if s.dispatchHook != nil {
+		s.dispatchHook(req.Method)
+	}
 	if req.V != protocolVersion {
 		return failResp(req.ID, "unsupported protocol version")
 	}
@@ -102,8 +128,15 @@ func (s *server) dispatch(req request) response {
 			AppRoot string `json:"appRoot,omitempty"`
 		}
 		err = paramsInto(req.Params, &p)
-		if err == nil && p.AppRoot != "" {
-			s.roots.add(p.AppRoot)
+		if err == nil && p.AppRoot != "" && !s.roots.has(p.AppRoot) {
+			// Roots are install-bound ONLY (2041 audit B-S1):
+			// the handshake is accepted, but a root the
+			// installer never recorded is ignored — never
+			// registered. Registering it here would let any
+			// pipe client point this SYSTEM service at a
+			// folder it controls. The reply shape is
+			// unchanged, so the shell's hello is unaffected.
+			log.Printf("ember-service: hello from unrecorded app root %q ignored (roots are install-bound)", p.AppRoot)
 		}
 		if err == nil {
 			result = map[string]interface{}{
@@ -148,6 +181,17 @@ func (s *server) dispatch(req request) response {
 		if err = paramsInto(req.Params, &p); err == nil {
 			err = s.mgr.write(p.Name, p.Line)
 			result = map[string]interface{}{"written": err == nil}
+		}
+	case "proc.close-stdin":
+		// Completes the config-fed flow: proc.start with
+		// stdin:true, proc.write lines, then this — the EOF
+		// a core like Xray waits for before serving.
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err = paramsInto(req.Params, &p); err == nil {
+			err = s.mgr.closeStdin(p.Name)
+			result = map[string]interface{}{"closed": err == nil}
 		}
 	case "tun.start":
 		var p tunStartParams
@@ -208,6 +252,25 @@ func (s *server) dispatch(req request) response {
 		var p lanternCallParams
 		if err = paramsInto(req.Params, &p); err == nil {
 			result, err = s.lantern.call(p)
+		}
+	case "wg.start":
+		var p wgStartParams
+		if err = paramsInto(req.Params, &p); err == nil {
+			result, err = s.wg.start(p)
+		}
+	case "wg.stop":
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err = paramsInto(req.Params, &p); err == nil {
+			result, err = s.wg.stop(p.Name)
+		}
+	case "wg.state":
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err = paramsInto(req.Params, &p); err == nil {
+			result = s.wg.state(p.Name)
 		}
 	default:
 		err = errors.New("unknown method " + req.Method)

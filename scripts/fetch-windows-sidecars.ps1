@@ -688,6 +688,13 @@ try {
         Pop-Location
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED, Env:GOTOOLCHAIN -ErrorAction SilentlyContinue
     }
+    # wintun.dll beside lanternd.exe (audit C2): radiance's
+    # sing-tun loads wintun.dll BY NAME from the daemon's own
+    # folder — the same Wintun 0.14.1 distribution copy the
+    # xray and wireguard sections stage. Without it Lantern
+    # authenticates and answers status but can never raise
+    # its TUN on a clean install.
+    Copy-Item (Join-Path $wintunDir 'wintun\bin\amd64\wintun.dll') $lanternDest -Force
     # usque.exe (the MASQUE core, MIT): built from the
     # pinned vendored fork at vendor\usque (v4.2.1). Its
     # go.mod asks for Go 1.26.3; the ambient toolchain

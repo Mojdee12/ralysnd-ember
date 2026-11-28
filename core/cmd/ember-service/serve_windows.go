@@ -4,9 +4,11 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"time"
 
 	"github.com/Microsoft/go-winio"
@@ -16,37 +18,106 @@ import (
 
 // listenPipe opens the service's named pipe. The security
 // descriptor grants SYSTEM and Administrators full access and
-// the console session's user read/write — the app runs as that
-// user. When no console user can be resolved (headless CI),
-// BUILTIN\Users is granted instead so the smoke test can dial.
+// INTERACTIVE (S-1-5-4) read/write: whichever user is
+// interactively logged on can CONNECT to the pipe, while
+// non-interactive accounts (services, scheduled tasks, other
+// sessions' leftovers) cannot.
+//
+// INTERACTIVE is only a pre-filter, NOT the security
+// boundary (2042 adversarial review C2): on a multi-user PC
+// every interactive account passes it. The boundary is the
+// owner-SID binding in ownerBoundListener below — when the
+// installer has recorded an owner SID in service.json, a
+// connection is served only if the connecting client's own
+// SID matches it. (App roots are likewise install-bound:
+// server.go hello, audit B-S1.)
+//
+// This replaces the old shape (2041 audit B-S2), which bound
+// the ACE once, at listen time, to whoever the console user
+// happened to be then — locking the app out after a user
+// switch — and fell back to BUILTIN\Users (every local
+// account) when no console user resolved at boot.
 func listenPipe() (net.Listener, error) {
-	userACE := "(A;;GRGW;;;BU)"
-	if sid := consoleUserSID(); sid != "" {
-		userACE = "(A;;GRGW;;;" + sid + ")"
-	}
-	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;BA)" + userACE
-	return winio.ListenPipe(pipePath, &winio.PipeConfig{
+	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;S-1-5-4)"
+	ln, err := winio.ListenPipe(pipePath, &winio.PipeConfig{
 		SecurityDescriptor: sddl,
 		InputBufferSize:    64 * 1024,
 		OutputBufferSize:   64 * 1024,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return ownerBoundListener{Listener: ln}, nil
 }
 
-func consoleUserSID() string {
-	session := windows.WTSGetActiveConsoleSessionId()
-	if session == 0xFFFFFFFF {
-		return ""
+// ownerBoundListener enforces the owner-SID binding (review
+// C2, service half) on every accepted pipe connection. The
+// recorded SID is read from service.json per connection, so
+// an install that records it while the service is already
+// running takes effect without a restart. No recorded SID
+// (dev/console/portable runs) disables the check and every
+// connection is allowed.
+type ownerBoundListener struct {
+	net.Listener
+}
+
+func (l ownerBoundListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		recorded := loadOwnerSID()
+		if recorded == "" {
+			return conn, nil
+		}
+		sid, err := pipeClientSID(conn)
+		if err != nil {
+			log.Printf("ember-service: cannot identify pipe client, refusing connection: %v", err)
+			conn.Close()
+			continue
+		}
+		if !ownerSIDAllows(recorded, sid) {
+			log.Printf("ember-service: refused pipe connection from SID %s (install owner is %s)", sid, recorded)
+			conn.Close()
+			continue
+		}
+		return conn, nil
 	}
-	var token windows.Token
-	if err := windows.WTSQueryUserToken(session, &token); err != nil {
-		return ""
+}
+
+var procImpersonateNamedPipeClient = kernel32.NewProc("ImpersonateNamedPipeClient")
+
+// pipeClientSID identifies the user on the other end of one
+// pipe connection: impersonate the client on this (locked)
+// thread, read the impersonation token's user SID, revert.
+// The handle comes from the winio connection's Fd.
+func pipeClientSID(conn net.Conn) (string, error) {
+	fder, ok := conn.(interface{ Fd() uintptr })
+	if !ok {
+		return "", fmt.Errorf("pipe connection does not expose a handle")
 	}
-	defer token.Close()
-	user, err := token.GetTokenUser()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	r, _, callErr := procImpersonateNamedPipeClient.Call(fder.Fd())
+	if r == 0 {
+		return "", fmt.Errorf("impersonate the pipe client: %v", callErr)
+	}
+	defer func() { _ = windows.RevertToSelf() }()
+	thread, err := windows.GetCurrentThread()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("current thread: %w", err)
 	}
-	return user.User.Sid.String()
+	var tok windows.Token
+	if err := windows.OpenThreadToken(thread, windows.TOKEN_QUERY, true, &tok); err != nil {
+		return "", fmt.Errorf("open the client token: %w", err)
+	}
+	defer tok.Close()
+	user, err := tok.GetTokenUser()
+	if err != nil {
+		return "", fmt.Errorf("read the client token user: %w", err)
+	}
+	return user.User.Sid.String(), nil
 }
 
 func dialPipe(timeout time.Duration) (net.Conn, error) {

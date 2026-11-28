@@ -1,11 +1,16 @@
 'use strict';
 /* Minimal typed bridge — the renderer never touches Node or the pipe directly. */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('ember', {
   call: (method, params) => ipcRenderer.invoke('svc:call', method, params),
   serviceStatus: () => ipcRenderer.invoke('svc:status'),
   installService: () => ipcRenderer.invoke('svc:install'),
+  tcpPing: (host, port, timeoutMs) => ipcRenderer.invoke('net:tcpPing', { host, port, timeoutMs }),
+  fetchText: (url) => ipcRenderer.invoke('net:fetchText', { url }),
+  /* Electron 45 removed File.path; webUtils is the supported way to
+   * learn an imported file's on-disk path (OpenVPN needs configPath). */
+  getPathForFile: (file) => { try { return webUtils.getPathForFile(file) || ''; } catch { return ''; } },
   onEvent: (cb) => { ipcRenderer.on('svc:event', (_e, ev) => cb(ev)); },
   store: {
     get: (key) => ipcRenderer.invoke('store:get', key),

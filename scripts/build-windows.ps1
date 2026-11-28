@@ -20,7 +20,7 @@
 # (scripts\signing-key.ps1) as before.
 # PowerShell 7: Windows PowerShell 5.1 writes zip paths with backslashes.
 #Requires -Version 7
-param([string]$AppVersion, [int]$BuildNumber = 2041)
+param([string]$AppVersion, [int]$BuildNumber = 2042)
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -132,19 +132,22 @@ foreach ($sc in @(
     }
 }
 
-# --- Service smoke (warn, never fail the build) ---
+# --- Service smoke (BLOCKING since 2042, audit F1) ---
 # The service in console mode + its probe/selftest verbs prove
 # the IPC round-trip and a harmless process lifecycle on the
-# build machine. The SCM install/start cycle is attempted only
-# when this step already runs elevated.
+# build machine. A failed probe or selftest FAILS THE BUILD —
+# warn-only smoke is how 2041 shipped green with a broken shell↔
+# service contract. The SCM install/start cycle is attempted only
+# when this step already runs elevated (environment capability,
+# not a code gate, so it stays a warning).
 try {
     $svc = Start-Process "$out\core\ember-service.exe" -ArgumentList 'console' -PassThru -WindowStyle Hidden
     try {
         Start-Sleep -Seconds 2
         & "$out\core\ember-service.exe" probe
-        if ($LASTEXITCODE -eq 0) { Write-Host 'SMOKE: service probe OK' } else { Write-Warning 'SMOKE: service probe FAILED' }
+        if ($LASTEXITCODE -eq 0) { Write-Host 'SMOKE: service probe OK' } else { throw 'SMOKE: service probe FAILED' }
         & "$out\core\ember-service.exe" selftest
-        if ($LASTEXITCODE -eq 0) { Write-Host 'SMOKE: service selftest OK' } else { Write-Warning 'SMOKE: service selftest FAILED' }
+        if ($LASTEXITCODE -eq 0) { Write-Host 'SMOKE: service selftest OK' } else { throw 'SMOKE: service selftest FAILED' }
     } finally {
         Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue
     }
@@ -158,6 +161,9 @@ try {
         Write-Host 'SMOKE: not elevated; the SCM install/start cycle is left to the installer on the owner''s PC.'
     }
 } catch {
+    # A probe/selftest failure is a build failure (see above); only
+    # environment problems (the console could not start at all) warn.
+    if ($_.Exception.Message -like 'SMOKE:*') { throw }
     Write-Warning "SMOKE: service smoke could not run: $_"
 }
 

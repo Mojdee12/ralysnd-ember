@@ -10,3 +10,7 @@
 electron/node_modules/
 electron/dist/
 /dist/
+
+# Local environment files never belong in the repo
+.env
+.env.*

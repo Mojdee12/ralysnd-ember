@@ -300,3 +300,21 @@ button{cursor:pointer;background:none;border:none;color:inherit;font:inherit}
 input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:8px 12px;font-size:13px}
 .svcbar{position:fixed;left:280px;bottom:14px;z-index:50;background:var(--card);border:1px solid var(--line-strong);border-radius:12px;padding:10px 16px;font-size:12.5px;display:none;gap:12px;align-items:center}
 .svcbar.show{display:flex}
+/* Repair 2042: honest disabled controls, popup menus, real inputs */
+.dis{opacity:.45;cursor:not-allowed !important}
+input.fieldbox{width:100%;color:var(--text);outline:none;font:inherit;text-align:left}
+input.fieldbox:focus{border-color:var(--orange)}
+#srv-q{color:var(--text);outline:none}
+.ember-menu{position:fixed;z-index:90;background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.ember-menu-item{padding:8px 12px;font-size:12.5px;color:var(--text);border-radius:7px;cursor:pointer}
+.ember-menu-item:hover{background:var(--panel-soft)}
+.svcdismiss{background:none;border:none;color:var(--faint);font-size:13px;cursor:pointer;padding:2px 4px}
+.ember-dialog-wrap{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);display:grid;place-items:center}
+.ember-dialog{background:var(--card);border:1px solid var(--line-strong);border-radius:14px;padding:18px;width:min(480px,90vw);box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.ember-dialog-msg{font-size:13.5px;color:var(--text);margin-bottom:12px;line-height:1.45}
+.ember-dialog-input{width:100%;box-sizing:border-box;background:var(--panel-soft);border:1px solid var(--line-strong);border-radius:8px;color:var(--text);font-size:13px;padding:9px 11px;outline:none}
+.ember-dialog-input:focus{border-color:var(--accent,#FF7A29)}
+.ember-dialog-row{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.ember-dialog-btn{background:var(--panel-soft);border:1px solid var(--line-strong);color:var(--text);border-radius:8px;font-size:12.5px;padding:7px 16px;cursor:pointer}
+.ember-dialog-btn.ok{background:var(--accent,#FF7A29);border-color:transparent;color:#14100c;font-weight:600}
+.kebab{cursor:pointer}

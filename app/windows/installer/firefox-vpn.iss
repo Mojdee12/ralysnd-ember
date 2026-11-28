@@ -186,18 +186,14 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-; The TUN service, always (no task to choose), with its own administrator
-; prompt; declined, the app installs it the first time TUN mode is chosen.
-; Not in a silent run: no prompt there, and an installed service updates
-; itself from the app. No "only when not installed" check: every install
-; refreshes the service to the bundled build (Install() replaces an
-; existing service) — a reinstall over an older service must never leave
-; a stale service behind to mismatch the new app's protocol.
-Filename: "{app}\core\firefox-vpn-tun.exe"; Parameters: "install"; Flags: waituntilterminated skipifsilent
-; The Ember service (the engines' supervisor), the same way: it
-; elevates itself, copies itself into Program Files, registers
-; and starts; every install refreshes it to the bundled build.
-Filename: "{app}\core\ember-service.exe"; Parameters: "install"; Flags: waituntilterminated skipifsilent
+; The two services are NOT installed from here anymore (audit
+; D1/D2): [Run] entries cannot inspect exit codes, so a failed
+; or declined service install used to complete "successfully"
+; with no service at all. They are installed from [Code]
+; (InstallBundledServices, at ssPostInstall), where the exit
+; code is checked and a failure aborts Setup loudly. Not in a
+; silent run either way: no UAC prompt is possible there, and
+; an installed service updates itself from the app.
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 ; The TUN service goes with the app: through its pipe, with no prompt while
@@ -240,6 +236,17 @@ Type: files; Name: "{app}\version"
 Type: files; Name: "{app}\native_assets.json"
 
 [Code]
+var
+  // Set by PrepareToInstall once a bundled service is confirmed
+  // stopped for file replacement (audit W7): if Setup then
+  // aborts, DeinitializeSetup tries to start the services again
+  // instead of leaving the machine with a dead app until reboot.
+  StoppedBundledServices: Boolean;
+  // Set in CurStepChanged at ssDone, which fires only after a
+  // successful install; its absence in DeinitializeSetup means
+  // Setup aborted (or was cancelled) mid-flight.
+  SetupCompletedOK: Boolean;
+
 const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   InternetKey = 'Software\Microsoft\Windows\CurrentVersion\Internet Settings';
@@ -310,14 +317,169 @@ begin
   end;
 end;
 
-// Installed: the new copy's own uninstall entry knows its folder now.
+// --- Service stop before file replacement (audit D2) -------
+// Before [Files] copies over {app}, both services must be
+// stopped AND verified stopped: their children execute from
+// {app}\xray, {app}\lantern, {app}\core..., and locked images
+// mid-upgrade produced replace errors while the old service
+// kept running the old build.
+
+// ServiceStoppedOrAbsent tells whether sc.exe agrees the
+// service is STOPPED, or does not exist at all (sc query exit
+// code 1060 = no such service — nothing to wait for then).
+function ServiceStoppedOrAbsent(Name: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{sys}\sc.exe'), 'query "' + Name + '"', '',
+     SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 1060) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  // find exits 0 only when the query output says STOPPED.
+  if Exec(ExpandConstant('{cmd}'), '/C sc.exe query "' + Name + '" | find "STOPPED" >nul 2>&1', '',
+     SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
+end;
+
+// StopServiceAndWait asks one service to stop, then polls the
+// SCM until it is stopped or gone (up to ~30 s: the Ember
+// service's children stop serially). False = still not
+// stopped; the caller must not proceed over its locked files.
+function StopServiceAndWait(Name: String): Boolean;
+var
+  ResultCode: Integer;
+  Tries: Integer;
+begin
+  Result := ServiceStoppedOrAbsent(Name);
+  if Result then
+    Exit;
+  Exec(ExpandConstant('{sys}\sc.exe'), 'stop "' + Name + '"', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for Tries := 0 to 59 do
+  begin
+    Sleep(500);
+    if ServiceStoppedOrAbsent(Name) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+  Result := False;
+end;
+
+// PrepareToInstall runs BEFORE any file is copied. Returning
+// a string shows it to the user and aborts Setup — the loud
+// outcome D2 asks for when a service will not stop, instead
+// of copying files over a running service's locked images.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if StopServiceAndWait('RalysndEmberService') then
+    // Confirmed stopped (or absent): remember it, so an abort
+    // from here on can try to bring the services back (W7).
+    StoppedBundledServices := True
+  else
+    Result := 'The Ralysnd Ember service did not stop, so its files cannot be replaced safely. Close Ralysnd Ember, wait a few seconds, and run Setup again.';
+  if Result = '' then
+  begin
+    if StopServiceAndWait('FirefoxVPNTun') then
+      StoppedBundledServices := True
+    else
+      Result := 'The Ralysnd Ember TUN service (FirefoxVPNTun) did not stop, so its files cannot be replaced safely. Close Ralysnd Ember, wait a few seconds, and run Setup again.';
+  end;
+end;
+
+// --- Best-effort service restart after an abort (audit W7) --
+// PrepareToInstall stopped both services before [Files]; if
+// Setup then aborts, its own rollback restores FILES but
+// nothing restarted the still-registered old services, leaving
+// a dead app until reboot. DeinitializeSetup runs on every
+// termination: when Setup did not complete successfully and we
+// stopped the services, try to start them again. Strictly
+// best-effort and defensive: starting an absent service fails
+// harmlessly, starting a running one is refused by the SCM,
+// and no error may escape DeinitializeSetup.
+procedure RestartStoppedBundledServices;
+var
+  ResultCode: Integer;
+begin
+  try
+    Exec(ExpandConstant('{sys}\sc.exe'), 'start "RalysndEmberService"', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+  end;
+  try
+    Exec(ExpandConstant('{sys}\sc.exe'), 'start "FirefoxVPNTun"', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+  end;
+end;
+
+procedure DeinitializeSetup;
+begin
+  try
+    if StoppedBundledServices and not SetupCompletedOK then
+      RestartStoppedBundledServices;
+  except
+  end;
+end;
+
+// --- Service install after files land (audit D1 visibility) -
+// RunServiceInstall runs one self-elevating install verb and
+// CHECKS its exit code. False (with the reason shown) when the
+// verb could not even start, was declined at UAC, or exited
+// non-zero.
+function RunServiceInstall(FileName, LabelName: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(FileName, 'install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Result then
+  begin
+    SuppressibleMsgBox('Setup could not start the ' + LabelName + ' installer (' + FileName + '). Ralysnd Ember will not work without it — run Setup again.', mbCriticalError, MB_OK, IDOK);
+    Exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    SuppressibleMsgBox('Installing the ' + LabelName + ' failed (exit code ' + IntToStr(ResultCode) + '). This usually means the administrator prompt was declined. Ralysnd Ember will not work without it — run Setup again and approve the prompt.', mbCriticalError, MB_OK, IDOK);
+    Result := False;
+  end;
+end;
+
+// InstallBundledServices installs both services, TUN first
+// (the order the old [Run] section used). Any failure raises:
+// an exception in CurStepChanged aborts Setup with the error
+// visible — never a silent "success" with no service (D1).
+procedure InstallBundledServices;
+begin
+  if WizardSilent then
+    Exit;
+  if not RunServiceInstall(ExpandConstant('{app}\core\firefox-vpn-tun.exe'), 'TUN service') then
+    RaiseException('The TUN service did not install; Setup is aborting instead of leaving Ralysnd Ember without it.');
+  if not RunServiceInstall(ExpandConstant('{app}\core\ember-service.exe'), 'Ember service') then
+    RaiseException('The Ember service did not install; Setup is aborting instead of leaving Ralysnd Ember without it.');
+end;
+
+// Installed: the services go in first (a failure aborts
+// loudly, above), then the new copy's own uninstall entry
+// knows its folder now.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    InstallBundledServices;
     RegDeleteValue(HKCU, KeptKey, KeptValue);
     RegDeleteKeyIfEmpty(HKCU, KeptKey);
   end;
+  // ssDone fires only after a successful install: it is the
+  // signal DeinitializeSetup uses to tell a completed Setup
+  // (services freshly installed and started — nothing to
+  // restart) from an aborted one (W7 restart path).
+  if CurStep = ssDone then
+    SetupCompletedOK := True;
 end;
 
 // Uninstalling: the app's autostart entry goes, and so does a Windows

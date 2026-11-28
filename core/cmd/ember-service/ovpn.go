@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,10 +55,16 @@ type ovpnSession struct {
 }
 
 type ovpnManager struct {
-	mu         sync.Mutex
-	mgr        *manager
-	events     *broadcaster
-	sessions   map[string]*ovpnSession
+	mu       sync.Mutex
+	mgr      *manager
+	events   *broadcaster
+	sessions map[string]*ovpnSession
+	// starting holds session names with a start in flight —
+	// the same check-then-act guard as manager.start (W4):
+	// the session only enters the map after mgr.start
+	// returns, so without this a concurrent duplicate start
+	// would launch a second daemon.
+	starting   map[string]bool
 	dial       func(addr string) (net.Conn, error)
 	portPicker func() (int, error)
 	now        func() time.Time
@@ -68,6 +75,7 @@ func newOvpnManager(mgr *manager, events *broadcaster) *ovpnManager {
 		mgr:      mgr,
 		events:   events,
 		sessions: make(map[string]*ovpnSession),
+		starting: make(map[string]bool),
 		dial: func(addr string) (net.Conn, error) {
 			return net.DialTimeout("tcp", addr, 2*time.Second)
 		},
@@ -87,6 +95,76 @@ func freePort() (int, error) {
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
+// ovpnBlockedDirectives are config directives that must
+// never appear in a client-supplied .ovpn the service launches
+// (audit B-S4): each either executes code as SYSTEM (plugin,
+// up/down and the other script hooks), hijacks the management
+// channel this driver depends on (management — the service
+// injects its own --management flags after the config, so a
+// config-side one is doubly unwanted), or redirects the
+// daemon's own state (daemon, log, writepid, status, …).
+var ovpnBlockedDirectives = map[string]bool{
+	"plugin":                true,
+	"up":                    true,
+	"down":                  true,
+	"client-connect":        true,
+	"client-disconnect":     true,
+	"script-security":       true,
+	"management":            true,
+	"learn-address":         true,
+	"ipchange":              true,
+	"route-up":              true,
+	"route-pre-down":        true,
+	"tls-verify":            true,
+	"auth-user-pass-verify": true,
+	"daemon":                true,
+	"log":                   true,
+	"log-append":            true,
+	"writepid":              true,
+	"ifconfig-pool-persist": true,
+	"status":                true,
+}
+
+// checkOvpnConfigText scans config text for blocked
+// directives: a directive counts when it appears at the start
+// of a line (leading whitespace allowed, case-insensitive) as
+// the line's first token. Comment lines (# / ;) and inline
+// <block> payloads' contents are still scanned line-wise —
+// a blocked word at a payload line start is refused too,
+// which is the safe direction for a SYSTEM daemon. The
+// refusal names the directive.
+func checkOvpnConfigText(text string) error {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		token := strings.Fields(trimmed)[0]
+		// A directive token may carry its argument glued on
+		// with '=' in some writers; compare the bare name.
+		if i := strings.IndexByte(token, '='); i >= 0 {
+			token = token[:i]
+		}
+		if ovpnBlockedDirectives[strings.ToLower(token)] {
+			return fmt.Errorf("openvpn config refused: the %q directive is not allowed in a service-launched config", strings.ToLower(token))
+		}
+	}
+	return nil
+}
+
+// checkOvpnConfigFile sanitises the config file ovpn.start is
+// about to hand to openvpn.exe. A file that cannot be read is
+// not scanned — the daemon itself will fail loudly on it —
+// but a readable file with a blocked directive is refused
+// before anything launches.
+func checkOvpnConfigFile(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return checkOvpnConfigText(string(b))
+}
+
 func (o *ovpnManager) start(p ovpnStartParams) (ovpnState, error) {
 	if !nameRe.MatchString(p.Name) {
 		return ovpnState{}, fmt.Errorf("bad session name %q", p.Name)
@@ -96,7 +174,27 @@ func (o *ovpnManager) start(p ovpnStartParams) (ovpnState, error) {
 		o.mu.Unlock()
 		return ovpnState{}, fmt.Errorf("openvpn session %s is already active", p.Name)
 	}
+	if o.starting == nil {
+		o.starting = make(map[string]bool)
+	}
+	if o.starting[p.Name] {
+		o.mu.Unlock()
+		return ovpnState{}, fmt.Errorf("start already in progress for %s", p.Name)
+	}
+	o.starting[p.Name] = true
 	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		delete(o.starting, p.Name)
+		o.mu.Unlock()
+	}()
+
+	// Sanitise before anything launches (audit B-S4): a
+	// config carrying script hooks or its own management
+	// directive never reaches openvpn.exe.
+	if err := checkOvpnConfigFile(p.ConfigPath); err != nil {
+		return ovpnState{}, err
+	}
 
 	port, err := o.portPicker()
 	if err != nil {
@@ -275,18 +373,70 @@ func (o *ovpnManager) state(name string) ovpnState {
 	return s.snapshot()
 }
 
+// mgmtQuote quotes one value for the OpenVPN management
+// interface (audit C6). The management protocol's quoting is
+// NOT Go's %q: the value is wrapped in double quotes, a
+// backslash is escaped as \\ and a double quote as \"; every
+// other byte — non-ASCII included — passes through as-is
+// (UTF-8). Go's %q would emit \u / \x escapes the daemon
+// does not understand, mangling exactly the passwords that
+// contain quotes, backslashes or non-ASCII characters.
+// CR/LF are NOT quotable (the protocol is line-delimited):
+// auth refuses such credentials before quoting — see
+// mgmtValueSafe (review W9).
+func mgmtQuote(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// ovpnAuthCommands builds the two management lines that
+// answer an 'Auth' password request.
+func ovpnAuthCommands(username, password string) [2]string {
+	return [2]string{
+		"username \"Auth\" " + mgmtQuote(username),
+		"password \"Auth\" " + mgmtQuote(password),
+	}
+}
+
+// mgmtValueSafe reports whether a credential may be placed
+// on the management channel at all. The protocol is
+// line-delimited, so CR/LF in a username or password would
+// inject whole extra management commands into the session
+// (review W9) — quoting cannot save a line break, so such
+// credentials are refused outright.
+func mgmtValueSafe(s string) bool {
+	return !strings.ContainsAny(s, "\r\n")
+}
+
 // auth answers an 'Auth' password request.
 func (o *ovpnManager) auth(name, username, password string) error {
+	if !mgmtValueSafe(username) || !mgmtValueSafe(password) {
+		return fmt.Errorf("openvpn credentials must not contain CR or LF characters")
+	}
 	o.mu.Lock()
 	s, ok := o.sessions[name]
 	o.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("no openvpn session %s", name)
 	}
-	if err := s.send(fmt.Sprintf("username \"Auth\" %q", username)); err != nil {
+	cmds := ovpnAuthCommands(username, password)
+	if err := s.send(cmds[0]); err != nil {
 		return err
 	}
-	return s.send(fmt.Sprintf("password \"Auth\" %q", password))
+	return s.send(cmds[1])
 }
 
 func (o *ovpnManager) stop(name string) (ovpnState, error) {

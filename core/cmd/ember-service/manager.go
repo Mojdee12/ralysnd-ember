@@ -23,12 +23,22 @@ var (
 	// general elevated launcher.
 	allowedExes = map[string]bool{
 		"lanternd.exe":         true,
-		"lantern-bridge.exe":   true,
 		"aether.exe":           true,
 		"usque.exe":            true,
 		"sing-box.exe":         true,
 		"openvpn.exe":          true,
 		"ember-tun-bridge.exe": true,
+		// The shell's own engine cores (electron ENGINE_CFG),
+		// reconciled 2026-11-28 (2041 audit B-2/C1): without
+		// these four every V2Ray/Mozilla/Psiphon/WireGuard
+		// start was refused. TestAllowlistReconciledWithShell
+		// keeps this map and the shell's table in lockstep.
+		"xray.exe":             true,
+		"firefox-vpn-core.exe": true,
+		"psiphon-core.exe":     true,
+		"amneziawg.exe":        true,
+		// lantern-bridge.exe is REMOVED: the 2041 package no
+		// longer ships it (dead entry).
 		// warp-plus.exe is RETIRED (scout verdict 2026-11-28):
 		// WARP is a WireGuard profile on the WG engine now.
 	}
@@ -119,11 +129,18 @@ type procRecord struct {
 	state procState
 	child child
 	done  chan struct{}
+	stdin bool // the child was started with an open stdin pipe
 }
 
 type manager struct {
-	mu       sync.Mutex
-	procs    map[string]*procRecord
+	mu    sync.Mutex
+	procs map[string]*procRecord
+	// starting holds the names with a start currently in
+	// flight (review W4): the already-running check and the
+	// launch used to be separated by an unlock, so two
+	// concurrent starts for one name both launched and the
+	// second record overwrote the first, orphaning its child.
+	starting map[string]bool
 	launcher launcher
 	events   *broadcaster
 	roots    *rootSet
@@ -143,6 +160,7 @@ func (m *manager) addLineHook(h func(name, stream, line string)) {
 func newManager(l launcher, events *broadcaster, roots *rootSet) *manager {
 	return &manager{
 		procs:    make(map[string]*procRecord),
+		starting: make(map[string]bool),
 		launcher: l,
 		events:   events,
 		roots:    roots,
@@ -157,12 +175,30 @@ func (m *manager) start(spec procSpec) (procState, error) {
 	if err := m.roots.checkExe(spec.Exe); err != nil {
 		return procState{}, err
 	}
+	// Claim the name BEFORE launching (review W4): the mark
+	// is taken under the same lock as the already-running
+	// check and held across the launch, so a concurrent start
+	// for the same name is refused instead of launching a
+	// second child the first record would orphan.
 	m.mu.Lock()
 	if rec, ok := m.procs[spec.Name]; ok && rec.state.Running {
 		m.mu.Unlock()
 		return procState{}, fmt.Errorf("%s is already running", spec.Name)
 	}
+	if m.starting == nil {
+		m.starting = make(map[string]bool)
+	}
+	if m.starting[spec.Name] {
+		m.mu.Unlock()
+		return procState{}, fmt.Errorf("start already in progress for %s", spec.Name)
+	}
+	m.starting[spec.Name] = true
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.starting, spec.Name)
+		m.mu.Unlock()
+	}()
 
 	// A previous instance of the same executable that this
 	// service does not own (the app or the service crashed
@@ -193,6 +229,7 @@ func (m *manager) start(spec procSpec) (procState, error) {
 		},
 		child: c,
 		done:  make(chan struct{}),
+		stdin: spec.Stdin,
 	}
 	m.mu.Lock()
 	m.procs[spec.Name] = rec
@@ -209,7 +246,13 @@ func (m *manager) pump(rec *procRecord) {
 		hooks := m.hooks
 		m.mu.Unlock()
 		for _, h := range hooks {
-			h(rec.state.Name, ln.Stream, ln.Line)
+			// A panicking line hook must not kill the pump
+			// goroutine — and with it the whole service
+			// (2041 audit A3). The line is still emitted.
+			func() {
+				defer func() { _ = recover() }()
+				h(rec.state.Name, ln.Stream, ln.Line)
+			}()
 		}
 		m.events.emit(event{V: protocolVersion, Event: "proc.output", Data: map[string]interface{}{
 			"name":   rec.state.Name,
@@ -262,6 +305,25 @@ func (m *manager) write(name, line string) error {
 	return rec.child.WriteLine(line)
 }
 
+// closeStdin delivers EOF to a running child's stdin — the
+// step that completes the config-fed flow (proc.start with
+// stdin:true, proc.write lines, then proc.close-stdin): cores
+// like Xray read their config until EOF before serving. Safe
+// to call on any name: an unknown or stdin-less process gets a
+// clear error, never a panic.
+func (m *manager) closeStdin(name string) error {
+	m.mu.Lock()
+	rec, ok := m.procs[name]
+	m.mu.Unlock()
+	if !ok || !rec.state.Running {
+		return fmt.Errorf("%s is not running", name)
+	}
+	if !rec.stdin {
+		return fmt.Errorf("%s was started without stdin", name)
+	}
+	return rec.child.CloseStdin()
+}
+
 // stop closes stdin first (children like the TUN bridge end
 // their session politely on stdin close), waits a grace period,
 // then kills.
@@ -307,8 +369,13 @@ func (m *manager) stopAll() {
 var errNoRoot = errors.New("executable is outside every registered app folder")
 
 // rootSet is the set of app folders the service will run
-// executables from: recorded at install, extended by the app
-// itself on hello (a portable copy registers its own folder).
+// executables from. Roots are recorded ONLY at install time
+// (install_windows.go, via loadRoots/saveRoots in config.go)
+// plus the service exe's own parent folder (config.go). A
+// hello handshake can never add one (2041 audit B-S1): any
+// pipe client could otherwise register a folder it controls
+// and have this SYSTEM service launch a same-named binary
+// from it — a complete local privilege escalation.
 type rootSet struct {
 	mu    sync.Mutex
 	roots []string // cleaned absolute paths
@@ -343,18 +410,39 @@ func (r *rootSet) list() []string {
 	return append([]string(nil), r.roots...)
 }
 
+// has reports whether root is already a recorded root,
+// comparing canonical forms so spelling differences (case,
+// separators, dot segments) cannot disguise a foreign folder
+// as a recorded one or vice versa.
+func (r *rootSet) has(root string) bool {
+	want := canonicalPath(root)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, have := range r.roots {
+		if canonicalPath(have) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // checkExe confines a start to an allowlisted executable name
-// under a registered root.
+// under a registered root. Both sides are compared in
+// canonical form (paths.go canonicalPath): ".." segments and
+// symlinks are resolved before the separator-bounded prefix
+// test, so a traversal like <root>\..\..\Temp\sing-box.exe —
+// which the old string-prefix check waved through — is
+// refused (2041 audit B-S3).
 func (r *rootSet) checkExe(exe string) error {
 	base := baseName(exe)
 	if !allowedExes[base] {
 		return fmt.Errorf("%s is not an Ember engine executable", base)
 	}
-	clean := cleanPath(exe)
+	clean := canonicalPath(exe)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, root := range r.roots {
-		if underRoot(clean, root) {
+		if underRoot(clean, canonicalPath(root)) {
 			return nil
 		}
 	}

@@ -17,8 +17,10 @@ function registerHarnessIpc() {
   ipcMain.handle('secret:set', () => true);
   ipcMain.handle('secret:has', () => false);
   ipcMain.handle('svc:call', () => Promise.reject(new Error('Ember service unreachable')));
-  ipcMain.handle('svc:status', () => ({ state: 'unreachable' }));
-  ipcMain.handle('svc:install', () => ({ ok: false, error: 'not in shoot mode' }));
+  /* Tri-state shape mirrors main.js (2042): running | error | absent. */
+  ipcMain.handle('svc:status', () => ({ state: 'absent', error: 'not in shoot mode' }));
+  ipcMain.handle('svc:install', () => ({ ok: false, code: null, message: 'not in shoot mode' }));
+  ipcMain.handle('net:tcpPing', () => ({ ok: false, error: 'not in shoot mode' }));
   ipcMain.handle('updater:check', () => ({ available: false, reason: 'not checked in shoot mode' }));
   ipcMain.handle('shell:open', () => true);
   ipcMain.on('app:protection', () => {});
