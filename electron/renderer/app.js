@@ -463,7 +463,16 @@ function krowVal(nameRe) {
   });
   return row ? row.querySelector('.val') : null;
 }
+/* FIX-ROUND5: the last suffix composed for each screen, cached so
+ * the engineState listener can re-compose ONLY this line when a
+ * state word changes under a page that stays open (a disconnect
+ * completing on its own engine page left the sentence reading
+ * "Status connected — …" while the pill already said CONNECT).
+ * Keyed by screen: each engine page's suffix is its own. */
+const heroSubSuffixByScreen = {};
 function setHeroSub(suffix) {
+  if (suffix !== undefined) heroSubSuffixByScreen[currentScreen] = suffix;
+  else suffix = heroSubSuffixByScreen[currentScreen];
   const sub = document.querySelector('#app .hero .sub');
   if (!sub) return;
   const eng = engineOf(currentScreen);
@@ -2760,6 +2769,14 @@ function showEmergencyAlternatives(engine) {
 async function toggleConnect(engine) {
   if (!engine || !CTRLS[engine]) return;
   const c = CTRLS[engine];
+  // Capture mode (FIX-ROUND4): the canonical setting, read fresh at
+  // every connect — Proxy mode is tunMode === false. Passed into
+  // every ProcEngine-family start below (controllers resolve the
+  // same value from window.__emberSettings when no opts arrive).
+  // The emergency walk's retries and auto-connect call this same
+  // function, so they inherit the live setting — including a mode
+  // the walk itself just switched.
+  const proxyMode = settingGet('tunMode') === false;
   try {
     if (engine === 'lantern') {
       if (engineState.get('lantern') === 'Connected') await c.disconnect(); else await c.connect(store.lantern && store.lantern.selectedServer);
@@ -2795,7 +2812,7 @@ async function toggleConnect(engine) {
             listenAddress: settingGet('listenAddress'),
             lanSharing: settingGet('lanSharing'),
           });
-          await sb.startWithConfig(JSON.stringify(sbCfg, null, 1));
+          await sb.startWithConfig(JSON.stringify(sbCfg, null, 1), { proxyMode });
           trafficSession = { engine, profileId: p.id, bytes: 0, down: 0, lastPersist: Date.now() };
           refreshRailStates(); refreshConnectBar();
           return;
@@ -2832,7 +2849,7 @@ async function toggleConnect(engine) {
             trafficAccounting: settingGet('trafficAccounting'),
             hop,
           });
-          await c.start([], JSON.stringify(cfg, null, 1));
+          await c.start([], JSON.stringify(cfg, null, 1), { proxyMode });
         } catch (e) {
           if (v2rayHopActive) { v2rayHopActive = false; await BYEDPI.stopForHop().catch(() => {}); }
           throw e;
@@ -2851,7 +2868,7 @@ async function toggleConnect(engine) {
       }
     } else if (engine === 'openvpn') {
       await c.toggle(selectedProfileFor('openvpn'));
-    } else await c.toggle();
+    } else await c.toggle(undefined, undefined, { proxyMode }); // mozilla / psiphon / emberwarp / masque (ProcEngine family)
   } catch (e) {
     showSvcError(e); engineState.set(engine, 'Failed');
     // Emergency-connect walk (task 7): only on a CONNECT failure
@@ -3006,7 +3023,7 @@ async function boot() {
     reconciled = true;
     const wgProfileNames = (store.profiles || []).filter(p => p.engine === 'wireguard')
       .map(p => p.name || p.id);
-    reconcile({ wgProfileNames }).then(async () => {
+    reconcile({ wgProfileNames, proxyMode: settingGet('tunMode') === false }).then(async () => {
       // settings.autoConnect consumer: connect the selected engine
       // once at boot, only when nothing was adopted live.
       if (settingGet('autoConnect') && !engineState.anyLive()) {
@@ -3015,7 +3032,30 @@ async function boot() {
     }).catch(() => {});
   };
   window.__onServiceState = data => { refreshServiceBar(data); maybeReconcile(data); };
-  engineState.on(() => { refreshRailStates(); refreshConnectBar(); });
+  engineState.on((eng, word) => {
+    // FIX-ROUND5 adoption: a connect can start from its engine page,
+    // hash navigation, a menu, the emergency walk, auto-connect or
+    // boot adoption — none of which touch store.selectedEngine (only
+    // rail rows and profile selection did). When an engine reaches
+    // Connected and the selection names another engine, adopt the
+    // connected one (in memory + persisted) so Home, the Settings
+    // engine section, the tray shortcut and auto-connect follow the
+    // engine that is actually live. EngineState.set only fires on a
+    // word change, so this is a transition INTO Connected; the
+    // differs-guard keeps it loop-free and disconnect changes nothing.
+    if (eng && isConnectedWord(word) && store.selectedEngine !== eng) {
+      store.selectedEngine = eng;
+      window.ember.store.set('selectedEngine', eng);
+    }
+    refreshRailStates(); refreshConnectBar();
+    // FIX-ROUND5 hero coherence: on an engine page, re-compose ONLY
+    // the hero status sentence from the cached suffix (no full
+    // paintEnginePage — that would disturb page-local UI such as
+    // the UR country chips). Home is deliberately NOT re-composed
+    // here: its hero is .heroword/.herosub, already repainted live
+    // by refreshConnectBar above, and it has no .hero .sub element.
+    if (ENGINES.includes(currentScreen)) setHeroSub();
+  });
   engineState.on(() => blockedWatcher.sync());
   blockedWatcher.sync();
   window.addEventListener('hashchange', render);

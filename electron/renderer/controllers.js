@@ -125,6 +125,24 @@ const engineState = new EngineState();
 
 async function svc(method, params) { return window.ember.call(method, params); }
 
+/* Capture mode (FIX-ROUND4): the single source is the canonical
+ * settings object app.js publishes as window.__emberSettings —
+ * the same accessor WarpEngine.pickCfg, ByeDpiController and
+ * RegionHopController already read. settings.tunMode defaults
+ * TRUE (app.js SETTING_DEFAULTS), so Proxy mode is exactly
+ * tunMode === false. An explicit opts.proxyMode (a boolean)
+ * overrides the setting for that one call — app.js's
+ * toggleConnect passes it from settingGet('tunMode'), and the
+ * stub test drives it directly; when it is absent every path
+ * (fresh connect, WarpEngine's internal start, boot adoption)
+ * resolves the mode from the setting, so no call site can drift
+ * from the setting the user picked. */
+function captureProxyMode(opts) {
+  if (opts && opts.proxyMode !== undefined) return !!opts.proxyMode;
+  const s = window.__emberSettings || {};
+  return s.tunMode === false;
+}
+
 /* Feed a config text to a just-started proc, line by line, then close
  * its stdin — the service's config-fed flow (B-1). */
 async function feedConfig(name, configText) {
@@ -208,12 +226,19 @@ async function waitWgRunning(name, timeoutMs) {
 }
 
 class ProcEngine {
-  constructor(engine, cfg) { this.engine = engine; this.cfg = cfg; this.running = false; }
-  /* start(extraArgs, configText): when configText is given the proc is
+  constructor(engine, cfg) { this.engine = engine; this.cfg = cfg; this.running = false; this.tunRaised = false; }
+  /* start(extraArgs, configText, opts): when configText is given the proc is
    * started with stdin:true and the text is fed via proc.write +
-   * proc.close-stdin; without it, no stdin key is sent at all. */
+   * proc.close-stdin; without it, no stdin key is sent at all.
+   * Capture mode (FIX-ROUND4): in Proxy mode (captureProxyMode —
+   * opts.proxyMode, else settings.tunMode === false) the TUN
+   * bridge is NOT raised: no tun.start, no waitTunUp; 'Connected'
+   * is earned by proc.state running plus, when verifySocks, the
+   * SOCKS proof alone. The TUN path below is otherwise unchanged. */
   async start(extraArgs, configText, opts) {
     engineState.set(this.engine, 'Starting');
+    const proxyMode = captureProxyMode(opts);
+    this.tunRaised = false;
     const baseArgs = typeof this.cfg.argsFn === 'function' ? this.cfg.argsFn(opts || {}) : (this.cfg.args || []);
     const params = { name: this.cfg.proc, exe: exePath(this.cfg.folder, this.cfg.exe),
       args: [...baseArgs, ...(extraArgs || [])] };
@@ -223,18 +248,24 @@ class ProcEngine {
     try {
       await waitProcRunning(this.cfg.proc, 8000);
       if (this.cfg.socksPort) {
-        await svc('tun.start', { name: this.cfg.proc, exe: exePath('core', TUN_EXE),
-          socksPort: this.cfg.socksPort, skip: [this.cfg.exe] });
-        // The TUN session must prove itself up before 'Connected'
-        // is earned (audit W2) — for every TUN user, Mozilla
-        // included (its only other proof is proc.state).
-        await waitTunUp(TUN_VERIFY_TIMEOUT_MS);
+        if (!proxyMode) {
+          this.tunRaised = true;
+          await svc('tun.start', { name: this.cfg.proc, exe: exePath('core', TUN_EXE),
+            socksPort: this.cfg.socksPort, skip: [this.cfg.exe] });
+          // The TUN session must prove itself up before 'Connected'
+          // is earned (audit W2) — for every TUN user, Mozilla
+          // included (its only other proof is proc.state).
+          await waitTunUp(TUN_VERIFY_TIMEOUT_MS);
+        }
         if (this.cfg.verifySocks) await waitSocksAnswer(this.cfg.socksPort, VERIFY_TIMEOUT_MS);
       }
     } catch (e) {
       // Verification failed: tear down what we started so a failed
       // connect never leaves a half-up engine behind, then report.
-      try { if (this.cfg.socksPort) await svc('tun.stop', { name: this.cfg.proc }); } catch {}
+      // tun.stop only when this start actually raised (or tried to
+      // raise) the bridge — stop mirrors start exactly.
+      try { if (this.tunRaised) await svc('tun.stop', { name: this.cfg.proc }); } catch {}
+      this.tunRaised = false;
       try { await svc('proc.stop', { name: this.cfg.proc }); } catch {}
       this.running = false; engineState.set(this.engine, 'Failed');
       throw e;
@@ -243,11 +274,14 @@ class ProcEngine {
   }
   async stop() {
     engineState.set(this.engine, 'Stopping');
-    if (this.cfg.socksPort) { try { await svc('tun.stop', { name: this.cfg.proc }); } catch {} }
+    // tun.stop only for a session this engine actually raised
+    // (this.tunRaised, set by start): in Proxy mode there is no
+    // TUN session to stop.
+    if (this.tunRaised) { try { await svc('tun.stop', { name: this.cfg.proc }); } catch {} this.tunRaised = false; }
     try { await svc('proc.stop', { name: this.cfg.proc }); } catch {}
     this.running = false; engineState.set(this.engine, 'Idle');
   }
-  async toggle(extraArgs, configText) { return this.running ? this.stop() : this.start(extraArgs, configText); }
+  async toggle(extraArgs, configText, opts) { return this.running ? this.stop() : this.start(extraArgs, configText, opts); }
 }
 
 /* sing-box second core (repair 2042, SINGBOX): serves the profiles
@@ -263,13 +297,15 @@ class ProcEngine {
  * does not serve — the session simply reports no counters. */
 class SingboxEngine extends ProcEngine {
   constructor() { super('v2ray', ENGINE_CFG.singbox); }
-  async startWithConfig(configText) {
+  async startWithConfig(configText, opts) {
     if (!window.ember || typeof window.ember.writeEngineConfig !== 'function') {
       throw new Error('writeEngineConfig bridge unavailable — cannot deliver the sing-box config file.');
     }
     const configPath = await window.ember.writeEngineConfig('singbox-config.json', String(configText));
     if (!configPath) throw new Error('The sing-box config file was not written.');
-    return super.start([], null, { configPath });
+    // Forward the caller's opts (proxyMode included) alongside the
+    // config path ProcEngine's argsFn needs (FIX-ROUND4).
+    return super.start([], null, { ...(opts || {}), configPath });
   }
 }
 
@@ -342,9 +378,14 @@ class WarpEngine extends ProcEngine {
   // mints config.json (it carries the device private key —
   // kept under userData, never beside the binary); `socks`
   // then serves loopback SOCKS5 (TCP+UDP) for the TUN bridge.
-  async start() {
+  /* start(extraArgs, configText, opts): the ProcEngine signature —
+   * toggle() forwards opts here; the first two are unused (usque
+   * builds its own args, aether goes through super.start). Capture
+   * mode resolves via captureProxyMode(opts) (FIX-ROUND4). */
+  async start(extraArgs, configText, opts) {
+    const proxyMode = captureProxyMode(opts);
     this.cfg = this.pickCfg(); // connect-time core pick (H-6)
-    if (this.cfg.proc !== 'usque') return super.start();
+    if (this.cfg.proc !== 'usque') return super.start([], null, { proxyMode });
     const dir = await userDataJoin('usque');
     const sep = dir.includes('\\') ? '\\' : '/';
     const cfgFile = dir + sep + 'config.json';
@@ -362,16 +403,21 @@ class WarpEngine extends ProcEngine {
       await window.ember.store.set('usqueRegistered', true);
     }
     engineState.set(this.engine, 'Starting');
+    this.tunRaised = false;
     await svc('proc.start', { name: this.cfg.proc, exe: exePath('usque', 'usque.exe'),
       args: ['-c', cfgFile, 'socks', '-b', '127.0.0.1', '-p', String(this.cfg.socksPort)], workDir: dir });
     try {
       await waitProcRunning(this.cfg.proc, 8000);
-      await svc('tun.start', { name: this.cfg.proc, exe: exePath('core', TUN_EXE),
-        socksPort: this.cfg.socksPort, skip: [this.cfg.exe] });
-      await waitTunUp(TUN_VERIFY_TIMEOUT_MS);
+      if (!proxyMode) {
+        this.tunRaised = true;
+        await svc('tun.start', { name: this.cfg.proc, exe: exePath('core', TUN_EXE),
+          socksPort: this.cfg.socksPort, skip: [this.cfg.exe] });
+        await waitTunUp(TUN_VERIFY_TIMEOUT_MS);
+      }
       await waitSocksAnswer(this.cfg.socksPort, VERIFY_TIMEOUT_MS);
     } catch (e) {
-      try { await svc('tun.stop', { name: this.cfg.proc }); } catch {}
+      try { if (this.tunRaised) await svc('tun.stop', { name: this.cfg.proc }); } catch {}
+      this.tunRaised = false;
       try { await svc('proc.stop', { name: this.cfg.proc }); } catch {}
       this.running = false; engineState.set(this.engine, 'Failed');
       throw e;
@@ -875,12 +921,20 @@ const controllers = {
  * left running and untouched; its engine simply stays 'Idle' here.
  * opts.wgProfileNames: raw names of the stored WireGuard profiles
  * (app.js owns the profile list; names are sanitised here). */
-async function proveProcLive(c) {
+async function proveProcLive(c, opts) {
   const st = await svc('proc.state', { name: c.cfg.proc });
   if (!st || !st.running) return false;
   if (c.cfg.socksPort) {
-    const tun = await svc('tun.state', {});
-    if (!tun || String(tun.state || '').toLowerCase() !== 'up') return false;
+    // Capture mode (FIX-ROUND4): in Proxy mode a session was
+    // started WITHOUT the TUN bridge, so adoption must not demand
+    // a TUN session either — the SOCKS proof alone adopts it, and
+    // the adopted engine records that no TUN was raised so its
+    // stop() mirrors its start.
+    if (!captureProxyMode(opts)) {
+      const tun = await svc('tun.state', {});
+      if (!tun || String(tun.state || '').toLowerCase() !== 'up') return false;
+      c.tunRaised = true;
+    }
     if (c.cfg.verifySocks) await waitSocksAnswer(c.cfg.socksPort, 5000);
   }
   return true;
@@ -891,7 +945,7 @@ async function reconcile(opts) {
     if (!(c instanceof ProcEngine) || c.running) continue;
     try {
       if (typeof c.pickCfg === 'function') c.cfg = c.pickCfg(); // WarpEngine: connect-time pick
-      if (await proveProcLive(c)) { c.running = true; engineState.set(c.engine, 'Connected'); }
+      if (await proveProcLive(c, o)) { c.running = true; engineState.set(c.engine, 'Connected'); }
     } catch { /* proof failed — leave 'Idle', do not touch the child */ }
   }
   // Lantern: adopt an already-running daemon instead of throwing
@@ -954,7 +1008,7 @@ function wireServiceEvents() {
     }
   });
 }
-window.EmberControllers = { controllers, engineState, wireServiceEvents, ENGINE_CFG, parseStage, isConnectedWord, sanitizeWgName, reconcile, exePath, dirPath, warpConfigFromProfile, feedConfig, waitProcRunning, waitSocksAnswer, waitWgRunning, waitTunUp,
+window.EmberControllers = { controllers, engineState, wireServiceEvents, ENGINE_CFG, parseStage, isConnectedWord, sanitizeWgName, reconcile, captureProxyMode, exePath, dirPath, warpConfigFromProfile, feedConfig, waitProcRunning, waitSocksAnswer, waitWgRunning, waitTunUp,
   /* 2042 Phase 3 foundations (app.js wiring lands later):
    * logs — LogsController over the real service event stream;
    * byedpi — DPI Lab ciadpi controller (ZAPRET_STRATEGIES lists
