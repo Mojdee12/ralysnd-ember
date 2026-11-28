@@ -137,6 +137,19 @@ async function main() {
     },
   };
   const rendererDir = path.join(__dirname, '..', 'renderer');
+  // Cross-file lexical collision lock: the renderer scripts share ONE
+  // global lexical scope in the browser, so a top-level const/let
+  // declared in two files is a load-time SyntaxError that per-file
+  // node --check cannot see (this exact defect — DNS_PRESETS declared
+  // in both profiles.js and app.js — blanked the whole UI in the
+  // Phase-3 fidelity run). Compile-only over the concatenation.
+  try {
+    new (require('vm').Script)(['controllers.js', 'profiles.js', 'app.js']
+      .map(f => fs.readFileSync(path.join(rendererDir, f), 'utf8')).join('\n'));
+    check('L2 renderer scripts compile together (no cross-file identifier collisions)', true);
+  } catch (e) {
+    check('L2 renderer scripts compile together (no cross-file identifier collisions)', false, String(e.message || e));
+  }
   eval(fs.readFileSync(path.join(rendererDir, 'profiles.js'), 'utf8'));
   eval(fs.readFileSync(path.join(rendererDir, 'controllers.js'), 'utf8'));
   const EP = global.window.EmberProfiles;

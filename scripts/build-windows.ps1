@@ -52,6 +52,15 @@ $unpacked = "$root\electron\dist\win-unpacked"
 if (-not (Test-Path "$unpacked\Ralysnd Ember.exe")) { throw "electron-builder output not found at $unpacked" }
 Copy-Item $unpacked $out -Recurse
 
+# Package trim (2042 requirement A4): the app UI is English-only by the
+# owner's ruling, so Electron's 55 shipped locale packs (~51 MB) are
+# dead weight — keep en-US only. No engine or feature is touched.
+$locDir = "$out\locales"
+if (Test-Path $locDir) {
+    Get-ChildItem $locDir -Filter *.pak | Where-Object { $_.Name -ne 'en-US.pak' } |
+        Remove-Item -Force
+}
+
 # The build stamp the About page shows.
 $commit = ''
 try { $commit = (git -C $root rev-parse --short HEAD 2>$null) } catch {}
@@ -93,7 +102,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'go build (core) failed' }
     go build -trimpath -ldflags $ldflags -o "$out\core\ember-tun-bridge.exe" ./cmd/ember-tun-bridge
     if ($LASTEXITCODE -ne 0) { throw 'go build (tun bridge) failed' }
-    go build -trimpath -ldflags $ldflags -o "$out\core\ember-service.exe" ./cmd/ember-service
+    # The service ships with the URnetwork SDK compiled in
+    # (-tags ur_sdk, SVC-UR2): core\go.mod requires the SDK and
+    # pins go 1.27.4 for it. The contract suite builds the
+    # service WITHOUT the tag (the honest available=false
+    # path); this tagged build is the one that ships.
+    go build -trimpath -tags ur_sdk -ldflags $ldflags -o "$out\core\ember-service.exe" ./cmd/ember-service
     if ($LASTEXITCODE -ne 0) { throw 'go build (ember service) failed' }
     & "$PSScriptRoot\build-windows-tun.ps1" -Version $version -Out "$out\core" -PublicKey $public
 } finally { Pop-Location }
@@ -120,7 +134,12 @@ foreach ($sc in @(
     @('wstunnel', 'wstunnel.exe', 'wstunnel legs will be unavailable'),
     @('olcrtc', 'olcrtc.exe', 'OLCRTC legs will be unavailable'),
     @('wireguard', 'amneziawg.exe', 'the native WireGuard engine will fall back to the Xray route'),
-    @('lantern', 'lanternd.exe', 'the Lantern engine will report unavailable')
+    @('lantern', 'lanternd.exe', 'the Lantern engine will report unavailable'),
+    # 'core' is not an engine folder: it merges INTO the app's
+    # core\ folder (created above), landing wintun.dll beside
+    # ember-service.exe, whose URnetwork packet pump loads it
+    # by name (SVC-UR2; staged by the fetch script).
+    @('core', 'wintun.dll', 'the URnetwork engine will connect but its packet pump will have no Wintun DLL to load')
 )) {
     $scDir = "$root\tools\sidecars\$($sc[0])"
     if (Test-Path "$scDir\$($sc[1])") {

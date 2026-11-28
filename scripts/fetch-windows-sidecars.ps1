@@ -184,6 +184,7 @@ $wstunnelDest = Join-Path $root 'tools\sidecars\wstunnel'
 $olcrtcDest = Join-Path $root 'tools\sidecars\olcrtc'
 $wireguardDest = Join-Path $root 'tools\sidecars\wireguard'
 $lanternDest = Join-Path $root 'tools\sidecars\lantern'
+$coreDest = Join-Path $root 'tools\sidecars\core'
 $radianceSrcDir = Join-Path $root 'tools\radiance-src' # legacy (2040 lantern-bridge); unused by the service build
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "ember-sidecars-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
@@ -218,6 +219,16 @@ try {
     Copy-Item (Join-Path $xrayDir 'geoip.dat') $dest -Force
     Copy-Item (Join-Path $xrayDir 'geosite.dat') $dest -Force
     Copy-Item (Join-Path $wintunDir 'wintun\bin\amd64\wintun.dll') $dest -Force
+
+    # wintun.dll beside ember-service.exe (SVC-UR2): the
+    # service's URnetwork packet pump creates its own Wintun
+    # adapter and the wintun Go package loads wintun.dll by
+    # name from the service's folder. build-windows.ps1
+    # copies tools\sidecars\core into the app's core\ folder
+    # (beside the service) — the same pattern as the lantern
+    # copy further below.
+    New-Item -ItemType Directory -Force $coreDest | Out-Null
+    Copy-Item (Join-Path $wintunDir 'wintun\bin\amd64\wintun.dll') $coreDest -Force
 
     # The patched xray.exe: verify the fork's source archive, then
     # build it with the ambient Go (the workflow pins go 1.27.2
@@ -810,7 +821,8 @@ foreach ($pair in @(
     @($wstunnelDest, 'wstunnel v11.1.0'),
     @($olcrtcDest, 'olcrtc f3ad8fb'),
     @($wireguardDest, 'AmneziaWG 3.1.0'),
-    @($lanternDest, 'radiance lanternd e28b971 (full-VPN)')
+    @($lanternDest, 'radiance lanternd e28b971 (full-VPN)'),
+    @($coreDest, 'service core (UR pump wintun.dll)')
 )) {
     Write-Host "Sidecars in $($pair[0]) ($($pair[1])):"
     Get-ChildItem $pair[0] -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }

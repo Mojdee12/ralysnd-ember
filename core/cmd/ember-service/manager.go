@@ -37,6 +37,9 @@ var (
 		"firefox-vpn-core.exe": true,
 		"psiphon-core.exe":     true,
 		"amneziawg.exe":        true,
+		// DPI Lab (2042 Phase 3): the shell's ByeDpiController
+		// starts the shipped ciadpi.exe sidecar via proc.start.
+		"ciadpi.exe": true,
 		// lantern-bridge.exe is REMOVED: the 2041 package no
 		// longer ships it (dead entry).
 		// warp-plus.exe is RETIRED (scout verdict 2026-11-28):

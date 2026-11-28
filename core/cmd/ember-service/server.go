@@ -25,6 +25,7 @@ type server struct {
 	warp      *warpManager
 	lantern   *lanternManager
 	wg        *wgManager
+	ur        *urManager
 	roots     *rootSet
 	events    *broadcaster
 	startedAt time.Time
@@ -44,6 +45,7 @@ func newServer(roots *rootSet) *server {
 		warp:      newWarpManager(),
 		lantern:   newLanternManager(mgr),
 		wg:        newWGManager(roots),
+		ur:        newURManager(),
 		roots:     roots,
 		events:    events,
 		startedAt: time.Now(),
@@ -51,6 +53,7 @@ func newServer(roots *rootSet) *server {
 }
 
 func (s *server) shutdown() {
+	s.ur.close()
 	_, _ = s.tun.stop()
 	s.mgr.stopAll()
 }
@@ -272,6 +275,19 @@ func (s *server) dispatchChecked(req request) response {
 		if err = paramsInto(req.Params, &p); err == nil {
 			result = s.wg.state(p.Name)
 		}
+	case "ur.status":
+		result = s.ur.status()
+	case "ur.connect":
+		var p urConnectParams
+		if err = paramsInto(req.Params, &p); err == nil {
+			result, err = s.ur.connect(p)
+		}
+	case "ur.disconnect":
+		result, err = s.ur.disconnect()
+	case "ur.countries":
+		var p urCountriesParams
+		_ = paramsInto(req.Params, &p)
+		result, err = s.ur.countries(p)
 	default:
 		err = errors.New("unknown method " + req.Method)
 	}

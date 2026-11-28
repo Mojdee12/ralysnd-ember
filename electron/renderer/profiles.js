@@ -15,7 +15,11 @@
  *
  * A profile is a plain object stored via store.profiles:
  *   { id, name, protocol, address, port, security, engine, group,
- *     link?, params?, confText?, configText?, ping? }
+ *     upBytes, downBytes, link?, params?, confText?, configText?, ping? }
+ * `group` is a plain string ('' = ungrouped); `upBytes`/`downBytes`
+ * are per-profile traffic counters (numbers, default 0 — the store
+ * shape carries them; what increments them is the connect path's
+ * business, normalizeProfile backfills them on older profiles).
  * `params` carries everything the Xray outbound builder needs
  * (uuid/password/method/flow/network/stream settings…). Profiles are
  * never partially built: parseLink either returns a complete profile
@@ -140,15 +144,27 @@ function parseSs(link) {
   };
 }
 
+/* Backfill the store-shape fields added in 2042 Phase 3 (group +
+ * traffic counters) on any profile that predates them. Additive
+ * only: existing values are never overwritten, and every other
+ * field passes through untouched (parseLink/store compat). */
+function normalizeProfile(p) {
+  if (!p || typeof p !== 'object') return p;
+  // UI-S-B2: lastPingMs/failStreak/quarantined are the ping-sweep
+  // bookkeeping (app.js pingAllProfiles + the auto-cut quarantine).
+  return Object.assign({ group: '', upBytes: 0, downBytes: 0,
+    lastPingMs: null, failStreak: 0, quarantined: false }, p);
+}
+
 function parseLink(raw) {
   const link = String(raw || '').trim();
   if (!link) throw new Error('Empty link');
-  if (link.startsWith('vmess://')) return Object.assign(parseVmess(link), { id: newId(), link });
+  if (link.startsWith('vmess://')) return normalizeProfile(Object.assign(parseVmess(link), { id: newId(), link }));
   if (link.startsWith('vless://') || link.startsWith('trojan://') || link.startsWith('ss://')) {
     let u;
     try { u = new URL(link); } catch { throw new Error('Link is not a valid URL'); }
     const p = link.startsWith('vless://') ? parseVless(u) : link.startsWith('trojan://') ? parseTrojan(u) : parseSs(link);
-    return Object.assign(p, { id: newId(), link });
+    return normalizeProfile(Object.assign(p, { id: newId(), link }));
   }
   throw new Error('Unsupported link scheme (vless://, vmess://, trojan://, ss:// only)');
 }
@@ -173,24 +189,24 @@ function parseWireGuardConf(text, fileName) {
   const t = String(text || '');
   if (!/\[Interface\]/i.test(t) || !/\[Peer\]/i.test(t)) throw new Error('Not a WireGuard config (no [Interface]/[Peer])');
   const ep = /Endpoint\s*=\s*([^\s:]+):(\d+)/i.exec(t);
-  return {
+  return normalizeProfile({
     id: newId(), protocol: 'wireguard', engine: 'wireguard',
     name: safeName(String(fileName || '').replace(/\.conf$/i, ''), 'WireGuard tunnel'),
     address: ep ? ep[1] : '', port: ep ? Number(ep[2]) : 51820, security: 'none',
     confText: t,
-  };
+  });
 }
 
 function parseOvpn(text, fileName) {
   const t = String(text || '');
   const remote = /^\s*remote\s+(\S+)\s+(\d+)/im.exec(t);
   if (!remote && !/^\s*client\b/im.test(t)) throw new Error('Not an OpenVPN profile (no remote/client directive)');
-  return {
+  return normalizeProfile({
     id: newId(), protocol: 'openvpn', engine: 'openvpn',
     name: safeName(String(fileName || '').replace(/\.ovpn$/i, ''), 'OpenVPN profile'),
     address: remote ? remote[1] : '', port: remote ? Number(remote[2]) : 1194, security: 'tls',
     configText: t,
-  };
+  });
 }
 
 /* ---------- profile → Xray config ---------- */
@@ -246,7 +262,57 @@ function outboundFor(p) {
       address: p.address, port: p.port, method: pr.method, password: pr.password,
     }] } };
   }
+  if (p.protocol === 'socks') {
+    // Plain SOCKS5 server profile — this is how RegionHop relay
+    // configs (controllers.js RegionHopController.makeProfiles) run
+    // on the existing V2Ray path. params.username/password carry
+    // the relay auth when the relay requires it.
+    const server = { address: p.address, port: p.port };
+    if (pr.username) server.users = [{ user: pr.username, pass: pr.password || '' }];
+    return { protocol: 'socks', tag: 'proxy', settings: { servers: [server] } };
+  }
   throw new Error('No Xray outbound for protocol ' + p.protocol);
+}
+
+/* DNS presets (canonical settings.dnsPreset / dnsTransport,
+ * consumed here). Only resolvers whose endpoints are established
+ * public knowledge are baked in: Google (the v2rayNG default) and
+ * Cloudflare. The Iranian preset chips on Android (Shecan /
+ * Electro / 403 / RadarGame / Begzar) are NOT baked in — their DoH
+ * endpoints are not verified anywhere in this tree; use
+ * dnsPreset:'custom' + settings.remoteDns for them. */
+const DNS_PRESETS = {
+  google:     { doh: 'https://dns.google/dns-query',          udp: '8.8.8.8', tcp: '8.8.8.8' },
+  cloudflare: { doh: 'https://cloudflare-dns.com/dns-query',  udp: '1.1.1.1', tcp: '1.1.1.1' },
+};
+/* Resolve the Xray dns.servers list from the canonical settings:
+ *   opts.dnsPreset    'google' | 'cloudflare' | 'custom'
+ *                     (absent = custom: opts.remoteDns verbatim —
+ *                     the pre-Phase-3 behaviour, unchanged)
+ *   opts.dnsTransport 'doh' (default) | 'udp' | 'tcp' — for 'udp' /
+ *                     'tcp' the server entry is the preset's plain
+ *                     resolver IP; for a custom remoteDns URL the
+ *                     URL's hostname is used (a DoH URL is not a
+ *                     valid plain-DNS address).
+ *   opts.localDns     appended as an additional resolver entry
+ *                     when provided and different from the remote
+ *                     entry (v2rayNG's local-DNS fallback role).
+ * Returns [] when no remote DNS is configured at all. */
+function resolveDnsServers(o) {
+  const transport = o.dnsTransport || 'doh';
+  let remote = '';
+  if (o.dnsPreset && o.dnsPreset !== 'custom' && DNS_PRESETS[o.dnsPreset]) {
+    remote = DNS_PRESETS[o.dnsPreset][transport] || DNS_PRESETS[o.dnsPreset].doh;
+  } else if (o.remoteDns) {
+    remote = String(o.remoteDns);
+    if (transport !== 'doh' && /^https?:\/\//i.test(remote)) {
+      try { remote = new URL(remote).hostname; } catch { /* keep verbatim */ }
+    }
+  }
+  const servers = String(remote || '').split(',').map(s => s.trim()).filter(Boolean);
+  const local = String(o.localDns || '').trim();
+  if (local && !servers.includes(local)) servers.push(local);
+  return servers;
 }
 
 /* Complete Xray JSON for a profile: SOCKS inbound on socksPort,
@@ -254,11 +320,47 @@ function outboundFor(p) {
  * comes from the canonical settings.remoteDns when provided;
  * routingPreset is one of global | bypass-lan | bypass-iran |
  * direct-all (canonical settings.routingPreset); domainStrategy is
- * the canonical settings.domainStrategy. */
+ * the canonical settings.domainStrategy.
+ *
+ * Phase 3 settings consumption (all canonical settings keys; at
+ * their defaults the emitted config is structurally identical to
+ * the pre-Phase-3 output):
+ *   dnsPreset / dnsTransport / localDns — see resolveDnsServers.
+ *   listenAddress — SOCKS inbound listen (default '127.0.0.1').
+ *   lanSharing    — true → inbound listen '0.0.0.0'.
+ *   lanAuth       — {user, pass} (app.js reads the password from
+ *                   the secret vault, key 'lanAuthPass'); only with
+ *                   lanSharing, the inbound then requires SOCKS
+ *                   username/password auth.
+ * tunnelMtu is deliberately NOT consumed here: Xray's config has
+ * no MTU knob (MTU belongs to the TUN layer, whose service
+ * contract — tun.start{name,exe,socksPort,skip} — has no MTU
+ * field either). See the Phase 3 remainder list. */
 function buildXrayConfig(profile, opts) {
   const o = opts || {};
   const socksPort = o.socksPort || 10808;
+  const lanSharing = o.lanSharing === true;
+  const listen = lanSharing ? '0.0.0.0' : (o.listenAddress || '127.0.0.1');
+  const socksSettings = { udp: true, auth: 'noauth' };
+  if (lanSharing && o.lanAuth && o.lanAuth.user && o.lanAuth.pass) {
+    socksSettings.auth = 'password';
+    socksSettings.accounts = [{ user: String(o.lanAuth.user), pass: String(o.lanAuth.pass) }];
+  }
   const rules = [];
+  /* Traffic accounting (UI-S-B2 task 2). RULING: the canonical
+   * settings.trafficAccounting defaults TRUE — it matches
+   * v2rayNG/Android behaviour (the Android builder always emits
+   * stats + policy system statsOutboundUplink/Downlink), so it is
+   * not an Ember-added feature under the DEFAULT-OFF law. When
+   * opts.trafficAccounting !== false the config gains stats:{},
+   * the policy block, a metrics inbound (dokodemo-door on
+   * 127.0.0.1:49201, tag 'metrics', routed to the freedom outbound
+   * tagged 'metrics' that Xray's /debug/vars handler rides) and
+   * its routing rule FIRST (before the preset rules, so preset
+   * catch-alls never swallow it). When false, exactly the
+   * pre-B2 shape is emitted. */
+  const accounting = o.trafficAccounting !== false;
+  if (accounting) rules.push({ type: 'field', inboundTag: ['metrics'], outboundTag: 'metrics' });
   const preset = o.routingPreset || 'global';
   if (preset === 'direct-all') {
     rules.push({ type: 'field', network: 'tcp,udp', outboundTag: 'direct' });
@@ -272,25 +374,55 @@ function buildXrayConfig(profile, opts) {
     }
     rules.push({ type: 'field', network: 'tcp,udp', outboundTag: 'proxy' });
   }
+  /* ByeDPI hop (UI-S-B2 task 8): opts.hop {host, port} points at
+   * the local ciadpi SOCKS listener. The profile outbound dials
+   * THROUGH a new first outbound tagged 'byedpi-hop' — the exact
+   * chaining shape Android's builder emits for its zapret
+   * underlay (config_builder.dart _chainThroughUnderlay): the
+   * proxy outbound's streamSettings.sockopt.dialerProxy names the
+   * hop tag, and the hop is a plain socks outbound. Verified
+   * against the decoy core with `run -test` (see the B2 stub
+   * test). ss profiles carry no streamSettings today, so one is
+   * created holding only the sockopt. */
+  const proxyOutbound = outboundFor(profile);
+  const outbounds = [proxyOutbound,
+    { protocol: 'freedom', tag: 'direct' },
+    { protocol: 'blackhole', tag: 'block' }];
+  if (o.hop && o.hop.host && o.hop.port) {
+    proxyOutbound.streamSettings = Object.assign({}, proxyOutbound.streamSettings || {},
+      { sockopt: Object.assign({}, (proxyOutbound.streamSettings || {}).sockopt || {},
+        { dialerProxy: 'byedpi-hop' }) });
+    outbounds.unshift({ tag: 'byedpi-hop', protocol: 'socks',
+      settings: { servers: [{ address: String(o.hop.host), port: Number(o.hop.port) }] } });
+  }
+  if (accounting) outbounds.push({ protocol: 'freedom', tag: 'metrics' });
   const cfg = {
     log: { loglevel: 'warning' },
     inbounds: [{
-      tag: 'socks-in', listen: '127.0.0.1', port: socksPort, protocol: 'socks',
-      settings: { udp: true, auth: 'noauth' },
+      tag: 'socks-in', listen, port: socksPort, protocol: 'socks',
+      settings: socksSettings,
       sniffing: o.sniffing === false
         ? { enabled: false }
         : { enabled: true, destOverride: ['http', 'tls'] },
     }],
-    outbounds: [
-      outboundFor(profile),
-      { protocol: 'freedom', tag: 'direct' },
-      { protocol: 'blackhole', tag: 'block' },
-    ],
+    outbounds,
     routing: { domainStrategy: o.domainStrategy || 'IPIfNonMatch', rules },
   };
+  if (accounting) {
+    cfg.stats = {};
+    cfg.policy = {
+      levels: { '0': { statsUserUplink: false, statsUserDownlink: false, uplinkOnly: 0, downlinkOnly: 0 } },
+      system: { statsInboundUplink: false, statsInboundDownlink: false,
+        statsOutboundUplink: true, statsOutboundDownlink: true },
+    };
+    cfg.metrics = { tag: 'metrics' };
+    cfg.inbounds.push({ tag: 'metrics', listen: '127.0.0.1', port: 49201,
+      protocol: 'dokodemo-door', settings: { address: '127.0.0.1' } });
+  }
   if (o.fakeDns) cfg.fakedns = [{ ipPool: '198.18.0.0/15', poolSize: 10000 }];
-  if (o.remoteDns) cfg.dns = { servers: String(o.remoteDns).split(',').map(s => s.trim()).filter(Boolean) };
+  const dnsServers = resolveDnsServers(o);
+  if (dnsServers.length) cfg.dns = { servers: dnsServers };
   return cfg;
 }
 
-window.EmberProfiles = { parseLink, parseSubscriptionBody, parseWireGuardConf, parseOvpn, buildXrayConfig, b64DecodeText };
+window.EmberProfiles = { parseLink, parseSubscriptionBody, parseWireGuardConf, parseOvpn, buildXrayConfig, b64DecodeText, normalizeProfile, resolveDnsServers, DNS_PRESETS };

@@ -3,7 +3,7 @@
  * Pure client of the Go Windows service (named pipe \\.\pipe\RalysndEmberService.v1,
  * JSON lines, protocol v=1). No engine logic lives here beyond the IPC client,
  * the persistent store, the safeStorage secret vault and the updater guard. */
-const { app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, shell, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, shell, nativeImage, screen, dialog, session, globalShortcut } = require('electron');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -52,6 +52,7 @@ const DEFAULT_STATE = {
     // Every Ember-added feature ships DEFAULT OFF (owner law).
     smartRouting: false, killSwitch: false, autoConnect: false,
     byedpiHop: false, dailyProblemReport: false, appLock: false,
+    connectedButBlocked: true, // consumer: app.js blockedWatcher (owner's 2151 exception — DEFAULT ON)
     sessionBudget: false, batteryReport: false, leakTestOnConnect: false,
     tunMode: true, systemProxy: false,
     startOnBoot: false, closeToTray: false,   // side effects applied in main (see applySettingsSideEffects)
@@ -65,11 +66,36 @@ const DEFAULT_STATE = {
     remoteDns: 'https://dns.google/dns-query',
     localDns: '8.8.8.8',
     socksPort: 10808,
+    // 2042 Phase 3 (UI-S-A foundations). Every key below names its
+    // real consumer; a key with no consumer is not added (see the
+    // phase report's remainder list). Ember-added features stay
+    // DEFAULT OFF; DNS/LAN defaults stay v2rayNG's.
+    dnsPreset: 'google',        // 'google' | 'cloudflare' | 'custom' — consumer: profiles.js resolveDnsServers (preset 'google' + transport 'doh' resolves to the remoteDns default above, so the default config is unchanged)
+    dnsTransport: 'doh',        // 'doh' | 'udp' | 'tcp' — consumer: profiles.js resolveDnsServers
+    listenAddress: '127.0.0.1', // consumer: profiles.js buildXrayConfig (SOCKS inbound listen when lanSharing is off)
+    lanSharing: false,          // consumer: profiles.js buildXrayConfig (inbound listen 0.0.0.0 + optional auth)
+    lanAuthUser: '',            // consumer: profiles.js buildXrayConfig (SOCKS accounts when lanSharing). The LAN PASSWORD is a credential: it lives ONLY in the safeStorage vault under the secret key 'lanAuthPass' (secret:set/get bridge) and is deliberately NOT a settings key.
+    regionHopEnabled: false,    // consumer: controllers.js RegionHopController (gates profile creation)
+    dpiLabEnabled: false,       // consumer: controllers.js ByeDpiController (gates ciadpi start)
+    // 2042 Phase 3 UI-S-B2 keys. Ember-added features stay DEFAULT
+    // OFF; the one exception is trafficAccounting, which defaults
+    // TRUE because it matches v2rayNG/Android behaviour (the
+    // Android builder always emits stats + policy) — ruling
+    // documented again at its consumer in profiles.js.
+    trafficAccounting: true,    // consumer: profiles.js buildXrayConfig (stats/policy/metrics inbound)
+    sessionBudgetMb: 0,         // consumer: app.js traffic loop (0 = no budget; >0 disconnects past the budget)
+    sweepAutoCut: false,        // consumer: app.js pingAllProfiles (quarantine after failStreak >= sweepThreshold)
+    sweepThreshold: 3,          // consumer: app.js pingAllProfiles
+    subscriptionAutoUpdate: false, // consumer: app.js boot (refetch stale subscriptions on launch)
+    subRefreshHours: 24,        // consumer: app.js boot subscription refresh interval
+    hwid: '',                   // consumer: app.js importSubscription (default x-hwid for new subscriptions; per-subscription hwid wins)
+    globalShortcut: false,      // consumer: main applyShortcut (Ctrl+Alt+E toggles connect) + app.js onShortcutToggle
   },
   engineSettings: {},      // per-engine bags, all feature flags default OFF
   urnetworkAccounts: [],   // {id,label} — API keys live ONLY in the secret vault
   lantern: { privateServers: [], selectedServer: null },
   warpProfile: null,       // filled by warp.register via the service
+  lastDailyReportDate: '', // UI-S-B2 task 6: date (YYYY-MM-DD) of the last daily problem report written by main (ember:saveDailyReport); renderer-owned bookkeeping, no secret content
 };
 let stateCache = null;
 function stateFile() { return path.join(app.getPath('userData'), 'ember-state.json'); }
@@ -268,6 +294,7 @@ function checkUpdates() {
 function applySettingsSideEffects() {
   const st = (loadState().settings) || {};
   try { app.setLoginItemSettings({ openAtLogin: !!st.startOnBoot }); } catch {}
+  applyShortcut(); // settings.globalShortcut (UI-S-B2 task 9)
 }
 
 /* ---------- window / tray ---------- */
@@ -298,11 +325,22 @@ function createWindow() {
   win = new BrowserWindow({
     width, height, useContentSize: true,
     minWidth: Math.min(1100, width), minHeight: Math.min(700, height),
+    // Frameless (owner requirement C — unified custom top bar): the
+    // renderer draws the titlebar; window control goes through the
+    // win:* IPC handlers below.
+    frame: false,
     backgroundColor: '#050607', title: 'Ralysnd Ember', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.center();
+  /* Maximized-state changes for the renderer's maximize/restore
+   * glyph swap: 'win:maximized' carries the new boolean state. */
+  const sendMaximized = () => {
+    if (win && !win.isDestroyed()) win.webContents.send('win:maximized', win.isMaximized());
+  };
+  win.on('maximize', sendMaximized);
+  win.on('unmaximize', sendMaximized);
   /* settings.closeToTray: hide to the tray instead of quitting — only
    * when a tray actually exists to bring the window back from. */
   win.on('close', (e) => {
@@ -393,14 +431,185 @@ ipcMain.handle('net:fetchText', async (_e, opts) => {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 20000);
-    const res = await fetch(url, { signal: ctl.signal, redirect: 'follow',
-      headers: { 'user-agent': 'RalysndEmber/2.2' } });
+    // UI-S-B2: optional caller headers (e.g. x-hwid for subscription
+    // panels, mirroring Android sub_fetcher.dart). The app's
+    // User-Agent stays fixed unless the caller explicitly sets one.
+    const headers = { 'user-agent': 'RalysndEmber/2.2' };
+    if (opts && opts.headers && typeof opts.headers === 'object') {
+      for (const [k, v] of Object.entries(opts.headers)) {
+        if (v != null && String(v) !== '') headers[String(k).toLowerCase()] = String(v);
+      }
+    }
+    const res = await fetch(url, { signal: ctl.signal, redirect: 'follow', headers });
     clearTimeout(timer);
     if (!res.ok) return { ok: false, error: 'HTTP ' + res.status };
     const text = await res.text();
     if (text.length > 8 * 1024 * 1024) return { ok: false, error: 'Subscription body too large.' };
     return { ok: true, text };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+/* ---------- UI-S-B2 loopback + diagnostics IPC ---------- */
+/* Mozilla core dashboard API (UI-S-B2 task 1): the running
+ * firefox-vpn-core serves http://127.0.0.1:10820 (core/internal/
+ * service/dashboard.go). This helper is HARD-CODED to that base —
+ * method + path only, no host/port/url input is accepted, so the
+ * renderer can never aim it anywhere else. Returns {status, json}
+ * (json null when the body is not JSON); a refused connection is
+ * {status:0, error} so the UI can say "core not running". */
+const MOZILLA_API_BASE = 'http://127.0.0.1:10820';
+ipcMain.handle('net:httpLocal', async (_e, opts) => {
+  const method = String((opts && opts.method) || 'GET').toUpperCase();
+  const p = String((opts && opts.path) || '');
+  if (!['GET', 'POST'].includes(method)) return { status: 0, error: 'net:httpLocal allows GET/POST only.' };
+  if (!p.startsWith('/api/') || p.includes('://') || p.includes('..')) {
+    return { status: 0, error: 'net:httpLocal path must be a core /api/* path.' };
+  }
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 30000);
+    const res = await fetch(MOZILLA_API_BASE + p, {
+      method, signal: ctl.signal, redirect: 'manual',
+      headers: opts && opts.body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: opts && opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+    clearTimeout(timer);
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* non-JSON body — json stays null */ }
+    return { status: res.status, json, text: json === null ? text.slice(0, 500) : undefined };
+  } catch (e) { return { status: 0, error: String(e.message || e) }; }
+});
+/* Speed test through a live SOCKS port (UI-S-B2 task 3a): point the
+ * default session at socks5://127.0.0.1:<socksPort>, download the
+ * URL counting bytes + elapsed, and ALWAYS restore the previous
+ * proxy in a finally. The previous proxy is captured as the
+ * effective resolved rules for the URL and re-applied verbatim. */
+ipcMain.handle('net:speedTest', async (_e, opts) => {
+  const port = Number(opts && opts.socksPort);
+  const url = String((opts && opts.url) || '');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'net:speedTest needs a valid socksPort.' };
+  if (!/^https:\/\//i.test(url)) return { ok: false, error: 'net:speedTest needs an https URL.' };
+  const ses = session.defaultSession;
+  let prevRules = '';
+  try { prevRules = await ses.resolveProxy(url); } catch { prevRules = 'DIRECT'; }
+  const started = Date.now();
+  try {
+    await ses.setProxy({ proxyRules: 'socks5://127.0.0.1:' + port });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 60000);
+    const res = await ses.fetch(url, { signal: ctl.signal });
+    if (!res.ok) { clearTimeout(timer); return { ok: false, error: 'Speed test HTTP ' + res.status }; }
+    let bytes = 0;
+    const reader = res.body.getReader();
+    for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.length; }
+    clearTimeout(timer);
+    const ms = Date.now() - started;
+    return { ok: true, bytes, ms, mbps: ms > 0 ? (bytes * 8 / (ms / 1000) / 1e6) : 0 };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  finally {
+    try { await ses.setProxy({ proxyRules: !prevRules || /^DIRECT$/i.test(prevRules.trim()) ? '' : prevRules }); } catch {}
+  }
+});
+/* Through-proxy DNS probe (UI-S-B2 task 3c): manual SOCKS5 TCP
+ * connect through the live proxy to <dnsServer>:53, then a minimal
+ * DNS-over-TCP A query for example.com. Resolves {ok:true, ms}
+ * with ms = time to the first response byte, after validating the
+ * response transaction id; anything else is an honest error. */
+ipcMain.handle('net:dnsProbe', (_e, opts) => new Promise((resolve) => {
+  const socksHost = String((opts && opts.socksHost) || '127.0.0.1');
+  const socksPort = Number(opts && opts.socksPort);
+  const dnsServer = String((opts && opts.dnsServer) || '');
+  if (!Number.isInteger(socksPort) || socksPort < 1 || socksPort > 65535 || !/^\d{1,3}(\.\d{1,3}){3}$/.test(dnsServer)) {
+    return resolve({ ok: false, error: 'net:dnsProbe needs a SOCKS port and an IPv4 DNS server.' });
+  }
+  const id = Math.floor(Math.random() * 65536);
+  const qname = Buffer.concat([Buffer.from([7]), Buffer.from('example'), Buffer.from([3]), Buffer.from('com'), Buffer.from([0])]);
+  const query = Buffer.alloc(12 + qname.length + 4);
+  query.writeUInt16BE(id, 0); query.writeUInt16BE(0x0100, 2); query.writeUInt16BE(1, 4);
+  qname.copy(query, 12); query.writeUInt16BE(1, 12 + qname.length); query.writeUInt16BE(1, 14 + qname.length);
+  const framed = Buffer.alloc(2 + query.length);
+  framed.writeUInt16BE(query.length, 0); query.copy(framed, 2);
+  const started = Date.now();
+  let sock, stage = 0, buf = Buffer.alloc(0), done = false;
+  const finish = r => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(r); };
+  try { sock = net.connect({ host: socksHost, port: socksPort }); }
+  catch (e) { return resolve({ ok: false, error: String(e.message || e) }); }
+  sock.setTimeout(10000, () => finish({ ok: false, error: 'DNS probe timed out.' }));
+  sock.once('error', e => finish({ ok: false, error: String(e.message || e) }));
+  sock.once('connect', () => sock.write(Buffer.from([5, 1, 0])));
+  sock.on('data', d => {
+    buf = Buffer.concat([buf, d]);
+    if (stage === 0) {
+      if (buf.length < 2) return;
+      if (buf[0] !== 5 || buf[1] !== 0) return finish({ ok: false, error: 'SOCKS proxy refused no-auth.' });
+      buf = buf.slice(2); stage = 1;
+      const ip = dnsServer.split('.').map(Number);
+      sock.write(Buffer.concat([Buffer.from([5, 1, 0, 1]), Buffer.from(ip), Buffer.from([0, 53])]));
+    }
+    if (stage === 1) {
+      if (buf.length < 10) return;
+      if (buf[1] !== 0) return finish({ ok: false, error: 'SOCKS connect to the DNS server failed (reply ' + buf[1] + ').' });
+      buf = buf.slice(10); stage = 2;
+      sock.write(framed);
+    }
+    if (stage === 2) {
+      if (buf.length < 4) return; // 2-byte length + at least the id
+      const rid = buf.readUInt16BE(2);
+      if (rid !== id) return finish({ ok: false, error: 'DNS response id mismatch.' });
+      return finish({ ok: true, ms: Date.now() - started });
+    }
+  });
+}));
+/* Problem-report files (UI-S-B2 task 6): saveTextFile asks where;
+ * saveDailyReport writes userData/reports/<date>.txt silently and
+ * returns the path. Content is renderer-built and secret-free by
+ * construction (see app.js buildProblemReport). */
+ipcMain.handle('ember:saveTextFile', async (_e, opts) => {
+  const name = String((opts && opts.suggestedName) || 'ember-report.txt').replace(/[\\/:*?"<>|]/g, '_');
+  const r = await dialog.showSaveDialog(win, { title: 'Save problem report', defaultPath: name,
+    filters: [{ name: 'Text', extensions: ['txt'] }] });
+  if (r.canceled || !r.filePath) return { ok: false, cancelled: true };
+  try { fs.writeFileSync(r.filePath, String((opts && opts.text) || '')); return { ok: true, path: r.filePath }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('ember:saveDailyReport', (_e, opts) => {
+  const date = String((opts && opts.date) || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'ember:saveDailyReport needs a YYYY-MM-DD date.' };
+  try {
+    const dir = path.join(app.getPath('userData'), 'reports');
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, date + '.txt');
+    fs.writeFileSync(f, String((opts && opts.text) || ''));
+    return { ok: true, path: f };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+/* Global shortcut (UI-S-B2 task 9, the QS-tile substitute):
+ * settings.globalShortcut (DEFAULT OFF) registers Ctrl+Alt+E,
+ * which asks the renderer to toggle-connect the selected engine.
+ * Applied from applySettingsSideEffects (every store:set) and from
+ * the explicit ember:applyShortcut IPC; unregistered on quit. */
+let shortcutRegistered = false;
+function applyShortcut() {
+  const on = !!((loadState().settings || {}).globalShortcut);
+  try {
+    if (on && !shortcutRegistered) {
+      shortcutRegistered = globalShortcut.register('CommandOrControl+Alt+E', () => {
+        if (win && !win.isDestroyed()) {
+          if (!win.isVisible()) win.show();
+          win.webContents.send('app:shortcutToggle');
+        }
+      });
+    } else if (!on && shortcutRegistered) {
+      globalShortcut.unregister('CommandOrControl+Alt+E');
+      shortcutRegistered = false;
+    }
+  } catch { /* headless CI — the shortcut is optional */ }
+}
+ipcMain.handle('ember:applyShortcut', (_e, opts) => {
+  const s = loadState();
+  s.settings = Object.assign({}, s.settings, { globalShortcut: !!(opts && opts.on) });
+  saveState(); applyShortcut();
+  return shortcutRegistered;
 });
 ipcMain.handle('store:get', (_e, key) => { const s = loadState(); return key ? s[key] : s; });
 ipcMain.handle('store:set', (_e, key, value) => {
@@ -412,6 +621,72 @@ ipcMain.handle('secret:get', (_e, key) => secretGet(key));
 ipcMain.handle('secret:set', (_e, key, value) => { secretSet(key, value); return true; });
 ipcMain.handle('secret:has', (_e, key) => secretGet(key) != null);
 ipcMain.handle('updater:check', () => checkUpdates());
+/* ---------- window controls (owner requirement C) ----------
+ * The frameless window's minimize / maximize / close, driven by the
+ * renderer's custom top bar. 'win:maximizeToggle' returns the NEW
+ * isMaximized state; state changes are also pushed on the
+ * 'win:maximized' event (see createWindow). NOTE: 'win:close' goes
+ * through the normal window 'close' path, so settings.closeToTray
+ * still hides to the tray instead of quitting when enabled. */
+ipcMain.handle('win:minimize', () => { if (win && !win.isDestroyed()) win.minimize(); return true; });
+ipcMain.handle('win:maximizeToggle', () => {
+  if (!win || win.isDestroyed()) return false;
+  if (win.isMaximized()) win.unmaximize(); else win.maximize();
+  return win.isMaximized();
+});
+ipcMain.handle('win:close', () => { if (win && !win.isDestroyed()) win.close(); return true; });
+ipcMain.handle('win:isMaximized', () => !!(win && !win.isDestroyed() && win.isMaximized()));
+/* ---------- backup / restore (2042 Phase 3) ----------
+ * Export writes the FULL store JSON (the same document the store
+ * persists) to a user-chosen file. Import reads + parses a chosen
+ * file and returns the parsed object — validation and application
+ * are the renderer's job (it owns the store shape). App lock needs
+ * NO main-process support: the PIN hash is renderer data, storable
+ * through the existing store:set / secret:set bridges. */
+ipcMain.handle('ember:backupExport', async () => {
+  const r = await dialog.showSaveDialog(win, {
+    title: 'Export Ember backup', defaultPath: 'ember-backup.json',
+    filters: [{ name: 'Ember backup', extensions: ['json'] }],
+  });
+  if (r.canceled || !r.filePath) return { ok: false, cancelled: true };
+  try {
+    fs.writeFileSync(r.filePath, JSON.stringify(loadState(), null, 1));
+    return { ok: true, path: r.filePath };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('ember:backupImport', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Import Ember backup', properties: ['openFile'],
+    filters: [{ name: 'Ember backup', extensions: ['json'] }],
+  });
+  if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, cancelled: true };
+  try {
+    const data = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8'));
+    return { ok: true, data };
+  } catch (e) { return { ok: false, error: 'Backup file is not valid JSON: ' + String(e.message || e) }; }
+});
+/* ---------- RegionHop defaults (2042 Phase 3) ----------
+ * The real panel defaults reach a packaged build ONLY as
+ * resources/regionhop-defaults.json, converted from the CI secret by
+ * scripts/build-windows.ps1 (see electron/tools/
+ * extract-regionhop-defaults.mjs). Returns the parsed object, or
+ * null when no defaults file exists in this build — the renderer
+ * (RegionHopController) reports that honestly. Values are never
+ * logged here. */
+ipcMain.handle('ember:regionhopDefaults', () => {
+  const candidates = [
+    path.join(appRoot(), 'resources', 'regionhop-defaults.json'),
+    process.resourcesPath ? path.join(process.resourcesPath, 'regionhop-defaults.json') : null,
+    path.join(appRoot(), 'regionhop-defaults.json'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      const d = JSON.parse(fs.readFileSync(c, 'utf8'));
+      if (d && typeof d.panelUrl === 'string') return d;
+    } catch { /* try the next candidate */ }
+  }
+  return null;
+});
 ipcMain.handle('shell:open', (_e, url) => { if (/^https:\/\//.test(url)) return shell.openExternal(url); });
 ipcMain.handle('app:meta', () => ({ version: app.getVersion(), shoot: SHOOT, platform: process.platform,
   appRoot: appRoot(), userData: app.getPath('userData'),
@@ -422,7 +697,7 @@ ipcMain.on('app:protection', (_e, word) => { protectionWord = String(word || 'No
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   app.on('second-instance', () => { if (win) { win.show(); win.focus(); } });
-  app.on('before-quit', () => { quitting = true; });
+  app.on('before-quit', () => { quitting = true; try { globalShortcut.unregisterAll(); } catch {} });
   app.whenReady().then(() => {
     loadState(); applySettingsSideEffects(); service.connect();
     service.onEvent(ev => { if (win && !win.isDestroyed()) win.webContents.send('svc:event', ev); });

@@ -14,7 +14,8 @@ cleanup() {
 trap cleanup EXIT
 
 source "$HOME/workspace/ember-app/toolchain/env.sh"
-export PATH="$HOME/workspace/ember-app/toolchain/go1.27.3/bin:$PATH" GOTOOLCHAIN=local
+# core/go.mod pins go 1.27.4 since the UR SDK enablement (2042 Phase 3).
+export PATH="$HOME/workspace/ember-app/toolchain/go1.27.4/bin:$PATH" GOTOOLCHAIN=local
 
 mkdir -p "$FIX/app/core" "$FIX/app/xray"
 (cd core && go build -o "$FIX/app/core/ember-service" ./cmd/ember-service/) || { echo "service build failed"; exit 2; }

@@ -34,6 +34,11 @@ func TestAllowlistReconciledWithShell(t *testing.T) {
 	for _, m := range regexp.MustCompile(`const TUN_EXE = '([^']+)'`).FindAllSubmatch(src, -1) {
 		shell[string(m[1])] = true
 	}
+	// Controllers that build their exe path dynamically
+	// (exePath('zapret', 'ciadpi.exe')) — the DPI Lab pattern.
+	for _, m := range regexp.MustCompile(`exePath\('[^']+',\s*'([^']+)'\)`).FindAllSubmatch(src, -1) {
+		shell[string(m[1])] = true
+	}
 	if len(shell) < 9 {
 		t.Fatalf("parsed only %d shell exes from controllers.js — the parser or the table moved", len(shell))
 	}
