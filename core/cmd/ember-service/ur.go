@@ -25,6 +25,15 @@ package main
 //     SDK's own state query (the established, identity-verified
 //     provider sessions, GetConnectedProviderLocations) — never
 //     from "the connect request was accepted".
+//   - Connect is ASYNCHRONOUS (FIX-ADV B1): ur.connect validates,
+//     kicks the attempt off in a goroutine and returns the state
+//     machine's current word at once; the shell follows progress
+//     through ur.status (state: idle / connecting / connected /
+//     failed, plus lastError). The manager mutex is never held
+//     across the JWT exchange or the provider poll — it guards
+//     state reads/writes only — and ur.disconnect cancels an
+//     in-flight attempt (context cancel + generation bump) and
+//     wins over it.
 //   - PROVIDING IS PINNED OFF: immediately after construction
 //     the binding sets ProvideModeNone and reads it back; if the
 //     pin does not hold, connect refuses to proceed. The vendor's
@@ -64,6 +73,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -102,7 +112,26 @@ type urStatus struct {
 	// running state (ur_pump.go), never inferred from Connected.
 	// Present so the shell never has to guess it from Connected.
 	Tunneled bool `json:"tunneled"`
+	// State is the connect state machine's word (FIX-ADV B1):
+	// idle | connecting | connected | failed. Connected above
+	// still comes only from the SDK's own session query; State
+	// is what the shell follows after the asynchronous
+	// ur.connect returns.
+	State string `json:"state"`
+	// LastError carries the most recent connect failure's
+	// message when State is "failed" (empty otherwise). No
+	// secret material ever lands here — connect errors never
+	// include the API key.
+	LastError string `json:"lastError,omitempty"`
 }
+
+// The urStatus.State words (FIX-ADV B1).
+const (
+	urStateIdle       = "idle"
+	urStateConnecting = "connecting"
+	urStateConnected  = "connected"
+	urStateFailed     = "failed"
+)
 
 const urUnavailableReason = "the URnetwork SDK engine is not compiled into this service build (build the service with the ur_sdk tag and Go >= 1.27.4 — see ur_sdk.go)"
 
@@ -143,12 +172,19 @@ type urExchanger func(ctx context.Context, apiKey string) (string, error)
 
 // urJWTCache caches client JWTs by a SHA-256 of the API key.
 // The key itself is never stored. A JWT is reused until it is
-// inside urJWTLeeway of its `exp` claim; a token whose exp
-// cannot be parsed is never cached.
+// inside urJWTLeeway of its `exp` claim. A token whose exp
+// cannot be parsed is cached only for a short conservative TTL
+// (FIX-ADV L3): never caching it at all would re-exchange on
+// every connect, and each exchange mints a NEW client on the
+// account — the exact burn this cache exists to prevent. The
+// fallback is logged once (no token material in the log line).
 type urJWTCache struct {
 	mu  sync.Mutex
 	now func() time.Time
 	by  map[string]urJWTEntry
+	// warnedUnparseable latches the one-time log line for the
+	// unparseable-exp fallback above.
+	warnedUnparseable bool
 }
 
 type urJWTEntry struct {
@@ -157,6 +193,10 @@ type urJWTEntry struct {
 }
 
 const urJWTLeeway = 5 * time.Minute
+
+// urJWTUnparseableTTL is the conservative cache lifetime for a
+// client JWT whose `exp` claim cannot be parsed (FIX-ADV L3).
+const urJWTUnparseableTTL = 10 * time.Minute
 
 func newURJWTCache() *urJWTCache {
 	return &urJWTCache{now: time.Now, by: map[string]urJWTEntry{}}
@@ -204,11 +244,18 @@ func (c *urJWTCache) get(apiKey string) (string, bool) {
 
 func (c *urJWTCache) put(apiKey, token string) {
 	exp, ok := jwtExpiry(token)
-	if !ok {
-		return
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !ok {
+		// Unparseable exp: cache conservatively instead of not
+		// at all (FIX-ADV L3 — see the type comment). The log
+		// line fires once and carries no token material.
+		if !c.warnedUnparseable {
+			c.warnedUnparseable = true
+			log.Printf("ember-service: ur: a client JWT's expiry could not be parsed; caching it for %s only", urJWTUnparseableTTL)
+		}
+		exp = c.now().Add(urJWTUnparseableTTL)
+	}
 	c.by[urKeyHash(apiKey)] = urJWTEntry{token: token, exp: exp}
 }
 
@@ -273,6 +320,11 @@ func exchangeURJWT(ctx context.Context, apiKey string) (string, error) {
 // ---- the manager -----------------------------------------------------
 
 type urManager struct {
+	// mu guards ONLY the state below (device/pump pointers and
+	// the state machine). It is never held across the JWT
+	// exchange, a device build, or the provider poll (FIX-ADV
+	// B1) — those run unlocked and take mu briefly to publish
+	// their outcome.
 	mu       sync.Mutex
 	factory  func(jwt string) (urDevice, error)
 	exchange urExchanger
@@ -280,16 +332,29 @@ type urManager struct {
 	device   urDevice
 	// pump is the live packet pump for device, or nil when no
 	// pump is running (not connected, the device has no packet
-	// plane, or this platform has no adapter). Owned by the
-	// connect/disconnect paths under mu.
+	// plane, or this platform has no adapter).
 	pump *urPump
 	// deviceJWT is the JWT the live device was built with, so a
 	// connect carrying a different account's key rebuilds it.
 	deviceJWT string
+	// deviceKeyHash is urKeyHash of the API key the live device
+	// was built for, so ur.countries can tell whether a key it
+	// was handed belongs to the live device's account (L2).
+	deviceKeyHash string
 	// lastCountry is the country string of the live destination
 	// request ("" = Best Available), for status reporting when
 	// the SDK has not (yet) named an exit country.
 	lastCountry string
+	// The connect state machine (FIX-ADV B1): state is one of
+	// the urState* words, lastError the latest failure's
+	// message, cancel cancels the in-flight attempt, and
+	// attempt is a generation counter — a connect goroutine may
+	// publish its outcome only while its generation is current,
+	// so a disconnect (which bumps it) always wins.
+	state     string
+	lastError string
+	cancel    context.CancelFunc
+	attempt   uint64
 
 	connectTimeout time.Duration
 	pollDelay      time.Duration
@@ -331,21 +396,25 @@ func (m *urManager) jwtFor(ctx context.Context, apiKey string) (string, error) {
 // on account change) it from the key's JWT. The providing pin
 // is applied and verified on every fresh device, before any
 // connect can be issued against it.
-// Caller must hold m.mu.
+//
+// The manager mutex is NOT held across the exchange or the
+// device build (FIX-ADV B1). The replacement device is built
+// FULLY — factory + providing pin — before the existing device
+// is touched (FIX-ADV L3): if building the replacement fails,
+// the old device and its session survive untouched.
 func (m *urManager) ensureDevice(ctx context.Context, apiKey string) (urDevice, error) {
 	jwt, err := m.jwtFor(ctx, apiKey)
 	if err != nil {
 		return nil, err
 	}
+	m.mu.Lock()
 	if m.device != nil && m.deviceJWT == jwt {
-		return m.device, nil
+		dev := m.device
+		m.mu.Unlock()
+		return dev, nil
 	}
-	if m.device != nil {
-		m.stopPumpLocked()
-		m.device.Close()
-		m.device = nil
-		m.deviceJWT = ""
-	}
+	m.mu.Unlock()
+
 	dev, err := m.factory(jwt)
 	if err != nil {
 		return nil, fmt.Errorf("ur: the SDK device could not be created: %w", err)
@@ -354,8 +423,23 @@ func (m *urManager) ensureDevice(ctx context.Context, apiKey string) (urDevice, 
 		dev.Close()
 		return nil, fmt.Errorf("ur: %w", err)
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.device != nil && m.deviceJWT == jwt {
+		// A concurrent caller built the same account's device
+		// while this one was being built — keep theirs.
+		dev.Close()
+		return m.device, nil
+	}
+	old := m.device
 	m.device = dev
 	m.deviceJWT = jwt
+	m.deviceKeyHash = urKeyHash(apiKey)
+	if old != nil {
+		m.stopPumpLocked()
+		old.Close()
+	}
 	return dev, nil
 }
 
@@ -402,10 +486,24 @@ func (m *urManager) tunneledLocked() bool {
 }
 
 func (m *urManager) status() urStatus {
-	avail, reason := m.available()
-	st := urStatus{Available: avail, Reason: reason}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.statusLocked()
+}
+
+// statusLocked is status() for a caller already holding m.mu.
+// Connected/Tunneled/Country come from the SDK device itself;
+// State/LastError come from the connect state machine. If the
+// machine believes a session is connected but the SDK no
+// longer reports one, the returned state reads "failed" — the
+// copy is adjusted, the machine's fields are left for the
+// connect/disconnect paths to own.
+func (m *urManager) statusLocked() urStatus {
+	avail, reason := m.available()
+	st := urStatus{Available: avail, Reason: reason, State: m.state, LastError: m.lastError}
+	if st.State == "" {
+		st.State = urStateIdle
+	}
 	if m.device != nil {
 		connected, country := m.device.Connected()
 		st.Connected = connected
@@ -415,16 +513,26 @@ func (m *urManager) status() urStatus {
 			st.Country = m.lastCountry
 		}
 		st.Tunneled = connected && m.tunneledLocked()
+		if st.State == urStateConnected && !connected {
+			st.State = urStateFailed
+			if st.LastError == "" {
+				st.LastError = "ur: the SDK session ended"
+			}
+		}
 	}
 	return st
 }
 
-// connect exchanges/caches the JWT, builds the device with
-// providing pinned OFF, sets the destination, and waits —
-// bounded — for the SDK itself to report an established
-// provider session. A timeout is an honest error, and the
-// destination is removed again so status never claims a
-// connection the SDK does not have.
+// connect validates the request, kicks the connect attempt off
+// in a goroutine, and returns the state machine's current word
+// PROMPTLY (FIX-ADV B1 — asynchronous connect). The attempt
+// itself (runConnect) exchanges/caches the JWT, builds the
+// device with providing pinned OFF, sets the destination, and
+// waits — bounded — for the SDK itself to report an established
+// provider session; its outcome is published into the state
+// machine for ur.status, never into this call's return beyond
+// the synchronous validation errors below. A new connect
+// supersedes any in-flight attempt.
 func (m *urManager) connect(p urConnectParams) (urStatus, error) {
 	if strings.TrimSpace(p.APIKey) == "" {
 		return urStatus{}, fmt.Errorf("ur.connect needs the account API key")
@@ -433,80 +541,156 @@ func (m *urManager) connect(p urConnectParams) (urStatus, error) {
 		return urStatus{}, fmt.Errorf("ur: %s", reason)
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.attempt++
+	attempt := m.attempt
+	m.cancel = cancel
+	m.state = urStateConnecting
+	m.lastError = ""
+	m.lastCountry = p.Country
+	st := m.statusLocked()
+	m.mu.Unlock()
+	go m.runConnect(ctx, attempt, p)
+	return st, nil
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	dev, err := m.ensureDevice(ctx, p.APIKey)
-	cancel()
+// runConnect is the asynchronous connect attempt kicked off by
+// connect(). It may publish its outcome only while its
+// generation is still current: disconnect() and a superseding
+// connect() bump the generation (and cancel the context), and
+// their outcome wins. The manager mutex is taken only for the
+// brief state publications — never across the JWT exchange or
+// the provider poll.
+func (m *urManager) runConnect(ctx context.Context, attempt uint64, p urConnectParams) {
+	// fail publishes a failure unless this attempt has been
+	// superseded or cancelled (in which case the canceller owns
+	// the state and this attempt changes nothing).
+	fail := func(err error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.attempt != attempt {
+			return
+		}
+		m.state = urStateFailed
+		m.lastError = err.Error()
+		m.cancel = nil
+		m.lastCountry = ""
+	}
+
+	ectx, ecancel := context.WithTimeout(ctx, 30*time.Second)
+	dev, err := m.ensureDevice(ectx, p.APIKey)
+	ecancel()
 	if err != nil {
-		return urStatus{}, err
+		if ctx.Err() == nil {
+			fail(err)
+		}
+		return
+	}
+	if ctx.Err() != nil {
+		return // cancelled while the device was being built
 	}
 	if err := dev.Connect(p.Country); err != nil {
-		return urStatus{}, fmt.Errorf("ur: the SDK refused the connect: %w", err)
+		fail(fmt.Errorf("ur: the SDK refused the connect: %w", err))
+		return
 	}
-	m.lastCountry = p.Country
 
 	deadline := m.now().Add(m.connectTimeout)
 	for {
+		select {
+		case <-ctx.Done():
+			// Disconnect (or a superseding connect) won. The
+			// destination this attempt set must not linger.
+			dev.Disconnect()
+			return
+		default:
+		}
 		if connected, _ := dev.Connected(); connected {
 			// The SDK session is established; now make it
 			// carry traffic. A pump that cannot start fails
 			// the connect and removes the destination, so
 			// status never shows a connected-but-dead engine.
+			m.mu.Lock()
+			if m.attempt != attempt {
+				m.mu.Unlock()
+				return
+			}
 			if err := m.startPumpLocked(dev); err != nil {
 				dev.Disconnect()
 				m.lastCountry = ""
-				return urStatus{}, fmt.Errorf("ur: the SDK established a provider session but the packet pump failed: %w", err)
+				m.state = urStateFailed
+				m.lastError = fmt.Errorf("ur: the SDK established a provider session but the packet pump failed: %w", err).Error()
+				m.cancel = nil
+				m.mu.Unlock()
+				return
 			}
-			return m.statusLocked(), nil
+			m.state = urStateConnected
+			m.lastError = ""
+			m.cancel = nil
+			m.mu.Unlock()
+			return
 		}
 		if !m.now().Before(deadline) {
 			dev.Disconnect()
-			m.lastCountry = ""
-			return urStatus{}, fmt.Errorf("ur: timed out after %s waiting for the SDK to establish a provider session (no provider connected)", m.connectTimeout)
+			fail(fmt.Errorf("ur: timed out after %s waiting for the SDK to establish a provider session (no provider connected)", m.connectTimeout))
+			return
 		}
-		time.Sleep(m.pollDelay)
-	}
-}
-
-// statusLocked is status() for a caller already holding m.mu.
-func (m *urManager) statusLocked() urStatus {
-	avail, reason := m.available()
-	st := urStatus{Available: avail, Reason: reason}
-	if m.device != nil {
-		connected, country := m.device.Connected()
-		st.Connected = connected
-		if country != "" {
-			st.Country = country
-		} else if connected {
-			st.Country = m.lastCountry
+		select {
+		case <-ctx.Done():
+			dev.Disconnect()
+			return
+		case <-time.After(m.pollDelay):
 		}
-		st.Tunneled = connected && m.tunneledLocked()
 	}
-	return st
 }
 
 func (m *urManager) disconnect() (urStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Cancel any in-flight connect attempt and invalidate its
+	// generation: disconnect wins (FIX-ADV B1).
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.attempt++
 	m.stopPumpLocked()
 	if m.device != nil {
 		m.device.Disconnect()
 	}
 	m.lastCountry = ""
+	m.state = urStateIdle
+	m.lastError = ""
 	return m.statusLocked(), nil
 }
 
 // countries returns the SDK's country list. It needs a device:
-// the live one when present, else one built from the supplied
-// key (which also performs the JWT exchange).
+// the live one when it belongs to the key's account, else one
+// built from the supplied key (which also performs the JWT
+// exchange). The manager mutex is never held across the
+// exchange, a device build, or the SDK lookup (FIX-ADV B1).
+//
+// Account correctness (FIX-ADV L2): when a live device exists
+// but the supplied key belongs to a DIFFERENT account, the list
+// is NOT answered from that device — a throwaway device is
+// exchanged/built from the supplied key, asked, and closed, so
+// the live session is never disturbed and the answer is the
+// requested account's own.
 func (m *urManager) countries(p urCountriesParams) ([]urCountry, error) {
 	if _, reason := m.available(); reason != "" {
 		return nil, fmt.Errorf("ur: %s", reason)
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	dev := m.device
+	devKeyHash := m.deviceKeyHash
+	m.mu.Unlock()
+
+	if p.APIKey != "" && dev != nil && urKeyHash(p.APIKey) != devKeyHash {
+		return m.countriesViaTempDevice(p.APIKey)
+	}
 	if dev == nil {
 		if strings.TrimSpace(p.APIKey) == "" {
 			return nil, fmt.Errorf("ur.countries needs an API key before the first connect (the location list comes from the account API session)")
@@ -526,15 +710,50 @@ func (m *urManager) countries(p urCountriesParams) ([]urCountry, error) {
 	return list, nil
 }
 
+// countriesViaTempDevice answers a countries query for an
+// account other than the live device's (FIX-ADV L2): exchange
+// the given key, build a throwaway device (providing pinned
+// OFF, like every device this service builds), ask it, close
+// it. The live device is never touched.
+func (m *urManager) countriesViaTempDevice(apiKey string) ([]urCountry, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	jwt, err := m.jwtFor(ctx, apiKey)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	dev, err := m.factory(jwt)
+	if err != nil {
+		return nil, fmt.Errorf("ur: the SDK device could not be created: %w", err)
+	}
+	defer dev.Close()
+	if err := dev.PinProvidingOff(); err != nil {
+		return nil, fmt.Errorf("ur: %w", err)
+	}
+	list, err := dev.Countries()
+	if err != nil {
+		return nil, fmt.Errorf("ur: the SDK location lookup failed: %w", err)
+	}
+	return list, nil
+}
+
 // close drops the device (service shutdown).
 func (m *urManager) close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.attempt++
 	m.stopPumpLocked()
 	if m.device != nil {
 		m.device.Disconnect()
 		m.device.Close()
 		m.device = nil
 		m.deviceJWT = ""
+		m.deviceKeyHash = ""
 	}
+	m.state = urStateIdle
+	m.lastError = ""
 }

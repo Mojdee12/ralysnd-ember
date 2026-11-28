@@ -109,6 +109,24 @@ func okExchange(jwt string, counter *int) urExchanger {
 	}
 }
 
+// waitURStatus polls the manager's status until pred holds or
+// the deadline passes (connect is asynchronous since FIX-ADV
+// B1 — tests follow ur.status exactly like the shell does).
+func waitURStatus(t *testing.T, m *urManager, pred func(urStatus) bool) urStatus {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st := m.status()
+		if pred(st) {
+			return st
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status never satisfied the predicate; last = %+v", st)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // ---- JWT cache ------------------------------------------------------
 
 func TestURJWTCacheReuseAndExpiry(t *testing.T) {
@@ -129,11 +147,19 @@ func TestURJWTCacheReuseAndExpiry(t *testing.T) {
 	if _, ok := c.get("urn_key_a"); ok {
 		t.Fatal("a JWT inside the expiry leeway must not be reused")
 	}
-	// Unparseable tokens are never cached.
+	// Unparseable tokens are cached only for the conservative
+	// TTL (FIX-ADV L3): served inside it, gone beyond it —
+	// never caching them would re-exchange (and mint a new
+	// client) on every connect.
 	c.put("urn_key_a", "not-a-jwt")
-	if _, ok := c.get("urn_key_a"); ok {
-		t.Fatal("an unparseable JWT must not be cached")
+	if _, ok := c.get("urn_key_a"); !ok {
+		t.Fatal("an unparseable JWT must be cached for the conservative TTL")
 	}
+	now = now.Add(urJWTUnparseableTTL + time.Minute)
+	if _, ok := c.get("urn_key_a"); ok {
+		t.Fatal("an unparseable JWT must not outlive the conservative TTL")
+	}
+	now = now.Add(-(urJWTUnparseableTTL + time.Minute))
 	// Invalidate forces re-exchange.
 	c.put("urn_key_a", fakeJWT(now.Add(time.Hour)))
 	c.invalidate("urn_key_a")
@@ -193,6 +219,12 @@ func TestURConnectPinsProvidingBeforeConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	// Asynchronous (FIX-ADV B1): connect returns promptly with
+	// the state machine's word; Connected arrives via status.
+	if st.State != urStateConnecting && st.State != urStateConnected {
+		t.Fatalf("connect return = %+v; want state connecting (or already connected)", st)
+	}
+	st = waitURStatus(t, m, func(s urStatus) bool { return s.State == urStateConnected })
 	if !st.Connected || st.Country != "Netherlands" {
 		t.Fatalf("status after connect = %+v; want connected via the SDK's own report", st)
 	}
@@ -211,8 +243,12 @@ func TestURConnectRefusesWhenProvidingPinFails(t *testing.T) {
 		func(jwt string) (urDevice, error) { return dev, nil },
 		okExchange(fakeJWT(time.Now().Add(time.Hour)), nil),
 	)
-	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err == nil {
-		t.Fatal("connect must refuse when the providing pin does not hold")
+	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err != nil {
+		t.Fatalf("connect (async accept): %v", err)
+	}
+	st := waitURStatus(t, m, func(s urStatus) bool { return s.State == urStateFailed })
+	if !strings.Contains(st.LastError, "providing could not be pinned OFF") {
+		t.Fatalf("failed status = %+v; want the pin failure as lastError", st)
 	}
 	for _, c := range dev.callLog() {
 		if strings.HasPrefix(c, "connect:") {
@@ -231,13 +267,17 @@ func TestURConnectTimeoutIsHonest(t *testing.T) {
 		okExchange(fakeJWT(time.Now().Add(time.Hour)), nil),
 	)
 	m.connectTimeout = 30 * time.Millisecond
-	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err == nil {
-		t.Fatal("a connect the SDK never confirms must time out with an error")
+	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err != nil {
+		t.Fatalf("connect (async accept): %v", err)
+	}
+	st := waitURStatus(t, m, func(s urStatus) bool { return s.State == urStateFailed })
+	if !strings.Contains(st.LastError, "timed out") {
+		t.Fatalf("failed status = %+v; want the timeout as lastError", st)
 	}
 	if !dev.disconnected {
 		t.Fatal("a timed-out connect must remove the destination again")
 	}
-	if st := m.status(); st.Connected {
+	if st.Connected {
 		t.Fatal("status must not claim connected after a timeout")
 	}
 }
@@ -254,6 +294,7 @@ func TestURConnectReusesCachedJWTAndDevice(t *testing.T) {
 		if _, err := m.connect(urConnectParams{APIKey: "urn_key", Country: "Germany"}); err != nil {
 			t.Fatalf("connect %d: %v", i, err)
 		}
+		waitURStatus(t, m, func(s urStatus) bool { return s.State == urStateConnected })
 		if _, err := m.disconnect(); err != nil {
 			t.Fatalf("disconnect %d: %v", i, err)
 		}
@@ -330,6 +371,9 @@ func TestURDispatchShapes(t *testing.T) {
 	}
 	if st.Available {
 		t.Fatal("the default (no ur_sdk tag) build must report available=false")
+	}
+	if st.State != urStateIdle {
+		t.Fatalf("ur.status state = %q; want %q (the B1 state machine word is always present)", st.State, urStateIdle)
 	}
 	resp = s.dispatch(request{V: protocolVersion, ID: 8, Method: "ur.connect", Params: json.RawMessage(`{"apiKey":"urn_x"}`)})
 	if resp.OK {

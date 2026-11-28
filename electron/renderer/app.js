@@ -196,6 +196,31 @@ async function handleImportFiles(files) {
   else if (added.length) showSvcNote(added.length + ' profile(s) imported.');
   if (currentScreen === 'servers') renderServersPage();
 }
+/* QR image import (2042): decode a QR code from a picked image in
+ * the renderer (window.EmberQr, renderer/qr.js + jsQR) and feed the
+ * payload — a proxy link, or several one per line — to the same
+ * importLinksText flow as Paste link. */
+function pickQrImageFile() {
+  let inp = document.getElementById('ember-qr-import');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.type = 'file'; inp.id = 'ember-qr-import'; inp.accept = 'image/*';
+    inp.style.display = 'none';
+    document.body.appendChild(inp);
+    inp.onchange = async () => {
+      const file = inp.files && inp.files[0];
+      inp.value = '';
+      if (!file) return;
+      try {
+        if (!window.EmberQr) throw new Error('QR import is unavailable in this build.');
+        const payload = await window.EmberQr.decodeFromFile(file);
+        if (!payload) { await emberConfirm('No QR code found in that image.'); return; }
+        showSvcNote(await importLinksText(payload));
+      } catch (e) { showSvcError(e); }
+    };
+  }
+  inp.click();
+}
 function pickImportFile() {
   let inp = document.getElementById('ember-file-import');
   if (!inp) {
@@ -353,7 +378,11 @@ function render() {
 function fitStage() {
   const stage = document.querySelector('.stage');
   if (!stage) return;
-  const s = Math.min(window.innerWidth / 1440, window.innerHeight / 900);
+  // FIX-ADV L5: clamp the upscale to 1.5 — beyond that the fixed
+  // 1440x900 stage (including the raster map backdrop) just goes
+  // soft and compositing gets heavy; the letterbox centring
+  // below absorbs the slack on very large displays.
+  const s = Math.min(window.innerWidth / 1440, window.innerHeight / 900, 1.5);
   stage.style.left = ((window.innerWidth - 1440 * s) / 2) + 'px';
   stage.style.top = ((window.innerHeight - 900 * s) / 2) + 'px';
   stage.style.transform = `scale(${s})`;
@@ -625,8 +654,12 @@ function paintUrPage() {
   const accounts = store.urnetworkAccounts || [];
   const card = cardByHead(document, /account/i);
   if (accounts.length) {
+    // FIX-ADV L2: say plainly WHICH account a connect will use —
+    // the engine connects with the FIRST stored account's key
+    // (there is no account picker in this build).
     setCard(card, accounts.length + ' account(s)', accounts[0].label || 'URnetwork account',
-      accounts.length + ' account(s) on this machine; keys live in the DPAPI vault. Plan and balance come from the SDK session — see the engine state below.');
+      accounts.length + ' account(s) on this machine; keys live in the DPAPI vault. The SDK engine connects with the first account (' +
+      (accounts[0].label || 'URnetwork account') + '). Plan and balance come from the SDK session — see the engine state below.');
   }
   const managed = (store.profiles || []).filter(p => /^UR ·/.test(p.name || ''));
   const mpVal = krowVal(/managed profiles/i);
@@ -998,12 +1031,15 @@ function wireWindowControls() {
   const close = document.getElementById('win-close');
   if (min) min.onclick = () => { if (window.ember.minimize) window.ember.minimize().catch(() => {}); };
   if (close) close.onclick = () => { if (window.ember.closeWindow) window.ember.closeWindow().catch(() => {}); };
-  if (max) max.onclick = async () => {
+  if (max) max.onclick = () => {
     if (!window.ember.maximizeToggle) return;
-    const m = await window.ember.maximizeToggle().catch(() => null);
-    if (typeof m === 'boolean') setMaxGlyph(m);
+    // FIX-ADV L5: the glyph is written ONLY by the
+    // 'win:maximized' event push (see boot's onMaximizedChange
+    // wiring) — the toggle's invoke result must not also write
+    // it: two writers race, and a stale result landing after
+    // the event paints the wrong glyph.
+    window.ember.maximizeToggle().catch(() => {});
   };
-  if (window.ember.isMaximized) window.ember.isMaximized().then(m => setMaxGlyph(!!m)).catch(() => {});
 }
 
 /* ---------- settings helpers ---------- */
@@ -1364,7 +1400,35 @@ async function exportBackup() {
   const r = await window.ember.backupExport();
   if (!r || r.cancelled) return;
   if (!r.ok) throw new Error(r.error || 'Backup export failed.');
-  showSvcNote('Backup exported to ' + r.path + ' (full Ember data).');
+  // FIX-ADV M1 — honesty, both directions: the file is a
+  // PLAIN-TEXT credential dump (profile UUIDs/passwords/keys,
+  // WireGuard private keys, OpenVPN key material, subscription
+  // URLs), and it silently OMITS the vault-held secrets, so a
+  // restore is not complete without re-entering them.
+  showSvcNote('Backup exported to ' + r.path + '. WARNING: this file contains profile credentials in PLAIN TEXT — guard it like a key file. ' +
+    'Vault-held items are NOT included (URnetwork API keys, the LAN-sharing password, the app-lock PIN) — they must be re-entered after a restore.');
+}
+/* FIX-ADV M2: the canonical top-level store keys a backup may
+ * carry — main.js DEFAULT_STATE's keys (version, selectedEngine,
+ * profiles, subscriptions, selectedProfileId, settings,
+ * engineSettings, urnetworkAccounts, lantern, warpProfile,
+ * lastDailyReportDate) plus 'groups' (profile-group bookkeeping
+ * the renderer keeps alongside them). Anything else in an import
+ * file is dropped and counted, never transplanted. */
+const BACKUP_STORE_KEYS = ['version', 'selectedEngine', 'profiles', 'subscriptions',
+  'selectedProfileId', 'settings', 'engineSettings', 'urnetworkAccounts', 'lantern',
+  'warpProfile', 'lastDailyReportDate', 'groups'];
+/* A profile entry is importable only if it is a plain object
+ * carrying at least one identity the app can act on (a protocol,
+ * a source link, or inline config text); survivors are passed
+ * through EmberProfiles.normalizeProfile like every other
+ * profile the store ever holds. */
+function backupProfileValid(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return false;
+  return (typeof p.protocol === 'string' && !!p.protocol)
+    || (typeof p.link === 'string' && !!p.link)
+    || (typeof p.confText === 'string' && !!p.confText)
+    || (typeof p.configText === 'string' && !!p.configText);
 }
 async function importBackup() {
   const r = await window.ember.backupImport();
@@ -1376,12 +1440,41 @@ async function importBackup() {
       !Array.isArray(d.profiles)) {
     throw new Error('That file is not an Ember backup — it must carry a settings object and a profiles list.');
   }
+  // Validate BEFORE anything is transplanted (FIX-ADV M2):
+  // unknown top-level keys dropped, profiles normalised with
+  // invalid entries dropped, subscription entries required to
+  // be objects with an http(s) url (their urls become fetch
+  // targets for the boot-time auto-refresh).
+  let dropped = 0;
+  const clean = {};
+  for (const k of Object.keys(d)) {
+    if (!BACKUP_STORE_KEYS.includes(k)) { dropped++; continue; }
+    clean[k] = d[k];
+  }
+  const profiles = [];
+  for (const p of d.profiles) {
+    if (backupProfileValid(p)) profiles.push(EP.normalizeProfile(p));
+    else dropped++;
+  }
+  clean.profiles = profiles;
+  if (clean.subscriptions !== undefined) {
+    if (!Array.isArray(clean.subscriptions)) { dropped++; delete clean.subscriptions; }
+    else {
+      const subs = [];
+      for (const s of clean.subscriptions) {
+        if (s && typeof s === 'object' && !Array.isArray(s) &&
+            typeof s.url === 'string' && /^https?:\/\//i.test(s.url)) subs.push(s);
+        else dropped++;
+      }
+      clean.subscriptions = subs;
+    }
+  }
   if (!(await emberConfirm('Replace ALL Ember data (settings, profiles, subscriptions) with this backup?'))) return;
-  for (const k of Object.keys(d)) await window.ember.store.set(k, d[k]);
+  for (const k of Object.keys(clean)) await window.ember.store.set(k, clean[k]);
   store = await window.ember.store.get();
   window.__emberSettings = store.settings || {};
   render();
-  showSvcNote('Backup imported — settings and profiles restored.');
+  showSvcNote('Backup imported — ' + profiles.length + ' profile(s) imported, ' + dropped + ' invalid entr' + (dropped === 1 ? 'y' : 'ies') + ' dropped.');
 }
 
 /* ---------- RegionHop card (task 7) ---------- */
@@ -2129,6 +2222,7 @@ function wireServersPage() {
             try { showSvcNote(await importLinksText(text)); } catch (e) { showSvcError(e); }
           } },
         { label: 'Import file (.conf / .ovpn)…', fn: () => pickImportFile() },
+        { label: 'QR image…', fn: () => pickQrImageFile() },
         { label: 'Add subscription…', fn: async () => {
             const url = await emberPrompt('Subscription URL:');
             if (!url) return;
@@ -2196,6 +2290,12 @@ async function wireUrEngineSection() {
     if (!acct) return null;
     return window.ember.secrets.get('urnetwork:' + acct.id).catch(() => null);
   };
+  // FIX-ADV B1: the service's ur.connect is asynchronous — the
+  // word painted here comes ONLY from ur.status's state machine
+  // (idle/connecting/connected/failed + lastError), refreshed by
+  // the poll below. Connected is painted only when status's own
+  // connected field says so, never from a connect call returning.
+  let lastUrErrorShown = '';
   const paint = st => {
     if (!st) { stateEl.textContent = 'URnetwork engine state unavailable.'; return; }
     if (!st.available) {
@@ -2205,9 +2305,23 @@ async function wireUrEngineSection() {
       disableWithReason(discBtn, st.reason || 'SDK engine unavailable.');
       return;
     }
+    if (st.state === 'failed') {
+      stateEl.textContent = 'Connect failed' + (st.lastError ? ': ' + st.lastError : '.');
+      if (st.lastError && st.lastError !== lastUrErrorShown) {
+        lastUrErrorShown = st.lastError;
+        showSvcError(new Error(st.lastError));
+      }
+      return;
+    }
+    if (st.state === 'connecting') {
+      stateEl.textContent = 'Connecting — the SDK is searching for a provider…';
+      return;
+    }
     stateEl.textContent = st.connected
       ? 'Connected' + (st.country ? ' — exit ' + st.country : '') +
-        (st.tunneled ? ' · system traffic captured' : ' · SDK session up; system traffic capture (Wintun pump) is not in this service build yet')
+        // FIX-ADV H2: tunneled:false on a live session means the
+        // Wintun pump failed or stopped — it IS in this build.
+        (st.tunneled ? ' · system traffic captured' : ' · SDK session up, but the Wintun pump is not running (failed or stopped), so system traffic is not captured')
       : 'Not connected — Best Available picks the exit, or pin a country.';
   };
   let st = null;
@@ -2220,12 +2334,12 @@ async function wireUrEngineSection() {
     } else {
       bestBtn.onclick = async () => {
         try {
-          bestBtn.textContent = 'Connecting…';
+          // Async connect (FIX-ADV B1): the call returns the
+          // 'connecting' word at once; the poll below follows
+          // ur.status to Connected or Failed from there.
           paint(await UR.connect(key, ''));
-          showSvcNote('URnetwork engine: Best Available connect requested — the state above is the SDK\u2019s own word.');
+          showSvcNote('URnetwork engine: Best Available connect started — the state above follows the service\u2019s ur.status.');
         } catch (e) { showSvcError(e); }
-        bestBtn.textContent = 'Best Available';
-        render();
       };
       // Country list (from the account session) as chips.
       try {
@@ -2244,9 +2358,8 @@ async function wireUrEngineSection() {
             if (!cn) return;
             try {
               paint(await UR.connect(key, cn.id || cn.name));
-              showSvcNote('URnetwork engine: connecting to ' + (cn.name || cn.id) + '.');
+              showSvcNote('URnetwork engine: connecting to ' + (cn.name || cn.id) + ' — watch the state above.');
             } catch (e) { showSvcError(e); }
-            render();
           });
         } else chipsEl.innerHTML = '<span class="ds">No country list from the SDK.</span>';
       } catch (e) { chipsEl.innerHTML = '<span class="ds">Country list unavailable: ' + esc(e.message || e) + '</span>'; }
@@ -2387,6 +2500,19 @@ function blockedVerdict(v) {
     && !v.probeOk);
 }
 
+/* Pure alert gate (stub-tested, FIX-ADV M3): a raw verdict is
+ * not always an alert. With a LIVE trafficSession the downlink
+ * evidence is real, so one failed probe suffices; with the
+ * persisted-counter fallback (a boot-adopted session, whose
+ * downBytes can only grow via a trafficSession it does not
+ * have) the evidence is weak, so TWO consecutive failed probes
+ * (two watcher cycles) are required before alerting. */
+function blockedAlertDue(v) {
+  if (!v || !v.verdict) return false;
+  if (v.liveSession) return true;
+  return (v.consecutiveFails || 0) >= 2;
+}
+
 function showBlockedAlert() {
   blockedAlertOn = true;
   const bar = document.getElementById('svcbar');
@@ -2403,7 +2529,7 @@ function clearBlockedAlert() {
 }
 
 const blockedWatcher = {
-  timer: null, engine: null, since: 0, samples: [], dismissed: false,
+  timer: null, engine: null, since: 0, samples: [], dismissed: false, failedProbes: 0,
   downlink(engine) {
     if (trafficSession && trafficSession.engine === engine) return trafficSession.down || 0;
     const p = selectedProfileFor(engine);
@@ -2417,12 +2543,13 @@ const blockedWatcher = {
       this.since = Date.now();
       this.samples = [{ t: this.since, down: this.downlink(eng) }];
       this.dismissed = false;
+      this.failedProbes = 0;
       this.timer = setInterval(() => { this.tick().catch(() => {}); }, BLOCKED_TICK_MS);
     } else if (!eng && this.timer) this.stop();
   },
   stop() {
     if (this.timer) clearInterval(this.timer);
-    this.timer = null; this.engine = null; this.samples = [];
+    this.timer = null; this.engine = null; this.samples = []; this.failedProbes = 0;
     clearBlockedAlert();
   },
   dismiss() { this.dismissed = true; },
@@ -2442,6 +2569,12 @@ const blockedWatcher = {
     // would otherwise add tunnel traffic to the growth signal).
     // If the bridge is unavailable the probe counts as OK — no
     // alert without a proven-failed probe.
+    // FIX-ADV M3(a): the probe target is a PLAIN (non-DoH) DNS
+    // server from the resolved chain. When the chain contains
+    // none (a DoH-only setup), a raw-TCP probe has no valid
+    // target — the probe is INAPPLICABLE and counts as OK, never
+    // as a failure (the old hard-coded 8.8.8.8 fallback could
+    // false-alarm a healthy DoH tunnel).
     let probeOk = true;
     if (toggleOn && connectedMs >= BLOCKED_MIN_CONNECTED_MS && growth <= BLOCKED_DOWNLINK_EPSILON
         && window.ember && typeof window.ember.dnsProbe === 'function') {
@@ -2449,17 +2582,26 @@ const blockedWatcher = {
         dnsPreset: settingGet('dnsPreset'), dnsTransport: settingGet('dnsTransport'),
         remoteDns: settingGet('remoteDns'), localDns: settingGet('localDns'),
       });
-      const dnsServer = chain.find(s => /^\d{1,3}(\.\d{1,3}){3}$/.test(s)) || '8.8.8.8';
-      const c = CTRLS[eng];
-      const r = await window.ember.dnsProbe({ socksHost: '127.0.0.1',
-        socksPort: (c && c.cfg && c.cfg.socksPort) || settingGet('socksPort'),
-        dnsServer }).catch(() => ({ ok: false }));
-      probeOk = !!(r && r.ok);
+      const dnsServer = chain.find(s => /^\d{1,3}(\.\d{1,3}){3}$/.test(s));
+      if (dnsServer) {
+        const c = CTRLS[eng];
+        const r = await window.ember.dnsProbe({ socksHost: '127.0.0.1',
+          socksPort: (c && c.cfg && c.cfg.socksPort) || settingGet('socksPort'),
+          dnsServer }).catch(() => ({ ok: false }));
+        probeOk = !!(r && r.ok);
+      }
     }
     const verdict = blockedVerdict({ toggleOn, connectedMs, downlinkGrowth: growth, probeOk });
-    if (verdict) {
+    // FIX-ADV M3(b): downlink evidence from the persisted-counter
+    // fallback (no live trafficSession — a boot-adopted session)
+    // needs TWO consecutive failed probes before the alert; a
+    // live trafficSession's evidence alerts on the first.
+    const liveSession = !!(trafficSession && trafficSession.engine === eng);
+    this.failedProbes = verdict ? (this.failedProbes || 0) + 1 : 0;
+    const due = blockedAlertDue({ verdict, liveSession, consecutiveFails: this.failedProbes });
+    if (due) {
       if (!this.dismissed) showBlockedAlert();
-    } else {
+    } else if (!verdict) {
       this.dismissed = false; // a cleared verdict re-arms the alert
       clearBlockedAlert();
     }
@@ -2535,15 +2677,40 @@ async function toggleConnect(engine) {
     } else if (engine === 'warp') {
       await c.toggle();
     } else if (engine === 'v2ray' || engine === 'urnetwork') {
-      if (c.running) {
-        await c.stop();
+      const sb = CTRLS.singbox; // sing-box second core (hy2/tuic/naive/snell/anytls profiles)
+      if (c.running || (sb && sb.running)) {
+        if (sb && sb.running) await sb.stop(); else await c.stop();
         if (v2rayHopActive) { v2rayHopActive = false; await BYEDPI.stopForHop().catch(() => {}); }
         await endTrafficSession();
       }
       else {
-        const p = selectedProfileFor(engine);
+        // The selected profile may be a sing-box profile even though
+        // selectedProfileFor(engine) only matches engine 'v2ray'.
+        const sel = selectedProfile();
+        const p = (sel && (sel.engine === 'v2ray' || sel.engine === 'singbox')) ? sel : selectedProfileFor(engine);
         if (!p) throw new Error('No ' + ENGINE_LABEL[engine] + ' config selected — import one on the Servers page first.');
         if (p.quarantined) throw new Error('Profile "' + p.name + '" is quarantined by the ping sweep — restore it on the Servers page first.');
+        if (p.engine === 'singbox') {
+          // sing-box path: Xray cannot speak these protocols. The
+          // config is built by profiles.js buildSingboxConfig and
+          // delivered as a FILE via main (sing-box has no stdin
+          // mode). No ByeDPI hop (the sing-box builder emits no
+          // chaining) and no traffic counters (the poller reads the
+          // Xray metrics endpoint, which sing-box does not serve —
+          // the session honestly shows none).
+          const sbCfg = EP.buildSingboxConfig(p, {
+            remoteDns: settingGet('remoteDns'),
+            dnsPreset: settingGet('dnsPreset'),
+            dnsTransport: settingGet('dnsTransport'),
+            localDns: settingGet('localDns'),
+            listenAddress: settingGet('listenAddress'),
+            lanSharing: settingGet('lanSharing'),
+          });
+          await sb.startWithConfig(JSON.stringify(sbCfg, null, 1));
+          trafficSession = { engine, profileId: p.id, bytes: 0, down: 0, lastPersist: Date.now() };
+          refreshRailStates(); refreshConnectBar();
+          return;
+        }
         if (!['vless', 'vmess', 'trojan', 'ss', 'socks'].includes(p.protocol)) {
           throw new Error('Profile "' + p.name + '" (' + p.protocol + ') cannot run on the Xray engine.');
         }

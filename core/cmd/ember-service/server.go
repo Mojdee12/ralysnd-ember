@@ -286,8 +286,9 @@ func (s *server) dispatchChecked(req request) response {
 		result, err = s.ur.disconnect()
 	case "ur.countries":
 		var p urCountriesParams
-		_ = paramsInto(req.Params, &p)
-		result, err = s.ur.countries(p)
+		if err = paramsInto(req.Params, &p); err == nil {
+			result, err = s.ur.countries(p)
+		}
 	default:
 		err = errors.New("unknown method " + req.Method)
 	}

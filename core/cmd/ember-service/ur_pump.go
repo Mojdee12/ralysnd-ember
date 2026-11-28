@@ -170,6 +170,20 @@ func (p *urPump) Start() error {
 	}
 	// From here, every failure path closes the adapter.
 	cfg := p.dev.TunnelConfig()
+	// Validate the SDK's tunnel config BEFORE anything is
+	// applied (FIX-ADV H2): a config with no addresses at all
+	// (no IPv4 and no IPv6) would make ApplyConfig skip every
+	// family block and return nil — no address, no DNS, no
+	// routes — while the pump still marked itself running and
+	// told the SDK the tunnel started: a "tunneled" session
+	// that captures nothing. That is an error: the adapter is
+	// closed, the SDK is told the tunnel is NOT started, and
+	// the connect surfaces the failure.
+	if cfg.Address4 == "" && cfg.Address6 == "" {
+		ad.Close()
+		p.dev.SetTunnelStarted(false)
+		return errors.New("ur pump: the SDK reported no tunnel addresses (neither IPv4 nor IPv6) — refusing to run a tunnel with no routes")
+	}
 	var idx4, idx6 uint32
 	if p.egress != nil {
 		idx4, idx6 = p.egress(ad.Index())

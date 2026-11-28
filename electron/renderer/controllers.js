@@ -70,11 +70,19 @@ const ENGINE_CFG = {
   mozilla:  { proc: 'mozilla',    folder: 'core',      exe: 'firefox-vpn-core.exe', args: [],                          socksPort: 10810, verifySocks: false },
   psiphon:  { proc: 'psiphon',    folder: 'psiphon',   exe: 'psiphon-core.exe',     args: [],                          socksPort: 10811, verifySocks: true },
   openvpn:  { proc: 'openvpn',    folder: 'openvpn',   exe: 'openvpn.exe',          args: [],                          socksPort: 0, verifySocks: false },
-  singbox:  { proc: 'singbox',    folder: 'singbox',   exe: 'sing-box.exe',         args: ['run', '-c', 'config.json'],socksPort: 20862, verifySocks: true },
+  singbox:  { proc: 'singbox',    folder: 'singbox',   exe: 'sing-box.exe',         argsFn: SingboxArgs,              socksPort: 20862, verifySocks: true },
   usque:    { proc: 'usque',      folder: 'usque',     exe: 'usque.exe',            args: [],                          socksPort: 10812, verifySocks: true }, // args built in WarpEngine.start (register + -c + socks)
   aether:   { proc: 'aether',     folder: 'aether',    exe: 'aether.exe',           args: [],                          socksPort: 10813, verifySocks: true },
   lantern:  { proc: 'lanternd',   folder: 'lantern',   exe: 'lanternd.exe',         args: [],                          socksPort: 0, verifySocks: false },
 };
+/* sing-box takes its config from a FILE (no stdin mode): the args
+ * are built at start time from the absolute path main.js wrote the
+ * generated config to (ember:writeEngineConfig — see SingboxEngine). */
+function SingboxArgs(opts) {
+  const p = opts && opts.configPath;
+  if (!p) throw new Error('sing-box start needs a config file path (SingboxEngine writes the config first).');
+  return ['run', '-c', String(p)];
+}
 const TUN_EXE = 'ember-tun-bridge.exe'; // lives in core\ beside firefox-vpn-core.exe
 const STAGES = ['starting', 'registering', 'connecting', 'connected', 'reconnecting', 'disconnected', 'failed'];
 const VERIFY_TIMEOUT_MS = 15000;
@@ -204,10 +212,11 @@ class ProcEngine {
   /* start(extraArgs, configText): when configText is given the proc is
    * started with stdin:true and the text is fed via proc.write +
    * proc.close-stdin; without it, no stdin key is sent at all. */
-  async start(extraArgs, configText) {
+  async start(extraArgs, configText, opts) {
     engineState.set(this.engine, 'Starting');
+    const baseArgs = typeof this.cfg.argsFn === 'function' ? this.cfg.argsFn(opts || {}) : (this.cfg.args || []);
     const params = { name: this.cfg.proc, exe: exePath(this.cfg.folder, this.cfg.exe),
-      args: [...this.cfg.args, ...(extraArgs || [])] };
+      args: [...baseArgs, ...(extraArgs || [])] };
     if (configText !== undefined && configText !== null) params.stdin = true;
     await svc('proc.start', params);
     if (params.stdin) await feedConfig(this.cfg.proc, configText);
@@ -239,6 +248,29 @@ class ProcEngine {
     this.running = false; engineState.set(this.engine, 'Idle');
   }
   async toggle(extraArgs, configText) { return this.running ? this.stop() : this.start(extraArgs, configText); }
+}
+
+/* sing-box second core (repair 2042, SINGBOX): serves the profiles
+ * Xray cannot speak (hysteria2 / tuic / naive / snell / anytls —
+ * profiles.js buildSingboxConfig). sing-box reads a config FILE, so
+ * startWithConfig writes the generated JSON through main's
+ * ember:writeEngineConfig IPC (userData/engine-configs/) and starts
+ * the proc with args ['run','-c',<path>] (ENGINE_CFG.singbox.argsFn).
+ * The engine word is 'v2ray': a sing-box session IS the V2Ray page's
+ * session (its connect pill, rail word and TUN/SOCKS proofs are the
+ * ProcEngine ones). Traffic accounting is NOT available: the Xray
+ * metrics poller reads 127.0.0.1:49201/debug/vars, which sing-box
+ * does not serve — the session simply reports no counters. */
+class SingboxEngine extends ProcEngine {
+  constructor() { super('v2ray', ENGINE_CFG.singbox); }
+  async startWithConfig(configText) {
+    if (!window.ember || typeof window.ember.writeEngineConfig !== 'function') {
+      throw new Error('writeEngineConfig bridge unavailable — cannot deliver the sing-box config file.');
+    }
+    const configPath = await window.ember.writeEngineConfig('singbox-config.json', String(configText));
+    if (!configPath) throw new Error('The sing-box config file was not written.');
+    return super.start([], null, { configPath });
+  }
 }
 
 /* Mirror of the service's awgTunnelNameFor (wg.go): the tunnel
@@ -528,10 +560,11 @@ const logs = new LogsController();
  * (build 2127/2157) — the same six candidates the phone ships.
  * Gated on the canonical settings.dpiLabEnabled (DEFAULT OFF):
  * start() refuses while the Lab is off.
- * SERVICE GAP (remainder): ciadpi.exe is not yet in the service's
- * allowedExes (core/cmd/ember-service/manager.go), so proc.start
- * is refused by the service until the service workstream adds it
- * (its TestAllowlistReconciledWithShell will need the same entry).
+ * ciadpi.exe IS in the service's allowedExes
+ * (core/cmd/ember-service/manager.go) and the entry is locked by
+ * the service's allowlist reconciliation test
+ * (allowlist_reconcile_test.go) — proc.start for it is a working
+ * path, not a gap.
  * sudokubox.exe also ships, but it is a sing-box fork that runs
  * Sudoku PROTOCOL profiles from a config — it has no standalone
  * DPI-Lab mode, so it gets no controller here. */
@@ -717,16 +750,23 @@ class MozillaController extends ProcEngine {
 
 /* URnetwork REAL SDK engine (UI-S-B2 task 10) — the service's
  * ur.* contract (core/cmd/ember-service/ur.go, present in tree):
- *   ur.status {} → {available, reason?, connected, country?, tunneled}
+ *   ur.status {} → {available, reason?, connected, country?,
+ *     tunneled, state, lastError?} — state is the connect state
+ *     machine: idle | connecting | connected | failed.
  *   ur.connect {apiKey, country?} → urStatus (apiKey = the vault
- *     `urn_` key, handed per connect, never stored by the service)
- *   ur.disconnect {} → urStatus
+ *     `urn_` key, handed per connect, never stored by the
+ *     service). ASYNCHRONOUS (FIX-ADV B1): the call validates,
+ *     kicks the attempt off and returns the current state word
+ *     at once ('connecting'); the outcome arrives via ur.status
+ *     polling — never treat this call's return as the result.
+ *   ur.disconnect {} → urStatus (cancels an in-flight attempt
+ *     and wins over it)
  *   ur.countries {apiKey?} → [{id, name}]
  * available:false (SDK not compiled into the service build) is
  * surfaced verbatim — the page keeps managed profiles as the
  * fallback. tunneled:false is reported honestly: the SDK session
- * can be up while no Wintun packet pump captures system traffic
- * yet (see ur.go's header). */
+ * can be up while the Wintun packet pump is not running (see
+ * ur.go's header). */
 class UrEngineController {
   constructor() { this.engine = 'urnetwork-sdk'; }
   async status() { return svc('ur.status', {}); }
@@ -750,8 +790,11 @@ class UrEngineController {
  * "outbound>>><tag>>>>traffic>>>uplink". Totals exclude the
  * 'metrics' outbound itself (it carries these very polls).
  * Deltas go to window.EmberControllers.onTraffic({up, down}),
- * which app.js registers; a totals reset (core restart) rebases
- * instead of going negative. */
+ * which app.js registers; a totals reset (core restart) REBASES
+ * — the delta for that sample is 0 and the new totals become
+ * the baseline (FIX-ADV M5: counting the full new totals would
+ * double-count bytes already persisted and could trip the
+ * session data budget on phantom traffic). */
 const trafficPoller = {
   timer: null, last: null,
   parseTotals(text) {
@@ -780,8 +823,11 @@ const trafficPoller = {
     const totals = this.parseTotals(r.text);
     if (!totals) return;
     if (!this.last) { this.last = totals; return; } // first sample = baseline
-    const up = totals.up >= this.last.up ? totals.up - this.last.up : totals.up;
-    const down = totals.down >= this.last.down ? totals.down - this.last.down : totals.down;
+    // Totals decrease = the core restarted and its counters
+    // reset: rebase (delta 0 for this sample), never count the
+    // full new totals (FIX-ADV M5).
+    const up = totals.up >= this.last.up ? totals.up - this.last.up : 0;
+    const down = totals.down >= this.last.down ? totals.down - this.last.down : 0;
     this.last = totals;
     if ((up || down) && typeof window.EmberControllers.onTraffic === 'function') {
       window.EmberControllers.onTraffic({ up, down });
@@ -805,12 +851,20 @@ const controllers = {
   mozilla: new MozillaController(),
   psiphon: new ProcEngine('psiphon', ENGINE_CFG.psiphon),
   openvpn: new OpenVpnEngine(),
-  wireguard: new WgEngine('wireguard', 'wireguard'),
+  // No fixed name (FIX-ADV W5): the profile engine must name
+  // each tunnel after the SELECTED PROFILE (sanitised by
+  // WgEngine.nameFor/sanitizeWgName, mirroring the service's
+  // own rule) — a fixed 'wireguard' name here silently
+  // discarded app.js's start(confText, profileName) argument
+  // and shared one tunnel identity across every profile. Only
+  // WARP's engine (WarpProfileEngine) keeps a fixed name.
+  wireguard: new WgEngine('wireguard'),
   emberwarp: new WarpEngine('emberwarp'),
   masque: new WarpEngine('masque'),
   warp: new WarpProfileEngine(),
   lantern: new LanternEngine(),
   urnetwork: new ProcEngine('urnetwork', ENGINE_CFG.v2ray), // managed profiles run via Xray
+  singbox: new SingboxEngine(), // second core for hy2/tuic/naive/snell/anytls profiles (state word: 'v2ray')
 };
 
 /* Boot reconciliation (audit W3): the service and its children

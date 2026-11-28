@@ -43,4 +43,8 @@ contextBridge.exposeInMainWorld('ember', {
   backupExport: () => ipcRenderer.invoke('ember:backupExport'),
   backupImport: () => ipcRenderer.invoke('ember:backupImport'),
   regionhopDefaults: () => ipcRenderer.invoke('ember:regionhopDefaults'),
+  /* Engine config delivery (repair 2042, SINGBOX): writes a generated
+   * engine config under userData/engine-configs/ and resolves to its
+   * absolute path (sing-box takes its config from a file). */
+  writeEngineConfig: (name, text) => ipcRenderer.invoke('ember:writeEngineConfig', { name, text }),
 });

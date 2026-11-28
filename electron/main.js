@@ -147,7 +147,16 @@ function secretSet(key, value) {
  * sc.exe runs. A shell timeout shorter than the service's own
  * duration desyncs state: the shell marks Failed while the service
  * completes the start. */
-const CALL_TIMEOUTS_MS = { 'lantern.call': 90000, 'wg.start': 75000 };
+/* ur.connect is ASYNCHRONOUS in the service (FIX-ADV B1: it
+ * validates, kicks the attempt off, and returns the state word
+ * at once; progress is followed via ur.status), so its 15 s is
+ * a formality over a fast call. ur.countries can legitimately
+ * take ~60 s (30 s JWT exchange + the SDK's location lookup),
+ * so it gets a budget that covers the service's own. ur.status
+ * and ur.disconnect are fast state reads/writes — the default
+ * covers them. */
+const CALL_TIMEOUTS_MS = { 'lantern.call': 90000, 'wg.start': 75000,
+  'ur.connect': 15000, 'ur.countries': 90000 };
 const DEFAULT_CALL_TIMEOUT_MS = 30000;
 
 class ServiceClient {
@@ -341,6 +350,11 @@ function createWindow() {
   };
   win.on('maximize', sendMaximized);
   win.on('unmaximize', sendMaximized);
+  // FIX-ADV L5: the renderer's maximize glyph is written ONLY
+  // from this event push (single writer) — so push the initial
+  // state once the renderer is up, or a window that starts
+  // maximized would show the wrong glyph until the first toggle.
+  win.webContents.once('did-finish-load', sendMaximized);
   /* settings.closeToTray: hide to the tray instead of quitting — only
    * when a tray actually exists to bring the window back from. */
   win.on('close', (e) => {
@@ -432,12 +446,16 @@ ipcMain.handle('net:fetchText', async (_e, opts) => {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 20000);
     // UI-S-B2: optional caller headers (e.g. x-hwid for subscription
-    // panels, mirroring Android sub_fetcher.dart). The app's
-    // User-Agent stays fixed unless the caller explicitly sets one.
+    // panels, mirroring Android sub_fetcher.dart). FIX-ADV L4:
+    // caller headers are ALLOWLISTED — only 'x-hwid'
+    // (case-insensitive) passes; everything else is dropped, so
+    // the fixed User-Agent below can never be overridden and no
+    // renderer code can attach arbitrary headers to a fetch.
     const headers = { 'user-agent': 'RalysndEmber/2.2' };
     if (opts && opts.headers && typeof opts.headers === 'object') {
       for (const [k, v] of Object.entries(opts.headers)) {
-        if (v != null && String(v) !== '') headers[String(k).toLowerCase()] = String(v);
+        if (String(k).toLowerCase() !== 'x-hwid') continue;
+        if (v != null && String(v) !== '') headers['x-hwid'] = String(v);
       }
     }
     const res = await fetch(url, { signal: ctl.signal, redirect: 'follow', headers });
@@ -464,6 +482,19 @@ ipcMain.handle('net:httpLocal', async (_e, opts) => {
   if (!p.startsWith('/api/') || p.includes('://') || p.includes('..')) {
     return { status: 0, error: 'net:httpLocal path must be a core /api/* path.' };
   }
+  // FIX-ADV H3: the literal checks above are not a confinement
+  // proof — WHATWG URL parsing normalises percent-encoded dot
+  // segments (/api/%2e%2e/x arrives as /x). Reject any raw '%'
+  // outright, then re-check the PARSED pathname against the
+  // /api/ prefix before the URL is ever fetched.
+  if (p.includes('%')) {
+    return { status: 0, error: 'net:httpLocal path must be a core /api/* path.' };
+  }
+  let parsedPath = '';
+  try { parsedPath = new URL(p, MOZILLA_API_BASE).pathname; } catch { parsedPath = ''; }
+  if (!parsedPath.startsWith('/api/')) {
+    return { status: 0, error: 'net:httpLocal path must be a core /api/* path.' };
+  }
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 30000);
@@ -479,19 +510,22 @@ ipcMain.handle('net:httpLocal', async (_e, opts) => {
     return { status: res.status, json, text: json === null ? text.slice(0, 500) : undefined };
   } catch (e) { return { status: 0, error: String(e.message || e) }; }
 });
-/* Speed test through a live SOCKS port (UI-S-B2 task 3a): point the
- * default session at socks5://127.0.0.1:<socksPort>, download the
- * URL counting bytes + elapsed, and ALWAYS restore the previous
- * proxy in a finally. The previous proxy is captured as the
- * effective resolved rules for the URL and re-applied verbatim. */
+/* Speed test through a live SOCKS port (UI-S-B2 task 3a): download
+ * the URL through socks5://127.0.0.1:<socksPort> counting bytes +
+ * elapsed. FIX-ADV H1: the measurement runs on a THROWAWAY
+ * session (a dedicated partition, cache off) whose proxy is set
+ * to the test SOCKS — session.defaultSession, which renders the
+ * app itself, is NEVER mutated, so there is no capture/restore
+ * of its proxy at all (the old code "restored" resolveProxy's
+ * per-URL result as if it were the configured rules, freezing
+ * one PAC decision as a global static rule) and overlapping
+ * tests cannot corrupt anything shared. */
 ipcMain.handle('net:speedTest', async (_e, opts) => {
   const port = Number(opts && opts.socksPort);
   const url = String((opts && opts.url) || '');
   if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'net:speedTest needs a valid socksPort.' };
   if (!/^https:\/\//i.test(url)) return { ok: false, error: 'net:speedTest needs an https URL.' };
-  const ses = session.defaultSession;
-  let prevRules = '';
-  try { prevRules = await ses.resolveProxy(url); } catch { prevRules = 'DIRECT'; }
+  const ses = session.fromPartition('ember-speedtest', { cache: false });
   const started = Date.now();
   try {
     await ses.setProxy({ proxyRules: 'socks5://127.0.0.1:' + port });
@@ -506,9 +540,6 @@ ipcMain.handle('net:speedTest', async (_e, opts) => {
     const ms = Date.now() - started;
     return { ok: true, bytes, ms, mbps: ms > 0 ? (bytes * 8 / (ms / 1000) / 1e6) : 0 };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
-  finally {
-    try { await ses.setProxy({ proxyRules: !prevRules || /^DIRECT$/i.test(prevRules.trim()) ? '' : prevRules }); } catch {}
-  }
 });
 /* Through-proxy DNS probe (UI-S-B2 task 3c): manual SOCKS5 TCP
  * connect through the live proxy to <dnsServer>:53, then a minimal
@@ -623,9 +654,12 @@ ipcMain.handle('secret:has', (_e, key) => secretGet(key) != null);
 ipcMain.handle('updater:check', () => checkUpdates());
 /* ---------- window controls (owner requirement C) ----------
  * The frameless window's minimize / maximize / close, driven by the
- * renderer's custom top bar. 'win:maximizeToggle' returns the NEW
- * isMaximized state; state changes are also pushed on the
- * 'win:maximized' event (see createWindow). NOTE: 'win:close' goes
+ * renderer's custom top bar. 'win:maximizeToggle' still returns
+ * the NEW isMaximized state for any caller that wants it, but the
+ * renderer's maximize GLYPH is written ONLY from the
+ * 'win:maximized' event push (FIX-ADV L5, single writer — an
+ * invoke result landing after the event could otherwise paint a
+ * stale glyph). NOTE: 'win:close' goes
  * through the normal window 'close' path, so settings.closeToTray
  * still hides to the tray instead of quitting when enabled. */
 ipcMain.handle('win:minimize', () => { if (win && !win.isDestroyed()) win.minimize(); return true; });
@@ -686,6 +720,31 @@ ipcMain.handle('ember:regionhopDefaults', () => {
     } catch { /* try the next candidate */ }
   }
   return null;
+});
+/* Engine config delivery (repair 2042, SINGBOX): sing-box reads its
+ * config from a file (no stdin mode), so the renderer hands the
+ * generated JSON here; it is written under
+ * userData/engine-configs/<name> and the ABSOLUTE PATH is returned
+ * for the proc's args. Validation is strict: `name` must be a bare
+ * filename (no separators, no traversal), `text` a string under a
+ * 1 MiB cap. Invalid input throws — the renderer's invoke rejects
+ * with the reason, never a silent partial write. */
+ipcMain.handle('ember:writeEngineConfig', (_e, opts) => {
+  const name = String((opts && opts.name) || '');
+  const text = opts && opts.text;
+  if (!name || name !== path.basename(name) || name === '.' || name === '..' ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.length > 128) {
+    throw new Error('ember:writeEngineConfig needs a bare filename (letters, digits, dot, dash, underscore).');
+  }
+  if (typeof text !== 'string') throw new Error('ember:writeEngineConfig needs the config text as a string.');
+  if (text.length > 1024 * 1024) throw new Error('ember:writeEngineConfig config text exceeds the 1 MiB cap.');
+  const dir = path.join(app.getPath('userData'), 'engine-configs');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, name);
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+  return file;
 });
 ipcMain.handle('shell:open', (_e, url) => { if (/^https:\/\//.test(url)) return shell.openExternal(url); });
 ipcMain.handle('app:meta', () => ({ version: app.getVersion(), shoot: SHOOT, platform: process.platform,

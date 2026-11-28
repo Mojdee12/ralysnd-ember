@@ -8,6 +8,7 @@
       "main.js",
       "preload.js",
       "renderer/**",
+      "node_modules/jsqr/dist/jsQR.js",
       "assets/**",
       "package.json"
     ],
@@ -36,5 +37,8 @@
     "shoot": "ELECTRON_DISABLE_SANDBOX=1 electron shoot.js",
     "start": "electron ."
   },
-  "version": "2.2.0"
+  "version": "2.2.0",
+  "dependencies": {
+    "jsqr": "^1.4.0"
+  }
 }

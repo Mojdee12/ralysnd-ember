@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -285,7 +286,7 @@ func TestURPumpStartOpenFailure(t *testing.T) {
 func TestURPumpStartConfigFailure(t *testing.T) {
 	ad := newFakePumpAdapter(7)
 	ad.applyErr = errors.New("netsh refused")
-	dev := &fakePumpDevice{}
+	dev := &fakePumpDevice{cfg: urPumpConfig{Address4: "10.1.2.3", MTU: 1500}}
 	p := &urPump{
 		dev:    dev,
 		opener: func() (urTunAdapter, error) { return ad, nil },
@@ -317,7 +318,7 @@ func TestURPumpUnavailableWithoutOpener(t *testing.T) {
 
 func TestURPumpAdapterDeathMarksDown(t *testing.T) {
 	ad := newFakePumpAdapter(7)
-	dev := &fakePumpDevice{}
+	dev := &fakePumpDevice{cfg: urPumpConfig{Address4: "10.1.2.3", MTU: 1500}}
 	p := &urPump{
 		dev:    dev,
 		opener: func() (urTunAdapter, error) { return ad, nil },
@@ -362,14 +363,14 @@ func TestURManagerConnectStartsPumpAndReportsTunneled(t *testing.T) {
 		func(jwt string) (urDevice, error) { return dev, nil },
 		okExchange(fakeJWT(time.Now().Add(time.Hour)), nil),
 	)
-	st, err := m.connect(urConnectParams{APIKey: "urn_key"})
-	if err != nil {
+	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	st := waitURStatus(t, m, func(s urStatus) bool { return s.State == urStateConnected })
 	if !st.Connected || !st.Tunneled {
 		t.Fatalf("status after connect = %+v; want connected AND tunneled (the pump is running)", st)
 	}
-	st, err = m.disconnect()
+	st, err := m.disconnect()
 	if err != nil {
 		t.Fatalf("disconnect: %v", err)
 	}
@@ -392,13 +393,50 @@ func TestURManagerConnectFailsWhenPumpFails(t *testing.T) {
 		func(jwt string) (urDevice, error) { return dev, nil },
 		okExchange(fakeJWT(time.Now().Add(time.Hour)), nil),
 	)
-	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err == nil {
-		t.Fatal("a pump that cannot start must fail the connect, not fake a tunneled session")
+	if _, err := m.connect(urConnectParams{APIKey: "urn_key"}); err != nil {
+		t.Fatalf("connect (async accept): %v", err)
+	}
+	st := waitURStatus(t, m, func(s urStatus) bool { return s.State == urStateFailed })
+	if !strings.Contains(st.LastError, "packet pump failed") {
+		t.Fatalf("failed status = %+v; want the pump failure as lastError — a pump that cannot start must fail the connect, not fake a tunneled session", st)
 	}
 	if !dev.disconnected {
 		t.Fatal("a pump-failed connect must remove the SDK destination again")
 	}
-	if st := m.status(); st.Connected || st.Tunneled {
+	if st.Connected || st.Tunneled {
 		t.Fatalf("status after a pump-failed connect = %+v; want neither connected nor tunneled", st)
+	}
+}
+
+// FIX-ADV H2: a tunnel config with NO addresses (neither IPv4
+// nor IPv6) must fail Start — never a running pump, never a
+// SetTunnelStarted(true), and the SDK is explicitly told the
+// tunnel is not started.
+func TestURPumpStartRejectsEmptyAddresses(t *testing.T) {
+	ad := newFakePumpAdapter(7)
+	dev := &fakePumpDevice{cfg: urPumpConfig{MTU: 1500}} // no Address4, no Address6
+	p := &urPump{
+		dev:    dev,
+		opener: func() (urTunAdapter, error) { return ad, nil },
+		egress: func(uint32) (uint32, uint32) { return 3, 0 },
+	}
+	err := p.Start()
+	if err == nil || !strings.Contains(err.Error(), "no tunnel addresses") {
+		t.Fatalf("Start with an address-less config = %v; want the no-addresses error", err)
+	}
+	if p.Running() {
+		t.Fatal("a rejected config must not leave the pump running")
+	}
+	if !ad.isClosed() {
+		t.Fatal("a rejected config must close the adapter it created")
+	}
+	if ad.cfg != nil {
+		t.Fatalf("ApplyConfig must not run for a rejected config; got %+v", ad.cfg)
+	}
+	if got := dev.tunnelStateLog(); len(got) != 1 || got[0] {
+		t.Fatalf("tunnelStarted log = %v; want exactly [false] (never true)", got)
+	}
+	if got := dev.egressLog(); len(got) != 0 {
+		t.Fatalf("the egress pin must not be touched for a rejected config: %v", got)
 	}
 }

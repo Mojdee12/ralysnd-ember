@@ -98,6 +98,94 @@ function parseTrojan(u) {
   };
 }
 
+/* ---------- sing-box share-link parsers (repair 2042, SINGBOX) ----------
+ * hy2:// / hysteria2://, tuic://, naive+https://, snell://, anytls:// —
+ * field semantics mirror Android's src2 link_parser.dart (_hysteria2 /
+ * _tuic / _naive / _snell / _anytls). These protocols cannot run on Xray;
+ * profiles carry engine:'singbox' and run on the sing-box second core
+ * (controllers.js SingboxEngine, buildSingboxConfig below). Like the
+ * parsers above, each returns a complete profile or throws. */
+function credOf(u) {
+  const user = decodeURIComponent(u.username || '');
+  const pass = decodeURIComponent(u.password || '');
+  return pass ? user + ':' + pass : user;
+}
+function truthyQ(v) { return v === '1' || String(v || '').toLowerCase() === 'true' || String(v || '').toLowerCase() === 'yes'; }
+function singboxBase(u, protocol, fallbackPort) {
+  if (!u.hostname) throw new Error(protocol + ' link has no server host');
+  const port = Number(u.port) || fallbackPort || 443;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(protocol + ' link has an invalid port');
+  return { protocol, engine: 'singbox', address: u.hostname, port,
+    name: safeName(decodeURIComponent(u.hash.replace(/^#/, '')), protocol + ' ' + u.hostname) };
+}
+function parseHysteria2(u) {
+  const password = credOf(u);
+  if (!password) throw new Error('Hysteria2 link has no password');
+  const q = Object.fromEntries(u.searchParams.entries());
+  const p = singboxBase(u, 'hysteria2', 443);
+  p.security = 'tls';
+  p.params = {
+    password, sni: q.sni || q.peer || '', alpn: q.alpn || 'h3', fp: q.fp || '',
+    obfs: q.obfs || '', obfsPassword: q['obfs-password'] || q.obfsPassword || '',
+    mport: q.mport || '', upMbps: Number(q.up) || 0, downMbps: Number(q.down) || 0,
+    allowInsecure: truthyQ(q.insecure) || truthyQ(q.allowInsecure),
+  };
+  return p;
+}
+function parseTuic(u) {
+  const uuid = decodeURIComponent(u.username || '');
+  const password = decodeURIComponent(u.password || '');
+  if (!uuid) throw new Error('TUIC link has no UUID');
+  const q = Object.fromEntries(u.searchParams.entries());
+  const p = singboxBase(u, 'tuic', 443);
+  p.security = 'tls';
+  p.params = {
+    uuid, password,
+    congestionControl: q.congestion_control || '', udpRelayMode: q.udp_relay_mode || '',
+    sni: q.sni || '', alpn: (q.alpn || '').replace(/\\,/g, ','),
+    zeroRttHandshake: truthyQ(q.zero_rtt_handshake ?? q.zeroRttHandshake),
+    heartbeat: q.heartbeat || '',
+    udpOverStream: truthyQ(q.udp_over_stream ?? q.udpOverStream),
+    disableSni: truthyQ(q.disable_sni ?? q.disableSni),
+    allowInsecure: truthyQ(q.allow_insecure) || truthyQ(q.allowInsecure) || truthyQ(q.insecure),
+  };
+  return p;
+}
+function parseNaive(u) {
+  const username = decodeURIComponent(u.username || '');
+  const password = decodeURIComponent(u.password || '');
+  if (!username && !password) throw new Error('NaiveProxy link has no credentials');
+  const q = Object.fromEntries(u.searchParams.entries());
+  const p = singboxBase(u, 'naive', 443);
+  p.security = 'tls';
+  const ic = Number(q.insecure_concurrency) || 0;
+  p.params = { username, password, sni: q.sni || q.peer || '',
+    insecureConcurrency: ic > 0 ? ic : 0, quic: truthyQ(q.quic) };
+  return p;
+}
+function parseSnell(u) {
+  const psk = credOf(u);
+  if (!psk) throw new Error('Snell link has no PSK');
+  const q = Object.fromEntries(u.searchParams.entries());
+  const p = singboxBase(u, 'snell', 443);
+  p.security = 'none';
+  const version = Number(q.version) || 4;
+  p.params = { psk, version, obfs: q.obfs || '', obfsHost: q['obfs-host'] || q.obfs_host || '' };
+  return p;
+}
+function parseAnytls(u) {
+  const password = credOf(u);
+  if (!password) throw new Error('AnyTLS link has no password');
+  const q = Object.fromEntries(u.searchParams.entries());
+  const p = singboxBase(u, 'anytls', 443);
+  p.security = 'tls';
+  p.params = {
+    password, sni: q.sni || q.peer || '', alpn: (q.alpn || '').replace(/\\,/g, ','), fp: q.fp || '',
+    allowInsecure: truthyQ(q.insecure) || truthyQ(q.allowInsecure),
+  };
+  return p;
+}
+
 function parseSs(link) {
   let rest = link.slice('ss://'.length);
   const hashIdx = rest.indexOf('#');
@@ -160,13 +248,23 @@ function parseLink(raw) {
   const link = String(raw || '').trim();
   if (!link) throw new Error('Empty link');
   if (link.startsWith('vmess://')) return normalizeProfile(Object.assign(parseVmess(link), { id: newId(), link }));
-  if (link.startsWith('vless://') || link.startsWith('trojan://') || link.startsWith('ss://')) {
+  if (link.startsWith('vless://') || link.startsWith('trojan://') || link.startsWith('ss://') ||
+      link.startsWith('hy2://') || link.startsWith('hysteria2://') || link.startsWith('tuic://') ||
+      link.startsWith('naive+https://') || link.startsWith('naive://') ||
+      link.startsWith('snell://') || link.startsWith('anytls://')) {
     let u;
     try { u = new URL(link); } catch { throw new Error('Link is not a valid URL'); }
-    const p = link.startsWith('vless://') ? parseVless(u) : link.startsWith('trojan://') ? parseTrojan(u) : parseSs(link);
+    const p = link.startsWith('vless://') ? parseVless(u)
+      : link.startsWith('trojan://') ? parseTrojan(u)
+      : link.startsWith('ss://') ? parseSs(link)
+      : (link.startsWith('hy2://') || link.startsWith('hysteria2://')) ? parseHysteria2(u)
+      : link.startsWith('tuic://') ? parseTuic(u)
+      : (link.startsWith('naive+https://') || link.startsWith('naive://')) ? parseNaive(u)
+      : link.startsWith('snell://') ? parseSnell(u)
+      : parseAnytls(u);
     return normalizeProfile(Object.assign(p, { id: newId(), link }));
   }
-  throw new Error('Unsupported link scheme (vless://, vmess://, trojan://, ss:// only)');
+  throw new Error('Unsupported link scheme (vless://, vmess://, trojan://, ss://, hy2://, hysteria2://, tuic://, naive+https://, snell://, anytls:// only)');
 }
 
 /* Parse a whole subscription body (already fetched). Returns
@@ -425,4 +523,141 @@ function buildXrayConfig(profile, opts) {
   return cfg;
 }
 
-window.EmberProfiles = { parseLink, parseSubscriptionBody, parseWireGuardConf, parseOvpn, buildXrayConfig, b64DecodeText, normalizeProfile, resolveDnsServers, DNS_PRESETS };
+/* ---------- profile → sing-box config (repair 2042, SINGBOX) ----------
+ * The sing-box second core serves the protocols Xray cannot speak:
+ * hysteria2, tuic, naive, snell, anytls (Android: src2 singbox_config.dart,
+ * whose shapes were validated against sing-box 1.14.4 — the pinned
+ * Windows sidecar version, scripts/fetch-windows-sidecars.ps1).
+ * Shape: log, one SOCKS inbound (127.0.0.1:20862 by default, or the
+ * listenAddress/lanSharing settings exactly as buildXrayConfig
+ * honours them), one outbound tagged 'proxy', route.final 'proxy'.
+ * DNS mirrors the app's resolution (resolveDnsServers): a DoH URL
+ * becomes a sing-box https DNS server, a plain IP a udp one.
+ * Every generated shape is re-validated in this workstream against
+ * the real 1.14.4 binary (`sing-box check`) — see the stub test. */
+const SINGBOX_UTLS_FINGERPRINTS = new Set(['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized']);
+function singboxTlsBlock(pr, address, defaultAlpn) {
+  const tls = { enabled: true, server_name: pr.sni || address };
+  const alpn = String(pr.alpn || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (alpn.length) tls.alpn = alpn;
+  else if (defaultAlpn) tls.alpn = defaultAlpn;
+  if (pr.allowInsecure) tls.insecure = true;
+  if (pr.disableSni) tls.disable_sni = true;
+  return tls;
+}
+function singboxServerPorts(mport) {
+  const out = [];
+  for (const raw of String(mport || '').split(',')) {
+    const token = raw.trim(); if (!token) continue;
+    const parts = token.split(/[-:]/);
+    if (parts.length === 1) {
+      const n = Number(parts[0]);
+      if (Number.isInteger(n) && n >= 1 && n <= 65535) out.push(n + ':' + n);
+    } else if (parts.length === 2) {
+      const lo = Number(parts[0]), hi = Number(parts[1]);
+      if (Number.isInteger(lo) && Number.isInteger(hi) && lo >= 1 && hi <= 65535 && lo <= hi) out.push(lo + ':' + hi);
+    }
+  }
+  return out;
+}
+function singboxOutboundFor(p) {
+  const pr = p.params || {};
+  if (!p.address) throw new Error('This ' + p.protocol + ' config has no server.');
+  if (!Number.isInteger(p.port) || p.port < 1 || p.port > 65535) throw new Error('This ' + p.protocol + ' config has no valid server port.');
+  const base = { tag: 'proxy', server: p.address, server_port: p.port };
+  if (p.protocol === 'hysteria2') {
+    if (!pr.password) throw new Error('This Hysteria2 config has no password.');
+    const o = Object.assign({ type: 'hysteria2' }, base, { password: pr.password });
+    const hops = singboxServerPorts(pr.mport);
+    if (hops.length) { o.server_ports = hops; o.hop_interval = '30s'; }
+    if (pr.upMbps > 0) o.up_mbps = pr.upMbps;
+    if (pr.downMbps > 0) o.down_mbps = pr.downMbps;
+    if (pr.obfs) o.obfs = { type: pr.obfs, password: pr.obfsPassword || '' };
+    o.tls = singboxTlsBlock(pr, p.address, ['h3']);
+    return o;
+  }
+  if (p.protocol === 'tuic') {
+    if (!pr.uuid) throw new Error('This TUIC config has no UUID.');
+    const o = Object.assign({ type: 'tuic' }, base, {
+      uuid: pr.uuid, congestion_control: pr.congestionControl || 'bbr',
+      udp_relay_mode: pr.udpRelayMode || 'native',
+    });
+    if (pr.password) o.password = pr.password;
+    if (pr.zeroRttHandshake) o.zero_rtt_handshake = true;
+    if (pr.heartbeat) o.heartbeat = pr.heartbeat;
+    if (pr.udpOverStream) o.udp_over_stream = true;
+    o.tls = singboxTlsBlock(pr, p.address, ['h3']);
+    return o;
+  }
+  if (p.protocol === 'anytls') {
+    if (!pr.password) throw new Error('This AnyTLS config has no password.');
+    const o = Object.assign({ type: 'anytls' }, base, { password: pr.password });
+    o.tls = singboxTlsBlock(pr, p.address, null);
+    const fp = String(pr.fp || '').trim().toLowerCase();
+    if (SINGBOX_UTLS_FINGERPRINTS.has(fp)) o.tls.utls = { enabled: true, fingerprint: fp };
+    return o;
+  }
+  if (p.protocol === 'snell') {
+    if (!pr.psk) throw new Error('This Snell config has no key (PSK).');
+    const o = Object.assign({ type: 'snell' }, base, { psk: pr.psk, version: pr.version || 4 });
+    if (pr.obfs) { o.obfs_mode = pr.obfs; if (pr.obfsHost) o.obfs_host = pr.obfsHost; }
+    return o;
+  }
+  if (p.protocol === 'naive') {
+    const o = Object.assign({ type: 'naive' }, base);
+    if (pr.username) o.username = pr.username;
+    if (pr.password) o.password = pr.password;
+    if (pr.insecureConcurrency > 0) o.insecure_concurrency = pr.insecureConcurrency;
+    if (pr.quic) o.quic = true;
+    if (pr.sni && pr.sni !== p.address) o.tls = singboxTlsBlock(pr, p.address, null);
+    return o;
+  }
+  throw new Error(p.protocol + ' is not a sing-box protocol.');
+}
+/* buildSingboxConfig(profile, settings, opts): settings and opts are
+ * both optional bags (opts wins); the recognised keys mirror
+ * buildXrayConfig's: socksPort, listenAddress, lanSharing,
+ * remoteDns / dnsPreset / dnsTransport / localDns. */
+function buildSingboxConfig(profile, settings, opts) {
+  const o = Object.assign({}, settings || {}, opts || {});
+  const socksPort = o.socksPort || 20862;
+  const listen = o.lanSharing === true ? '0.0.0.0' : (o.listenAddress || '127.0.0.1');
+  const cfg = {
+    log: { level: 'warn', timestamp: true },
+    inbounds: [{ type: 'socks', tag: 'in', listen, listen_port: socksPort }],
+    outbounds: [singboxOutboundFor(profile)],
+    route: { final: 'proxy' },
+  };
+  const dnsServers = resolveDnsServers(o);
+  if (dnsServers.length) {
+    const servers = dnsServers.map((s, i) => {
+      if (/^https?:\/\//i.test(s)) {
+        try {
+          const u = new URL(s);
+          return { type: 'https', tag: 'dns-' + i, server: u.hostname, path: u.pathname || '/dns-query' };
+        } catch { /* fall through to udp form */ }
+      }
+      return { type: 'udp', tag: 'dns-' + i, server: s };
+    });
+    /* sing-box 1.14 refuses an https DNS server whose hostname has
+     * no resolver ("missing domain resolver for domain server
+     * address" — proven against the real binary): point each https
+     * server's domain_resolver at the first plain-udp server (the
+     * app's localDns entry, appended by resolveDnsServers), or at
+     * a bootstrap udp server when the list carries none. */
+    let bootstrap = servers.find(s => s.type === 'udp');
+    if (servers.some(s => s.type === 'https') && !bootstrap) {
+      bootstrap = { type: 'udp', tag: 'dns-bootstrap', server: '8.8.8.8' };
+      servers.push(bootstrap);
+    }
+    if (bootstrap) for (const s of servers) if (s.type === 'https') s.domain_resolver = bootstrap.tag;
+    cfg.dns = { servers };
+    /* With a dns block present, 1.14 also requires the outbound's
+     * domain server address to name a resolver: route's
+     * default_domain_resolver points at the first DNS server. */
+    cfg.route.default_domain_resolver = servers[0].tag;
+  }
+  return cfg;
+}
+
+window.EmberProfiles = { parseLink, parseSubscriptionBody, parseWireGuardConf, parseOvpn, buildXrayConfig, buildSingboxConfig, b64DecodeText, normalizeProfile, resolveDnsServers, DNS_PRESETS };

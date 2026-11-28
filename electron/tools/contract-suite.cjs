@@ -123,6 +123,22 @@ async function main() {
   const unknown = await pipe.call('nope.nope', {});
   check('L1 unknown method refused', unknown.ok === false && /unknown method/i.test(String(unknown.error || '')), JSON.stringify(unknown));
 
+  /* FIX-ADV B1/L2: the UR state machine is on the wire — ur.status
+   * always carries the state word; in this untagged fixture build
+   * (no ur_sdk) ur.connect refuses honestly and synchronously
+   * rather than faking an async success; malformed ur.countries
+   * params surface the params error, not a misleading key error. */
+  const urStatus = await pipe.call('ur.status', {});
+  check('L1 ur.status carries the B1 state machine word',
+    urStatus.ok === true && urStatus.result && urStatus.result.state === 'idle' &&
+    urStatus.result.available === false, JSON.stringify(urStatus));
+  const urConnect = await pipe.call('ur.connect', { apiKey: 'urn_fixture' });
+  check('L1 ur.connect without the SDK refuses honestly (no fake connection)',
+    urConnect.ok === false && /not compiled into this service build/i.test(String(urConnect.error || '')), JSON.stringify(urConnect));
+  const urCountriesBad = await pipe.call('ur.countries', { apiKey: 123 });
+  check('L1 ur.countries malformed params surface the params error (L2)',
+    urCountriesBad.ok === false && !/needs an API key/i.test(String(urCountriesBad.error || '')), JSON.stringify(urCountriesBad));
+
   /* ---------- L2: the real renderer code ---------- */
   const calls = [];
   const rawCall = pipe.callOk.bind(pipe);
