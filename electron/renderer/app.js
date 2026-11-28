@@ -845,6 +845,39 @@ function wireSessionBudgetToggle(tgl) {
     } catch (e) { showSvcError(e); }
   };
 }
+/* FIX-ROUND3: a settings .srow is the natural click target, not
+ * just its small right-edge control. bindSrowToggleRow makes the
+ * WHOLE row act as the toggle: the row handler delegates to the
+ * knob's own onclick AT CLICK TIME (custom wirings assign theirs
+ * asynchronously, and the launcher-shortcuts row wraps the
+ * makeToggle onclick afterwards — both must be picked up), and
+ * ignores clicks that originate on the knob itself, whose own
+ * handler (plus the stopPropagation in the standard wiring)
+ * already fired — one click never toggles twice. Rows carrying
+ * their own inner controls (inputs, selects, .fieldbox, chip
+ * groups) keep those controls' clicks: no row action is bound,
+ * mirroring the settings chevron loop's early-return guard. */
+function bindSrowToggleRow(row, tgl) {
+  if (!row || !tgl || !row.classList.contains('srow')) return;
+  if (row.querySelector('input, select, textarea, .fieldbox, .pchip')) return;
+  row.style.cursor = 'pointer';
+  row.onclick = e => {
+    if (e && e.target && e.target.closest && e.target.closest('.tgl')) return;
+    if (tgl.onclick) tgl.onclick(e);
+  };
+}
+/* FIX-ROUND3 companion for val-action rows: bind fn to BOTH the
+ * .val control and its whole .srow. The val's own click stops
+ * propagation and the row handler ignores val-origin clicks, so
+ * one click runs fn exactly once. */
+function bindSrowValRow(row, val, fn) {
+  if (!row || !val || !row.classList.contains('srow')) return;
+  row.style.cursor = 'pointer';
+  row.onclick = e => {
+    if (e && e.target && e.target.closest && e.target.closest('.val')) return;
+    fn(e);
+  };
+}
 function wireToggles() {
   document.querySelectorAll('#app .tgl').forEach(tgl => {
     // Round-1 F5 painting rule: a template-baked 'on' class must
@@ -856,19 +889,21 @@ function wireToggles() {
     const label = row ? ((row.querySelector('.nm,.t') || {}).textContent || '') : '';
     const inEngineSection = !!(row && row.closest('.engine-section'));
     const b = toggleBinding(label.trim(), { engineSection: inEngineSection, engine: store.selectedEngine || 'mozilla' });
-    if (b && b.custom === 'lanAuth') { wireLanAuthToggle(tgl); return; }
-    if (b && b.custom === 'sessionBudget') { wireSessionBudgetToggle(tgl); return; }
+    if (b && b.custom === 'lanAuth') { wireLanAuthToggle(tgl); bindSrowToggleRow(row, tgl); return; }
+    if (b && b.custom === 'sessionBudget') { wireSessionBudgetToggle(tgl); bindSrowToggleRow(row, tgl); return; }
     if (!b || b.disabled) {
       disableWithReason(tgl, b ? b.disabled : 'No behaviour is bound to this switch in this build.');
       return;
     }
     tgl.classList.toggle('on', !!settingGet(b.key));
     tgl.style.cursor = 'pointer';
-    tgl.onclick = async () => {
+    tgl.onclick = async e => {
+      if (e && e.stopPropagation) e.stopPropagation();
       const on = !tgl.classList.contains('on');
       tgl.classList.toggle('on', on);
       await persistSetting(b.key, on);
     };
+    bindSrowToggleRow(row, tgl);
   });
 }
 
@@ -1086,13 +1121,22 @@ function makeToggle(valEl, key) {
   const t = document.createElement('span');
   t.className = 'tgl' + (settingGet(key) ? ' on' : '');
   t.style.cursor = 'pointer';
+  // FIX-ROUND3: capture the settings row BEFORE replaceWith
+  // detaches valEl, then give the whole row the toggle's behaviour
+  // (covers the launcher-shortcuts, quarantine, RegionHop-enable
+  // and DPI-Lab-enable rows). The row handler delegates to
+  // t.onclick at click time, so a later wrap of t.onclick (the
+  // launcher row's applyShortcut follow-up) is honoured.
+  const srow = valEl.closest ? valEl.closest('.srow') : null;
   valEl.replaceWith(t);
-  t.onclick = async () => {
+  t.onclick = async e => {
+    if (e && e.stopPropagation) e.stopPropagation();
     const on = !t.classList.contains('on');
     t.classList.toggle('on', on);
     await persistSetting(key, on);
     render();
   };
+  bindSrowToggleRow(srow, t);
   return t;
 }
 /* Ping sweep (UI-S-B2 task 4): every profile gains lastPingMs +
@@ -1313,7 +1357,8 @@ async function wireAppLockRows() {
   };
   if (val) {
     val.style.cursor = 'pointer';
-    val.onclick = async () => {
+    val.onclick = async e => {
+      if (e && e.stopPropagation) e.stopPropagation();
       try {
         const has = await window.ember.secrets.has(APP_LOCK_PIN_KEY).catch(() => false);
         if (!settingGet('appLock')) {
@@ -1332,6 +1377,8 @@ async function wireAppLockRows() {
       } catch (e) { showSvcError(e); }
       await paint();
     };
+    // FIX-ROUND3: the whole app-lock row runs the same flow.
+    bindSrowValRow(row, val, () => { if (val.onclick) val.onclick(); });
   }
   if (!document.getElementById('applock-pin-rows')) {
     const wrap = document.createElement('div');
@@ -1343,10 +1390,13 @@ async function wireAppLockRows() {
     row.after(wrap);
     const setVal = wrap.querySelector('#pin-set-val');
     setVal.style.cursor = 'pointer';
-    setVal.onclick = async () => { if (await setPinFlow()) render(); };
+    setVal.onclick = async e => { if (e && e.stopPropagation) e.stopPropagation(); if (await setPinFlow()) render(); };
+    // FIX-ROUND3: whole-row clicks for the PIN rows too.
+    bindSrowValRow(setVal.closest('.srow'), setVal, () => { if (setVal.onclick) setVal.onclick(); });
     const remVal = wrap.querySelector('#pin-remove-val');
     remVal.style.cursor = 'pointer';
-    remVal.onclick = async () => {
+    remVal.onclick = async e => {
+      if (e && e.stopPropagation) e.stopPropagation();
       try {
         const has = await window.ember.secrets.has(APP_LOCK_PIN_KEY).catch(() => false);
         if (!has) { showSvcNote('No app-lock PIN is set.'); return; }
@@ -1361,6 +1411,7 @@ async function wireAppLockRows() {
         render();
       } catch (e) { showSvcError(e); }
     };
+    bindSrowValRow(remVal.closest('.srow'), remVal, () => { if (remVal.onclick) remVal.onclick(); });
     disableWithReason(wrap.querySelector('#pin-bio-val'),
       'Windows Hello biometrics are not wired in this shell — the PIN is the unlock method here.');
   }
@@ -1569,7 +1620,12 @@ function wireDpiLabCard(card) {
   rows.forEach(r => {
     if (/open the strategy lab/i.test(rowLabelOf(r))) {
       const v = r.querySelector('.val');
-      if (v) { v.style.cursor = 'pointer'; v.onclick = () => wrap.scrollIntoView({ block: 'center' }); }
+      if (v) {
+        v.style.cursor = 'pointer';
+        v.onclick = e => { if (e && e.stopPropagation) e.stopPropagation(); wrap.scrollIntoView({ block: 'center' }); };
+        // FIX-ROUND3: the whole row scrolls to the lab, not just .val.
+        bindSrowValRow(r, v, () => wrap.scrollIntoView({ block: 'center' }));
+      }
     }
   });
 }
@@ -1775,7 +1831,21 @@ function wireSettingsPage() {
     const val = row.querySelector('.val');
     if (!val || val.querySelector('.tgl') || val.querySelector('.pchip') || val.querySelector('.fieldbox') || val.querySelector('input')) return;
     const dis = r => disableWithReason(val, r);
-    const go = fn => { val.style.cursor = 'pointer'; val.onclick = () => { Promise.resolve().then(fn).catch(e => showSvcError(e)); }; };
+    // FIX-ROUND3: go() binds BOTH the .val control and the whole
+    // row to fn — the row is the natural click target. The val's
+    // click stops propagation and the row handler ignores
+    // val-origin clicks, so fn runs exactly once per click.
+    // dis() rows deliberately get NO row action (their .val
+    // carries the reason tooltip only).
+    const go = fn => {
+      val.style.cursor = 'pointer'; row.style.cursor = 'pointer';
+      const run = () => { Promise.resolve().then(fn).catch(e => showSvcError(e)); };
+      val.onclick = e => { if (e && e.stopPropagation) e.stopPropagation(); run(); };
+      row.onclick = e => {
+        if (e && e.target && e.target.closest && e.target.closest('.val')) return;
+        run();
+      };
+    };
     if (/language/.test(l)) dis('English only in this build — the whole app is English by the owner\u2019s ruling.');
     else if (/check for updates/.test(l)) go(checkUpdate);
     else if (/update channel/.test(l)) dis('Only the stable channel exists: the updater reads the latest GitHub release.');
@@ -1785,6 +1855,9 @@ function wireSettingsPage() {
       // Ctrl+Alt+E (applyShortcut runs on every settings save too).
       const t = makeToggle(val, 'globalShortcut');
       const orig = t.onclick;
+      // FIX-ROUND3: makeToggle already bound the whole row to
+      // t.onclick AT CLICK TIME, so this wrap (with the
+      // applyShortcut follow-up) is what row clicks run too.
       t.onclick = async () => { await orig(); if (window.ember.applyShortcut) await window.ember.applyShortcut(settingGet('globalShortcut') === true).catch(() => {}); };
     }
     else if (/tunnel mtu/.test(l)) dis('No MTU consumer exists: Xray has no MTU knob and the service tun.start contract carries no MTU field.');
@@ -1803,12 +1876,16 @@ function wireSettingsPage() {
     else if (/domain strategy/.test(l)) {
       val.textContent = settingGet('domainStrategy') + ' ›';
       val.style.cursor = 'pointer';
-      val.onclick = async () => {
+      const cycleDomainStrategy = async () => {
         const cur = settingGet('domainStrategy');
         const next = DOMAIN_STRATEGIES[(DOMAIN_STRATEGIES.indexOf(cur) + 1) % DOMAIN_STRATEGIES.length];
         await persistSetting('domainStrategy', next);
         val.textContent = next + ' ›';
       };
+      val.onclick = async e => { if (e && e.stopPropagation) e.stopPropagation(); await cycleDomainStrategy(); };
+      // FIX-ROUND3: this row has its own inline handler (not go) —
+      // give it the same whole-row binding.
+      bindSrowValRow(row, val, () => { cycleDomainStrategy().catch(e => showSvcError(e)); });
     }
     else if (/custom rules/.test(l)) dis('No custom-rules editor on Windows yet.');
     else if (/direct domains|direct ips|blocked domains|proxied domains/.test(l)) dis('No rules editor on Windows yet — the routing presets above are what the builder consumes.');
@@ -1854,13 +1931,16 @@ function wireSettingsPage() {
       const opts = [6, 12, 24, 48];
       val.textContent = (settingGet('subRefreshHours') || 24) + ' h ›';
       val.style.cursor = 'pointer';
-      val.onclick = async () => {
+      const cycleSubRefresh = async () => {
         const cur = Number(settingGet('subRefreshHours') || 24);
         const next = opts[(opts.indexOf(cur) + 1) % opts.length] || 24;
         await persistSetting('subRefreshHours', next);
         val.textContent = next + ' h ›';
         showSvcNote('Subscription refresh interval: ' + next + ' h (used by the on-launch refresh).');
       };
+      val.onclick = async e => { if (e && e.stopPropagation) e.stopPropagation(); await cycleSubRefresh(); };
+      // FIX-ROUND3: inline val handler — same whole-row binding.
+      bindSrowValRow(row, val, () => { cycleSubRefresh().catch(e => showSvcError(e)); });
     }
     else if (/regenerate device id/.test(l)) {
       // UI-S-B2 task 5: mint a fresh random UUID into settings.hwid.
@@ -1889,10 +1969,14 @@ function wireSettingsPage() {
     else if (/ember backup/.test(l)) go(exportBackup);
     else if (/backup & restore/.test(l)) {
       val.style.cursor = 'pointer';
-      val.onclick = () => showMenu(val, [
+      const openBackupMenu = () => showMenu(val, [
         { label: 'Export backup…', fn: () => { exportBackup().catch(e => showSvcError(e)); } },
         { label: 'Import backup…', fn: () => { importBackup().catch(e => showSvcError(e)); } },
       ]);
+      val.onclick = e => { if (e && e.stopPropagation) e.stopPropagation(); openBackupMenu(); };
+      // FIX-ROUND3: inline val handler — the whole row opens the
+      // same menu (still anchored to .val).
+      bindSrowValRow(row, val, openBackupMenu);
     }
     else if (/traffic history|traffic chart/.test(l)) dis('Per-config traffic counters are live on the Servers page (polled from the connected core); a history chart is not drawn on Windows yet.');
     else if (/smart group rules/.test(l)) dis('Smart groups are not implemented on Windows yet.');
@@ -1908,12 +1992,15 @@ function wireSettingsPage() {
       // UI-S-B2 task 4: cycle 2..5 failed sweeps (settings.sweepThreshold).
       val.textContent = (settingGet('sweepThreshold') || 3) + ' failures ›';
       val.style.cursor = 'pointer';
-      val.onclick = async () => {
+      const cycleSweepThreshold = async () => {
         const cur = Number(settingGet('sweepThreshold') || 3);
         const next = cur >= 5 ? 2 : cur + 1;
         await persistSetting('sweepThreshold', next);
         val.textContent = next + ' failures ›';
       };
+      val.onclick = async e => { if (e && e.stopPropagation) e.stopPropagation(); await cycleSweepThreshold(); };
+      // FIX-ROUND3: inline val handler — same whole-row binding.
+      bindSrowValRow(row, val, () => { cycleSweepThreshold().catch(e => showSvcError(e)); });
     }
     else if (/run sni scan/.test(l)) dis('The SNI scanner does not ship on Windows.');
     else if (/guided diagnosis/.test(l)) dis('The diagnosis ladder is not implemented on Windows yet.');
@@ -1927,7 +2014,9 @@ function wireSettingsPage() {
   const logsCard = findCard('Logs');
   if (logsCard) logsCard.querySelectorAll('.val').forEach(v => {
     v.style.cursor = 'pointer';
-    v.onclick = () => { location.hash = '#/logs'; };
+    v.onclick = e => { if (e && e.stopPropagation) e.stopPropagation(); location.hash = '#/logs'; };
+    // FIX-ROUND3: the whole Logs-card row navigates, not just .val.
+    bindSrowValRow(v.closest('.srow'), v, () => { location.hash = '#/logs'; });
   });
   const rhCard = findCard('RegionHop');
   if (rhCard) wireRegionHopCard(rhCard).catch(() => {});
